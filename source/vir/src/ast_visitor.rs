@@ -460,6 +460,7 @@ where
         proxy: _,
         kind: _,
         visibility: _,
+        owning_module: _,
         mode: _,
         fuel: _,
         typ_bounds: _,
@@ -923,6 +924,7 @@ where
         proxy,
         kind,
         visibility,
+        owning_module,
         mode,
         fuel,
         typ_bounds,
@@ -969,6 +971,7 @@ where
         }
     };
     let visibility = visibility.clone();
+    let owning_module = owning_module.clone();
     let mode = *mode;
     let fuel = *fuel;
     let mut type_bounds: Vec<(Ident, GenericBound)> = Vec::new();
@@ -1038,6 +1041,7 @@ where
         proxy,
         kind,
         visibility,
+        owning_module,
         mode,
         fuel,
         typ_bounds: Arc::new(type_bounds),
