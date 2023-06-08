@@ -10,48 +10,56 @@
 
 use core::marker::PhantomData;
 
+#[rustc_diagnostic_item = "verus::builtin::admit"]
 #[verifier::proof]
 pub fn admit() {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::no_method_body"]
 #[verifier::proof]
 pub fn no_method_body() -> ! {
     unimplemented!()
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::requires"]
 #[verifier::proof]
 pub fn requires<A>(_a: A) {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::ensures"]
 #[verifier::proof]
 pub fn ensures<A>(_a: A) {
     unimplemented!();
 }
 
 // Can only appear at beginning of spec function body
+#[rustc_diagnostic_item = "verus::builtin::recommends"]
 #[verifier::proof]
 pub fn recommends<A>(_a: A) {
     unimplemented!();
 }
 
 // Can only appear at beginning of loop body
+#[rustc_diagnostic_item = "verus::builtin::invariant"]
 #[verifier::proof]
 pub fn invariant<A>(_a: A) {
     unimplemented!();
 }
 
 // Can only appear at beginning of loop body
+#[rustc_diagnostic_item = "verus::builtin::invariant_ensures"]
 #[verifier::proof]
 pub fn invariant_ensures<A>(_a: A) {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::decreases"]
 #[verifier::proof]
 pub fn decreases<A>(_a: A) {
     unimplemented!();
@@ -60,95 +68,112 @@ pub fn decreases<A>(_a: A) {
 // Can only appear at beginning of function body
 // decrease_when is automatically added to list of recommends
 #[verifier::proof]
+#[rustc_diagnostic_item = "verus::builtin::decreases_when"]
 pub fn decreases_when(_b: bool) {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::decreases_by"]
 #[verifier::proof]
 pub fn decreases_by<F>(_f: F) {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::recommends_by"]
 #[verifier::proof]
 pub fn recommends_by<F>(_f: F) {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::hide"]
 #[verifier::proof]
 pub fn hide<F>(_f: F) {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::extra_dependency"]
 #[verifier::proof]
 pub fn extra_dependency<F>(_f: F) {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::opens_invariants_none"]
 #[verifier::proof]
 pub fn opens_invariants_none() {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::opens_invariants_any"]
 #[verifier::proof]
 pub fn opens_invariants_any() {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::opens_invariants"]
 #[verifier::proof]
 pub fn opens_invariants<A>(_a: A) {
     unimplemented!();
 }
 
 // Can only appear at beginning of function body
+#[rustc_diagnostic_item = "verus::builtin::opens_invariants_except"]
 #[verifier::proof]
 pub fn opens_invariants_except<A>(_a: A) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::reveal"]
 #[verifier::proof]
 pub fn reveal<F>(_f: F) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::reveal_with_fuel"]
 #[verifier::proof]
 pub fn reveal_with_fuel<F>(_f: F, _n: u32) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::imply"]
 #[verifier::spec]
 pub fn imply(_b1: bool, _b2: bool) -> bool {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::forall"]
 #[verifier::spec]
 pub fn forall<A>(_a: A) -> bool {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::exists"]
 #[verifier::spec]
 pub fn exists<A>(_a: A) -> bool {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::forall_arith"]
 #[verifier::spec]
 pub fn forall_arith<A>(_a: A) -> bool {
     unimplemented!();
 }
 
 // choose(|x: t| P(x))
+#[rustc_diagnostic_item = "verus::builtin::choose"]
 #[verifier::spec]
 pub fn choose<A, F: Fn(A) -> bool>(_f: F) -> A {
     unimplemented!()
 }
 
 // let (x1, ..., xn): (t1, ..., tn) = choose_tuple(|x1: t1, ..., xn: tn| P(x1, ..., xn));
+#[rustc_diagnostic_item = "verus::builtin::choose_tuple"]
 #[verifier::spec]
 pub fn choose_tuple<A, F>(_f: F) -> A {
     unimplemented!()
@@ -157,6 +182,7 @@ pub fn choose_tuple<A, F>(_f: F) -> A {
 // used by with_triggers! macro
 // example: forall with three triggers [f(x), g(y)], [h(x, y)], [m(y, x)]:
 //   forall( |x: int, y: int| with_triggers(  ( (f(x), g(y)), (h(x, y),), (m(y, x),) )  ,  body  ) )
+#[rustc_diagnostic_item = "verus::builtin::with_triggers"]
 #[verifier::spec]
 pub fn with_triggers<A, B>(_triggers_tuples: A, body: B) -> B {
     body
@@ -173,72 +199,86 @@ macro_rules! with_triggers {
     }
 }
 
+#[rustc_diagnostic_item = "verus::builtin::equal"]
 #[verifier::spec]
 pub fn equal<A>(_: A, _: A) -> bool {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::ext_equal"]
 #[verifier::spec]
 pub fn ext_equal<A>(_: A, _: A) -> bool {
     unimplemented!()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::ext_equal_deep"]
 #[verifier::spec]
 pub fn ext_equal_deep<A>(_: A, _: A) -> bool {
     unimplemented!()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::old"]
 #[verifier::spec]
 pub fn old<A>(_: A) -> A {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::assume_"]
 #[verifier::proof]
 pub fn assume_(_: bool) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::assert_"]
 #[verifier::proof]
 pub fn assert_(_: bool) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::assert_by"]
 #[verifier::proof]
 pub fn assert_by(_: bool, _: ()) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::assert_by_compute"]
 #[verifier::proof]
 pub fn assert_by_compute(_: bool) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::assert_by_compute_only"]
 #[verifier::proof]
 pub fn assert_by_compute_only(_: bool) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::assert_nonlinear_by"]
 #[verifier::proof]
 pub fn assert_nonlinear_by(_: ()) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::assert_bitvector_by"]
 #[verifier::proof]
 pub fn assert_bitvector_by(_: ()) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::assert_forall_by"]
 #[verifier::proof]
 pub fn assert_forall_by<A>(_a: A) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::builtin::assert_bit_vector"]
 #[verifier::proof]
 pub fn assert_bit_vector(_: bool) {
     unimplemented!();
 }
 
 // Used internally by erase.rs
+#[rustc_diagnostic_item = "verus::builtin::internal_arbitrary"]
 #[verifier::spec]
 pub fn internal_arbitrary<A>(_: u64) -> A {
     unimplemented!()
@@ -248,12 +288,14 @@ pub fn internal_arbitrary<A>(_: u64) -> A {
 // Ghost, Tracked
 //
 
+#[rustc_diagnostic_item = "verus::builtin::Ghost"]
 #[verifier::external_body]
 #[verifier::reject_recursive_types_in_ground_variants(A)]
 pub struct Ghost<A> {
     phantom: PhantomData<A>,
 }
 
+#[rustc_diagnostic_item = "verus::builtin::Tracked"]
 #[verifier::external_body]
 #[verifier::reject_recursive_types_in_ground_variants(A)]
 pub struct Tracked<A> {
@@ -261,11 +303,13 @@ pub struct Tracked<A> {
 }
 
 impl<A> Ghost<A> {
+    #[rustc_diagnostic_item = "verus::builtin::Ghost::view"]
     #[verifier::spec]
     pub fn view(self) -> A {
         unimplemented!()
     }
 
+    #[rustc_diagnostic_item = "verus::builtin::Ghost::new"]
     #[verifier::spec]
     #[verifier::external_body]
     pub fn new(_a: A) -> Ghost<A> {
@@ -280,6 +324,7 @@ impl<A> Ghost<A> {
     }
 
     // note that because we return #[verifier::spec], not #[verifier::exec], we do not implement the Borrow trait
+    #[rustc_diagnostic_item = "verus::builtin::Ghost::borrow"]
     #[verifier::spec]
     #[verifier::external_body]
     pub fn borrow(&self) -> &A {
@@ -287,6 +332,7 @@ impl<A> Ghost<A> {
     }
 
     // note that because we return #[verifier::spec], not #[verifier::exec], we do not implement the BorrowMut trait
+    #[rustc_diagnostic_item = "verus::builtin::Ghost::borrow_mut"]
     #[verifier::proof]
     #[verifier::external]
     pub fn borrow_mut(#[verifier::proof] &mut self) -> &mut A {
@@ -295,11 +341,13 @@ impl<A> Ghost<A> {
 }
 
 impl<A> Tracked<A> {
+    #[rustc_diagnostic_item = "verus::builtin::Tracked::view"]
     #[verifier::spec]
     pub fn view(self) -> A {
         unimplemented!()
     }
 
+    #[rustc_diagnostic_item = "verus::builtin::Tracked::new"]
     #[verifier::proof]
     #[verifier::external_body]
     pub fn new(#[verifier::proof] _a: A) -> Tracked<A> {
@@ -313,6 +361,7 @@ impl<A> Tracked<A> {
         Tracked { phantom: PhantomData }
     }
 
+    #[rustc_diagnostic_item = "verus::builtin::Tracked::get"]
     #[verifier::proof]
     #[verifier::external_body]
     #[verifier::returns(proof)]
@@ -321,6 +370,7 @@ impl<A> Tracked<A> {
     }
 
     // note that because we return #[verifier::proof], not #[verifier::exec], we do not implement the Borrow trait
+    #[rustc_diagnostic_item = "verus::builtin::Tracked::borrow"]
     #[verifier::proof]
     #[verifier::external_body]
     #[verifier::returns(proof)]
@@ -329,6 +379,7 @@ impl<A> Tracked<A> {
     }
 
     // note that because we return #[verifier::proof], not #[verifier::exec], we do not implement the BorrowMut trait
+    #[rustc_diagnostic_item = "verus::builtin::Tracked::borrow_mut"]
     #[verifier::proof]
     #[verifier::external_body]
     #[verifier::returns(proof)]
@@ -347,16 +398,19 @@ impl<A> Clone for Ghost<A> {
 
 impl<A> Copy for Ghost<A> {}
 
+#[rustc_diagnostic_item = "verus::builtin::ghost_exec"]
 #[verifier::external_body]
 pub fn ghost_exec<A>(#[verifier::spec] _a: A) -> Ghost<A> {
     Ghost::assume_new()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::tracked_exec"]
 #[verifier::external_body]
 pub fn tracked_exec<A>(#[verifier::proof] _a: A) -> Tracked<A> {
     Tracked::assume_new()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::tracked_exec_borrow"]
 #[verifier::external_body]
 pub fn tracked_exec_borrow<'a, A>(#[verifier::proof] _a: &'a A) -> &'a Tracked<A> {
     // TODO: implement this (using unsafe) or mark function as ghost (if supported by Rust)
@@ -539,8 +593,7 @@ impl core::cmp::Ord for nat {
 // Structural
 //
 
-// TODO(andreal) bake this into the compiler as a lang_item
-#[rustc_diagnostic_item = "builtin::Structural"]
+#[rustc_diagnostic_item = "verus::builtin::Structural"]
 pub trait Structural {
     #[doc(hidden)]
     fn assert_receiver_is_structural(&self) -> () {}
@@ -637,6 +690,7 @@ impl Integer for nat {}
 impl Integer for char {}
 
 // spec literals of the form "33", which could have any Integer type
+#[rustc_diagnostic_item = "verus::builtin::spec_literal_integer"]
 #[allow(non_camel_case_types)]
 #[verifier::spec]
 pub fn spec_literal_integer<
@@ -649,119 +703,142 @@ pub fn spec_literal_integer<
 
 // spec literals of the form "33int",
 // or spec literals in positions syntactically expected to be int (e.g. in "x + 33")
+#[rustc_diagnostic_item = "verus::builtin::spec_literal_int"]
 #[verifier::spec]
 pub fn spec_literal_int(_s: &str) -> int {
     unimplemented!()
 }
 
 // spec literals of the form "33nat"
+#[rustc_diagnostic_item = "verus::builtin::spec_literal_nat"]
 #[verifier::spec]
 pub fn spec_literal_nat(_s: &str) -> nat {
     unimplemented!()
 }
 
 // Fixed-width add
+#[rustc_diagnostic_item = "verus::builtin::add"]
 #[verifier::spec]
 pub fn add<IntegerType: Integer>(_left: IntegerType, _right: IntegerType) -> IntegerType {
     unimplemented!()
 }
 
 // Fixed-width sub
+#[rustc_diagnostic_item = "verus::builtin::sub"]
 #[verifier::spec]
 pub fn sub<IntegerType: Integer>(_left: IntegerType, _right: IntegerType) -> IntegerType {
     unimplemented!()
 }
 
 // Fixed-width mul
+#[rustc_diagnostic_item = "verus::builtin::mul"]
 #[verifier::spec]
 pub fn mul<IntegerType: Integer>(_left: IntegerType, _right: IntegerType) -> IntegerType {
     unimplemented!()
 }
 
 // represent "expr as typ", including converting to and from int and nat
+#[rustc_diagnostic_item = "verus::builtin::spec_cast_integer"]
 #[verifier::spec]
 pub fn spec_cast_integer<From: Integer, To: Integer>(_from: From) -> To {
     unimplemented!()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::spec_eq"]
 #[verifier::spec]
 pub fn spec_eq<Lhs, Rhs>(_lhs: Lhs, _rhs: Rhs) -> bool {
     unimplemented!()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::SpecOrd"]
 pub trait SpecOrd<Rhs = Self> {
+    #[rustc_diagnostic_item = "verus::builtin::SpecOrd::spec_lt"]
     #[verifier::spec]
     fn spec_lt(self, rhs: Rhs) -> bool;
+    #[rustc_diagnostic_item = "verus::builtin::SpecOrd::spec_le"]
     #[verifier::spec]
     fn spec_le(self, rhs: Rhs) -> bool;
+    #[rustc_diagnostic_item = "verus::builtin::SpecOrd::spec_gt"]
     #[verifier::spec]
     fn spec_gt(self, rhs: Rhs) -> bool;
+    #[rustc_diagnostic_item = "verus::builtin::SpecOrd::spec_ge"]
     #[verifier::spec]
     fn spec_ge(self, rhs: Rhs) -> bool;
 }
 
 pub trait SpecNeg {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecNeg::spec_neg"]
     #[verifier::spec]
     fn spec_neg(self) -> Self::Output;
 }
 
 pub trait SpecAdd<Rhs = Self> {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecAdd::spec_add"]
     #[verifier::spec]
     fn spec_add(self, rhs: Rhs) -> Self::Output;
 }
 
 pub trait SpecSub<Rhs = Self> {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecSub::spec_sub"]
     #[verifier::spec]
     fn spec_sub(self, rhs: Rhs) -> Self::Output;
 }
 
 pub trait SpecMul<Rhs = Self> {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecMul::spec_mul"]
     #[verifier::spec]
     fn spec_mul(self, rhs: Rhs) -> Self::Output;
 }
 
 pub trait SpecEuclideanDiv<Rhs = Self> {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecEuclideanDiv::spec_euclidean_div"]
     #[verifier::spec]
     fn spec_euclidean_div(self, rhs: Rhs) -> Self::Output;
 }
 
 pub trait SpecEuclideanMod<Rhs = Self> {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecEuclideanMod::spec_euclidean_mod"]
     #[verifier::spec]
     fn spec_euclidean_mod(self, rhs: Rhs) -> Self::Output;
 }
 
 pub trait SpecBitAnd<Rhs = Self> {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecBitAnd::spec_bitand"]
     #[verifier::spec]
     fn spec_bitand(self, rhs: Rhs) -> Self::Output;
 }
 
 pub trait SpecBitOr<Rhs = Self> {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecBitOr::spec_bitor"]
     #[verifier::spec]
     fn spec_bitor(self, rhs: Rhs) -> Self::Output;
 }
 
 pub trait SpecBitXor<Rhs = Self> {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecBitXor::spec_bitxor"]
     #[verifier::spec]
     fn spec_bitxor(self, rhs: Rhs) -> Self::Output;
 }
 
 pub trait SpecShl<Rhs = Self> {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecShl::spec_shl"]
     #[verifier::spec]
     fn spec_shl(self, rhs: Rhs) -> Self::Output;
 }
 
 pub trait SpecShr<Rhs = Self> {
     type Output;
+    #[rustc_diagnostic_item = "verus::builtin::SpecShr::spec_shr"]
     #[verifier::spec]
     fn spec_shr(self, rhs: Rhs) -> Self::Output;
 }
@@ -771,31 +848,37 @@ pub struct SpecChain {
     data: PhantomData<int>,
 }
 
+#[rustc_diagnostic_item = "verus::builtin::spec_chained_value"]
 #[verifier::spec]
 pub fn spec_chained_value<IntegerType: Integer>(_a: IntegerType) -> SpecChain {
     unimplemented!()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::spec_chained_le"]
 #[verifier::spec]
 pub fn spec_chained_le<IntegerType: Integer>(_left: SpecChain, _right: IntegerType) -> SpecChain {
     unimplemented!()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::spec_chained_lt"]
 #[verifier::spec]
 pub fn spec_chained_lt<IntegerType: Integer>(_left: SpecChain, _right: IntegerType) -> SpecChain {
     unimplemented!()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::spec_chained_ge"]
 #[verifier::spec]
 pub fn spec_chained_ge<IntegerType: Integer>(_left: SpecChain, _right: IntegerType) -> SpecChain {
     unimplemented!()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::spec_chained_gt"]
 #[verifier::spec]
 pub fn spec_chained_gt<IntegerType: Integer>(_left: SpecChain, _right: IntegerType) -> SpecChain {
     unimplemented!()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::spec_chained_cmp"]
 #[verifier::spec]
 pub fn spec_chained_cmp(_chain: SpecChain) -> bool {
     unimplemented!()
@@ -969,25 +1052,25 @@ impl_binary_op_rhs!(SpecShr, spec_shr, Self, Self, [
     isize i8 i16 i32 i64 i128
 ]);
 
-#[rustc_diagnostic_item = "builtin::strslice_is_ascii"]
+#[rustc_diagnostic_item = "verus::builtin::strslice_is_ascii"]
 #[verifier::spec]
 pub fn strslice_is_ascii<A>(_a: A) -> bool {
     unimplemented!()
 }
 
-#[rustc_diagnostic_item = "builtin::strslice_len"]
+#[rustc_diagnostic_item = "verus::builtin::strslice_len"]
 #[verifier::spec]
 pub fn strslice_len<A>(_a: A) -> nat {
     unimplemented!()
 }
 
-#[rustc_diagnostic_item = "builtin::strslice_get_char"]
+#[rustc_diagnostic_item = "verus::builtin::strslice_get_char"]
 #[verifier::spec]
 pub fn strslice_get_char<A>(_a: A, _i: int) -> char {
     unimplemented!()
 }
 
-#[rustc_diagnostic_item = "builtin::reveal_strlit"]
+#[rustc_diagnostic_item = "verus::builtin::reveal_strlit"]
 #[verifier::proof]
 pub fn reveal_strlit<A>(_a: A) {
     unimplemented!()
@@ -1016,7 +1099,7 @@ impl<Args: core::marker::Tuple, Output> Fn<Args> for FnSpec<Args, Output> {
     }
 }
 
-#[rustc_diagnostic_item = "builtin::closure_to_fn_spec"]
+#[rustc_diagnostic_item = "verus::builtin::closure_to_fn_spec"]
 pub fn closure_to_fn_spec<Args: core::marker::Tuple, F: FnOnce<Args>>(
     _f: F,
 ) -> FnSpec<Args, F::Output> {
@@ -1032,29 +1115,35 @@ pub trait FnWithSpecification<Args> {
 impl<Args: core::marker::Tuple, F: FnOnce<Args>> FnWithSpecification<Args> for F {
     type Output = F::Output;
 
+    #[rustc_diagnostic_item = "verus::builtin::FnWithSpecification::requires"]
     fn requires(&self, _args: Args) -> bool {
         unimplemented!();
     }
 
+    #[rustc_diagnostic_item = "verus::builtin::FnWithSpecification::ensures"]
     fn ensures(&self, _args: Args, _output: Self::Output) -> bool {
         unimplemented!();
     }
 }
 
 // Intrinsics defined in the AIR prelude related to word-sizes and bounded ints
+#[rustc_diagnostic_item = "verus::builtin::unsigned_max"]
 pub fn unsigned_max(_word_bits: nat) -> nat {
     unimplemented!();
 }
+#[rustc_diagnostic_item = "verus::builtin::signed_min"]
 pub fn signed_min(_word_bits: nat) -> nat {
     unimplemented!();
 }
+#[rustc_diagnostic_item = "verus::builtin::signed_max"]
 pub fn signed_max(_word_bits: nat) -> nat {
     unimplemented!();
 }
+#[rustc_diagnostic_item = "verus::builtin::arch_word_bits"]
 pub fn arch_word_bits() -> nat {
     unimplemented!();
 }
-
+#[rustc_diagnostic_item = "verus::builtin::height"]
 pub fn height<A>(_a: A) -> nat {
     unimplemented!();
 }

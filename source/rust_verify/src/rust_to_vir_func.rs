@@ -18,7 +18,7 @@ use rustc_middle::ty::Predicate;
 use rustc_middle::ty::SubstsRef;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::DefId;
-use rustc_span::symbol::{Ident, Symbol};
+use rustc_span::symbol::Ident;
 use rustc_span::Span;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -67,7 +67,7 @@ pub(crate) fn body_to_vir<'tcx>(
 
 fn check_fn_decl<'tcx>(
     span: Span,
-    tcx: TyCtxt<'tcx>,
+    ctxt: &Context<'tcx>,
     decl: &'tcx FnDecl<'tcx>,
     attrs: &[Attribute],
     mode: Mode,
@@ -88,7 +88,7 @@ fn check_fn_decl<'tcx>(
         // so we always return the default mode.
         // The current workaround is to return a struct if the default doesn't work.
         rustc_hir::FnRetTy::Return(_ty) => {
-            let typ = mid_ty_to_vir(tcx, span, &output_ty, false)?;
+            let typ = mid_ty_to_vir(ctxt.tcx, &ctxt.verus_items, span, &output_ty, false)?;
             Ok(Some((typ, get_ret_mode(mode, attrs))))
         }
     }
@@ -155,7 +155,7 @@ fn check_new_strlit<'tcx>(ctx: &Context<'tcx>, sig: &'tcx FnSig<'tcx>) -> Result
         _ => return err_span(span, format!("")),
     };
 
-    if !ctx.tcx.is_diagnostic_item(Symbol::intern("pervasive::string::StrSlice"), id) {
+    if ctx.verus_items.id_to_name.get(&id) != Some(&crate::verus_items::VerusItem::Pervasive(crate::verus_items::PervasiveItem::StrSlice)) {
         return err_span(span, format!("expected a StrSlice"));
     }
     Ok(())
@@ -300,7 +300,8 @@ pub(crate) fn check_item_fn<'tcx>(
 
     let is_verus_spec = this_path.segments.last().expect("segment.last").starts_with(VERUS_SPEC);
     let is_new_strlit =
-        ctxt.tcx.is_diagnostic_item(Symbol::intern("pervasive::string::new_strlit"), id);
+        ctxt.verus_items.id_to_name.get(&id) ==
+        Some(&crate::verus_items::VerusItem::CompilableOpr(crate::verus_items::CompilableOprItem::NewStrLit));
 
     let vattrs = get_verifier_attrs(attrs)?;
     let mode = get_mode(Mode::Exec, attrs);
@@ -357,7 +358,7 @@ pub(crate) fn check_item_fn<'tcx>(
             span: _,
         } => {
             unsupported_err_unless!(*unsafety == Unsafety::Normal, sig.span, "unsafe");
-            check_fn_decl(sig.span, ctxt.tcx, decl, attrs, mode, fn_sig.output())?
+            check_fn_decl(sig.span, ctxt, decl, attrs, mode, fn_sig.output())?
         }
     };
 
@@ -438,7 +439,7 @@ pub(crate) fn check_item_fn<'tcx>(
         }
 
         let typ =
-            mid_ty_to_vir(ctxt.tcx, span, is_ref_mut.map(|(t, _)| t).unwrap_or(input), false)?;
+            mid_ty_to_vir(ctxt.tcx, &ctxt.verus_items, span, is_ref_mut.map(|(t, _)| t).unwrap_or(input), false)?;
 
         // is_mut: means a parameter is like `x: &mut X` or `x: Tracked<&mut X>`
         let is_mut = is_ref_mut.is_some();
@@ -912,7 +913,7 @@ pub(crate) fn check_foreign_item_fn<'tcx>(
     let fn_sig = fn_sig.skip_binder();
     let inputs = fn_sig.inputs();
 
-    let ret_typ_mode = check_fn_decl(span, ctxt.tcx, decl, attrs, mode, fn_sig.output())?;
+    let ret_typ_mode = check_fn_decl(span, ctxt, decl, attrs, mode, fn_sig.output())?;
     let typ_bounds = check_generics_bounds_fun(ctxt.tcx, generics, id)?;
     let vattrs = get_verifier_attrs(attrs)?;
     let fuel = get_fuel(&vattrs);
@@ -930,7 +931,7 @@ pub(crate) fn check_foreign_item_fn<'tcx>(
         let name = Arc::new(foreign_param_to_var(param));
         let is_mut = is_mut_ty(ctxt, *input);
         let typ =
-            mid_ty_to_vir(ctxt.tcx, param.span, is_mut.map(|(t, _)| t).unwrap_or(input), false)?;
+            mid_ty_to_vir(ctxt.tcx, &ctxt.verus_items, param.span, is_mut.map(|(t, _)| t).unwrap_or(input), false)?;
         // REVIEW: the parameters don't have attributes, so we use the overall mode
         let vir_param = ctxt.spanned_new(
             param.span,

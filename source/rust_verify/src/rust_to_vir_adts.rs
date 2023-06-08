@@ -6,12 +6,12 @@ use crate::rust_to_vir_base::{
 };
 use crate::unsupported_err_unless;
 use crate::util::{err_span, unsupported_err_span};
+use crate::verus_items::{VerusItem, PervasiveItem};
 use air::ast_util::str_ident;
 use rustc_ast::Attribute;
 use rustc_hir::{EnumDef, Generics, ItemId, VariantData};
 use rustc_middle::ty::{SubstsRef, TyKind};
 use rustc_span::Span;
-use rustc_span::Symbol;
 use std::sync::Arc;
 use vir::ast::{DatatypeTransparency, DatatypeX, Ident, KrateX, Mode, Path, Variant, VirErr};
 use vir::ast_util::ident_binder;
@@ -81,7 +81,7 @@ where
             str_ident(&field_def_ident.as_str())
         };
 
-        let typ = mid_ty_to_vir(ctxt.tcx, span, &field_ty, false)?;
+        let typ = mid_ty_to_vir(ctxt.tcx, &ctxt.verus_items, span, &field_ty, false)?;
         let mode = match hir_field_def_opt {
             Some(hir_field_def) => get_mode(Mode::Exec, ctxt.tcx.hir().attrs(hir_field_def.hir_id)),
             None => Mode::Exec,
@@ -119,8 +119,8 @@ pub fn check_item_struct<'tcx>(
     let vattrs = get_verifier_attrs(attrs)?;
 
     let is_strslice_struct = ctxt
-        .tcx
-        .is_diagnostic_item(Symbol::intern("pervasive::string::StrSlice"), id.owner_id.to_def_id());
+        .verus_items.id_to_name.get(&id.owner_id.to_def_id()) ==
+        Some(&VerusItem::Pervasive(PervasiveItem::StrSlice));
 
     if is_strslice_struct {
         if vattrs.external_type_specification {

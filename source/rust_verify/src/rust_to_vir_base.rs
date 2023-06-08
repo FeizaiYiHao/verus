@@ -1,6 +1,7 @@
 use crate::attributes::get_verifier_attrs;
 use crate::context::{BodyCtxt, Context};
 use crate::util::{err_span, unsupported_err_span};
+use crate::verus_items::VerusItem;
 use crate::{unsupported_err, unsupported_err_unless};
 use rustc_ast::{ByRef, Mutability};
 use rustc_hir::definitions::DefPath;
@@ -12,7 +13,7 @@ use rustc_middle::ty::{AdtDef, TyCtxt, TyKind};
 use rustc_middle::ty::{BoundConstness, Clause, ImplPolarity, PredicateKind, TraitPredicate};
 use rustc_span::def_id::{DefId, LOCAL_CRATE};
 use rustc_span::symbol::{kw, Ident};
-use rustc_span::{Span, Symbol};
+use rustc_span::Span;
 use rustc_trait_selection::infer::InferCtxtExt;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -313,6 +314,7 @@ pub(crate) fn mid_ty_simplify<'tcx>(
 // returns VIR Typ and whether Ghost/Tracked was erased from around the outside of the VIR Typ
 pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
     tcx: TyCtxt<'tcx>,
+    verus_items: &crate::verus_items::VerusItems,
     span: Span,
     ty: &rustc_middle::ty::Ty<'tcx>,
     as_datatype: bool,
@@ -323,11 +325,11 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
         TyKind::Bool => (Arc::new(TypX::Bool), false),
         TyKind::Uint(_) | TyKind::Int(_) => (Arc::new(TypX::Int(mk_range(tcx, ty))), false),
         TyKind::Ref(_, tys, rustc_ast::Mutability::Not) => {
-            let (t0, ghost) = mid_ty_to_vir_ghost(tcx, span, tys, as_datatype, allow_mut_ref)?;
+            let (t0, ghost) = mid_ty_to_vir_ghost(tcx, verus_items, span, tys, as_datatype, allow_mut_ref)?;
             (Arc::new(TypX::Decorate(TypDecoration::Ref, t0.clone())), ghost)
         }
         TyKind::Ref(_, tys, rustc_ast::Mutability::Mut) if allow_mut_ref => {
-            let (t0, ghost) = mid_ty_to_vir_ghost(tcx, span, tys, as_datatype, allow_mut_ref)?;
+            let (t0, ghost) = mid_ty_to_vir_ghost(tcx, verus_items, span, tys, as_datatype, allow_mut_ref)?;
             (Arc::new(TypX::Decorate(TypDecoration::MutRef, t0.clone())), ghost)
         }
         TyKind::Param(param) if param.name == kw::SelfUpper => {
@@ -344,19 +346,20 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
         TyKind::Tuple(_) => {
             let mut typs: Vec<Typ> = Vec::new();
             for t in ty.tuple_fields().iter() {
-                typs.push(mid_ty_to_vir_ghost(tcx, span, &t, as_datatype, allow_mut_ref)?.0);
+                typs.push(mid_ty_to_vir_ghost(tcx, verus_items, span, &t, as_datatype, allow_mut_ref)?.0);
             }
             (Arc::new(TypX::Tuple(Arc::new(typs))), false)
         }
         TyKind::Slice(ty) => {
-            let typ = mid_ty_to_vir_ghost(tcx, span, ty, as_datatype, allow_mut_ref)?.0;
+            let typ = mid_ty_to_vir_ghost(tcx, verus_items, span, ty, as_datatype, allow_mut_ref)?.0;
             let typs = Arc::new(vec![typ]);
             (Arc::new(TypX::Datatype(vir::def::slice_type(), typs)), false)
         }
         TyKind::Adt(AdtDef(adt_def_data), args) => {
             let did = adt_def_data.did;
             let is_strslice =
-                tcx.is_diagnostic_item(Symbol::intern("pervasive::string::StrSlice"), did);
+                verus_items.id_to_name.get(&did) ==
+                    Some(&crate::verus_items::VerusItem::Pervasive(crate::verus_items::PervasiveItem::StrSlice));
             if is_strslice && !as_datatype {
                 return Ok((Arc::new(TypX::StrSlice), false));
             }
@@ -373,6 +376,7 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
                         rustc_middle::ty::subst::GenericArgKind::Type(t) => {
                             typ_args.push(mid_ty_to_vir_ghost(
                                 tcx,
+                                verus_items,
                                 span,
                                 &t,
                                 as_datatype,
@@ -423,7 +427,7 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
             let sig = substs.as_closure().sig();
             let mut args: Vec<Typ> = Vec::new();
             for t in sig.inputs().skip_binder().iter() {
-                args.push(mid_ty_to_vir_ghost(tcx, span, t, as_datatype, allow_mut_ref)?.0);
+                args.push(mid_ty_to_vir_ghost(tcx, verus_items, span, t, as_datatype, allow_mut_ref)?.0);
             }
             assert!(args.len() == 1);
             let args = match &*args[0] {
@@ -433,6 +437,7 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
 
             let ret = mid_ty_to_vir_ghost(
                 tcx,
+                verus_items,
                 span,
                 &sig.output().skip_binder(),
                 as_datatype,
@@ -467,20 +472,22 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
 
 pub(crate) fn mid_ty_to_vir_datatype<'tcx>(
     tcx: TyCtxt<'tcx>,
+    verus_items: &crate::verus_items::VerusItems,
     span: Span,
     ty: rustc_middle::ty::Ty<'tcx>,
     allow_mut_ref: bool,
 ) -> Result<Typ, VirErr> {
-    Ok(mid_ty_to_vir_ghost(tcx, span, &ty, true, allow_mut_ref)?.0)
+    Ok(mid_ty_to_vir_ghost(tcx, verus_items, span, &ty, true, allow_mut_ref)?.0)
 }
 
 pub(crate) fn mid_ty_to_vir<'tcx>(
     tcx: TyCtxt<'tcx>,
+    verus_items: &crate::verus_items::VerusItems,
     span: Span,
     ty: &rustc_middle::ty::Ty<'tcx>,
     allow_mut_ref: bool,
 ) -> Result<Typ, VirErr> {
-    Ok(mid_ty_to_vir_ghost(tcx, span, ty, false, allow_mut_ref)?.0)
+    Ok(mid_ty_to_vir_ghost(tcx, verus_items, span, ty, false, allow_mut_ref)?.0)
 }
 
 pub(crate) fn mid_ty_const_to_vir<'tcx>(
@@ -548,7 +555,7 @@ pub(crate) fn typ_of_node<'tcx>(
     id: &HirId,
     allow_mut_ref: bool,
 ) -> Result<Typ, VirErr> {
-    mid_ty_to_vir(bctx.ctxt.tcx, span, &bctx.types.node_type(*id), allow_mut_ref)
+    mid_ty_to_vir(bctx.ctxt.tcx, &bctx.ctxt.verus_items, span, &bctx.types.node_type(*id), allow_mut_ref)
 }
 
 pub(crate) fn typ_of_node_expect_mut_ref<'tcx>(
@@ -558,29 +565,28 @@ pub(crate) fn typ_of_node_expect_mut_ref<'tcx>(
 ) -> Result<Typ, VirErr> {
     let ty = bctx.types.node_type(*id);
     if let TyKind::Ref(_, _tys, rustc_ast::Mutability::Mut) = ty.kind() {
-        mid_ty_to_vir(bctx.ctxt.tcx, span, &ty, true)
+        mid_ty_to_vir(bctx.ctxt.tcx, &bctx.ctxt.verus_items, span, &ty, true)
     } else {
         err_span(span, "a mutable reference is expected here")
     }
 }
 
 pub(crate) fn implements_structural<'tcx>(
-    tcx: TyCtxt<'tcx>,
+    ctxt: &Context<'tcx>,
     ty: rustc_middle::ty::Ty<'tcx>,
 ) -> bool {
-    let structural_def_id = tcx
-        .get_diagnostic_item(rustc_span::Symbol::intern("builtin::Structural"))
+    let structural_def_id = ctxt.verus_items.name_to_id.get(&VerusItem::Marker(crate::verus_items::MarkerItem::Structural))
         .expect("structural trait is not defined");
 
     use crate::rustc_middle::ty::TypeVisitable;
-    let infcx = tcx.infer_ctxt().build(); // TODO(main_new) correct?
-    let ty = tcx.erase_regions(ty);
+    let infcx = ctxt.tcx.infer_ctxt().build(); // TODO(main_new) correct?
+    let ty = ctxt.tcx.erase_regions(ty);
     if ty.has_escaping_bound_vars() {
         return false;
     }
     let ty_impls_structural = infcx
         .type_implements_trait(
-            structural_def_id,
+            *structural_def_id,
             vec![ty].into_iter(),
             rustc_middle::ty::ParamEnv::empty(),
         )
@@ -602,7 +608,7 @@ pub(crate) fn is_smt_equality<'tcx>(
         (TypX::Char, TypX::Char) => Ok(true),
         (TypX::Datatype(..), TypX::Datatype(..)) if types_equal(&t1, &t2) => {
             let ty = bctx.types.node_type(*id1);
-            Ok(implements_structural(bctx.ctxt.tcx, ty))
+            Ok(implements_structural(&bctx.ctxt, ty))
         }
         _ => Ok(false),
     }

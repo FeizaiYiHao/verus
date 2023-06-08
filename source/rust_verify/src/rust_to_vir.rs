@@ -245,7 +245,7 @@ fn check_item<'tcx>(
             }
 
             let self_ty = ctxt.tcx.type_of(item.owner_id.to_def_id());
-            let self_typ = mid_ty_to_vir(ctxt.tcx, item.span, &self_ty, false)?;
+            let self_typ = mid_ty_to_vir(ctxt.tcx, &ctxt.verus_items, item.span, &self_ty, false)?;
 
             let trait_path_typ_args = if let Some(TraitRef { path, .. }) = &impll.of_trait {
                 let trait_ref =
@@ -254,7 +254,7 @@ fn check_item<'tcx>(
                 // So to get the type args, we strip off the first element.
                 let mut types: Vec<Typ> = Vec::new();
                 for ty in trait_ref.0.substs.types().skip(1) {
-                    types.push(mid_ty_to_vir(ctxt.tcx, impll.generics.span, &ty, false)?);
+                    types.push(mid_ty_to_vir(ctxt.tcx, &ctxt.verus_items, impll.generics.span, &ty, false)?);
                 }
                 let path = def_id_to_vir_path(ctxt.tcx, path.res.def_id());
                 Some((path, Arc::new(types)))
@@ -387,7 +387,7 @@ fn check_item<'tcx>(
             }
 
             let mid_ty = ctxt.tcx.type_of(def_id);
-            let vir_ty = mid_ty_to_vir(ctxt.tcx, item.span, &mid_ty, false)?;
+            let vir_ty = mid_ty_to_vir(ctxt.tcx, &ctxt.verus_items, item.span, &mid_ty, false)?;
 
             crate::rust_to_vir_func::check_item_const(
                 ctxt,

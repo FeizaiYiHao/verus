@@ -253,18 +253,22 @@ pub struct InvariantBlockGuard;
 //  The purpose of the `guard` object, used below, is to ensure the borrow on `i` will
 //  last the entire block.
 
+
+#[rustc_diagnostic_item = "verus::pervasive::invariant::open_atomic_invariant_begin"]
 #[doc(hidden)]
 #[verifier::external] /* vattr */
 pub fn open_atomic_invariant_begin<'a, K, V, Pred: InvariantPredicate<K, V>>(_inv: &'a AtomicInvariant<K, V, Pred>) -> (&'a InvariantBlockGuard, V) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::pervasive::invariant::open_local_invariant_begin"]
 #[doc(hidden)]
 #[verifier::external] /* vattr */
 pub fn open_local_invariant_begin<'a, K, V, Pred: InvariantPredicate<K, V>>(_inv: &'a LocalInvariant<K, V, Pred>) -> (&'a InvariantBlockGuard, V) {
     unimplemented!();
 }
 
+#[rustc_diagnostic_item = "verus::pervasive::invariant::open_invariant_end"]
 #[doc(hidden)]
 #[verifier::external] /* vattr */
 pub fn open_invariant_end<V>(_guard: &InvariantBlockGuard, _v: V) {

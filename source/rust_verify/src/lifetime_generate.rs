@@ -5,6 +5,7 @@ use crate::rust_to_vir_base::{
     def_id_to_vir_path, local_to_var, mid_ty_const_to_vir, mid_ty_to_vir_datatype,
 };
 use crate::rust_to_vir_expr::get_adt_res;
+use crate::verus_items::VerusItems;
 use air::ast::AstId;
 use air::ast_util::str_ident;
 use rustc_ast::{BorrowKind, IsAuto, Mutability};
@@ -41,6 +42,7 @@ impl TypX {
 
 struct Context<'tcx> {
     tcx: TyCtxt<'tcx>,
+    verus_items: Arc<VerusItems>,
     types_opt: Option<&'tcx TypeckResults<'tcx>>,
     /// Map each function path to its VIR Function, or to None if it is a #[verifier(external)]
     /// function
@@ -811,7 +813,7 @@ fn erase_inv_block<'tcx>(
     let open_stmt = &body.stmts[0];
     let mid_stmt = &body.stmts[1];
     let (_guard_hir, _inner_hir, inner_pat, arg, atomicity) =
-        crate::rust_to_vir_expr::invariant_block_open(ctxt.tcx, open_stmt)
+        crate::rust_to_vir_expr::invariant_block_open(&ctxt.verus_items, open_stmt)
             .expect("invariant_block_open");
     let pat_typ = erase_ty(ctxt, state, &ctxt.types().node_type(inner_pat.hir_id));
     let inner_pat = erase_pat(ctxt, state, inner_pat);
@@ -944,6 +946,7 @@ fn erase_expr<'tcx>(
             let fn_def_id = ctxt.types().type_dependent_def_id(expr.hir_id).expect("method id");
             let rcvr_typ = mid_ty_to_vir_datatype(
                 ctxt.tcx,
+                &ctxt.verus_items,
                 receiver.span,
                 ctxt.types().node_type(receiver.hir_id),
                 true,
@@ -1801,11 +1804,13 @@ fn erase_mir_datatype<'tcx>(ctxt: &Context<'tcx>, state: &mut State, id: DefId) 
 
 pub(crate) fn gen_check_tracked_lifetimes<'tcx>(
     tcx: TyCtxt<'tcx>,
+    verus_items: Arc<VerusItems>,
     krate: &'tcx Crate<'tcx>,
     erasure_hints: &ErasureHints,
 ) -> State {
     let mut ctxt = Context {
         tcx,
+        verus_items,
         types_opt: None,
         functions: HashMap::new(),
         datatypes: HashMap::new(),

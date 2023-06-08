@@ -50,4 +50,6 @@ pub mod rust_to_vir_func;
 pub mod singular;
 mod spans;
 pub mod util;
+mod verus_intrinsics_to_vir;
+pub mod verus_items;
 pub mod verifier;

@@ -11,6 +11,7 @@ use crate::rust_to_vir_base::{
     typ_of_node_expect_mut_ref,
 };
 use crate::util::{err_span, slice_vec_map_result, unsupported_err_span, vec_map, vec_map_result};
+use crate::verus_items::{VerusItem, SpecItem, QuantItem, DirectiveItem, ExprItem, CompilableOprItem, self, RustItem, BinaryOpItem, EqualityItem, SpecOrdItem, ArithItem, SpecArithItem, ChainedItem, AssertItem, UnaryOpItem, SpecLiteralItem, SpecGhostTrackedItem, OpenInvariantBlockItem};
 use crate::{unsupported_err, unsupported_err_unless};
 use air::ast::{Binder, BinderX};
 use air::ast_util::str_ident;
@@ -20,14 +21,12 @@ use rustc_hir::{
     BinOpKind, BindingAnnotation, Block, Closure, Destination, Expr, ExprKind, Guard, HirId, Let,
     Local, LoopSource, Node, Pat, PatKind, QPath, Stmt, StmtKind, UnOp,
 };
-
 use crate::rust_intrinsics_to_vir::int_intrinsic_constant_to_vir;
 use rustc_middle::ty::subst::GenericArgKind;
 use rustc_middle::ty::DefIdTree;
 use rustc_middle::ty::{AdtDef, Clause, EarlyBinder, PredicateKind, TyCtxt, TyKind, VariantDef};
 use rustc_span::def_id::DefId;
 use rustc_span::source_map::Spanned;
-use rustc_span::symbol::Symbol;
 use rustc_span::Span;
 use std::sync::Arc;
 use vir::ast::{
@@ -105,6 +104,7 @@ fn closure_param_typs<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &Expr<'tcx>) -> Result<
             for t in sig.inputs().skip_binder().iter() {
                 args.push(mid_ty_to_vir(
                     bctx.ctxt.tcx,
+                    &bctx.ctxt.verus_items,
                     expr.span,
                     t,
                     false, /* allow_mut_ref */
@@ -126,7 +126,7 @@ fn closure_ret_typ<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &Expr<'tcx>) -> Result<Typ
         TyKind::Closure(_def, substs) => {
             let sig = substs.as_closure().sig();
             let t = sig.output().skip_binder();
-            mid_ty_to_vir(bctx.ctxt.tcx, expr.span, &t, false /* allow_mut_ref */)
+            mid_ty_to_vir(bctx.ctxt.tcx, &bctx.ctxt.verus_items, expr.span, &t, false /* allow_mut_ref */)
         }
         _ => panic!("closure_param_types expected Closure type"),
     }
@@ -297,7 +297,7 @@ fn extract_choose<'tcx>(
                 ExprX::Choose { params, cond, body },
             ))
         }
-        _ => err_span(expr.span, "argument to choose must be a closure"),
+        _ => { dbg!(&expr); err_span(expr.span, "argument to choose must be a closure") },
     }
 }
 
@@ -454,10 +454,6 @@ fn get_fn_path<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &Expr<'tcx>) -> Result<vir::as
     }
 }
 
-const BUILTIN_INV_LOCAL_BEGIN: &str = "invariant::open_local_invariant_begin";
-const BUILTIN_INV_ATOMIC_BEGIN: &str = "invariant::open_atomic_invariant_begin";
-const BUILTIN_INV_END: &str = "invariant::open_invariant_end";
-
 fn fn_call_to_vir<'tcx>(
     bctx: &BodyCtxt<'tcx>,
     expr: &Expr<'tcx>,
@@ -479,165 +475,38 @@ fn fn_call_to_vir<'tcx>(
         path_str
     };
 
-    let is_admit = f_name == "builtin::admit";
-    let is_no_method_body = f_name == "builtin::no_method_body";
-    let is_requires = f_name == "builtin::requires";
-    let is_recommends = f_name == "builtin::recommends";
-    let is_ensures = f_name == "builtin::ensures";
-    let is_invariant = f_name == "builtin::invariant";
-    let is_invariant_ensures = f_name == "builtin::invariant_ensures";
-    let is_decreases = f_name == "builtin::decreases";
-    let is_decreases_when = f_name == "builtin::decreases_when";
-    let is_decreases_by = f_name == "builtin::decreases_by" || f_name == "builtin::recommends_by";
-    let is_opens_invariants_none = f_name == "builtin::opens_invariants_none";
-    let is_opens_invariants_any = f_name == "builtin::opens_invariants_any";
-    let is_opens_invariants = f_name == "builtin::opens_invariants";
-    let is_opens_invariants_except = f_name == "builtin::opens_invariants_except";
-    let is_forall = f_name == "builtin::forall";
-    let is_exists = f_name == "builtin::exists";
-    let is_forall_arith = f_name == "builtin::forall_arith";
-    let is_choose = f_name == "builtin::choose";
-    let is_choose_tuple = f_name == "builtin::choose_tuple";
-    let is_with_triggers = f_name == "builtin::with_triggers";
-    let is_equal = f_name == "builtin::equal";
-    let is_ext_equal = f_name == "builtin::ext_equal";
-    let is_ext_equal_deep = f_name == "builtin::ext_equal_deep";
-    let is_chained_value = f_name == "builtin::spec_chained_value";
-    let is_chained_le = f_name == "builtin::spec_chained_le";
-    let is_chained_lt = f_name == "builtin::spec_chained_lt";
-    let is_chained_ge = f_name == "builtin::spec_chained_ge";
-    let is_chained_gt = f_name == "builtin::spec_chained_gt";
-    let is_chained_cmp = f_name == "builtin::spec_chained_cmp";
-    let is_hide = f_name == "builtin::hide";
-    let is_extra_dependency = f_name == "builtin::extra_dependency";
-    let is_reveal = f_name == "builtin::reveal";
-    let is_reveal_fuel = f_name == "builtin::reveal_with_fuel";
-    let is_implies = f_name == "builtin::imply";
-    let is_assume = f_name == "builtin::assume_";
-    let is_assert = f_name == "builtin::assert_";
-    let is_assert_by = f_name == "builtin::assert_by";
-    let is_assert_by_compute = f_name == "builtin::assert_by_compute";
-    let is_assert_by_compute_only = f_name == "builtin::assert_by_compute_only";
-    let is_assert_nonlinear_by = f_name == "builtin::assert_nonlinear_by";
-    let is_assert_bitvector_by = f_name == "builtin::assert_bitvector_by";
-    let is_assert_forall_by = f_name == "builtin::assert_forall_by";
-    let is_assert_bit_vector = f_name == "builtin::assert_bit_vector";
-    let is_old = f_name == "builtin::old";
-    let is_eq = f_name == "core::cmp::PartialEq::eq";
-    let is_ne = f_name == "core::cmp::PartialEq::ne";
-    let is_le = f_name == "core::cmp::PartialOrd::le";
-    let is_ge = f_name == "core::cmp::PartialOrd::ge";
-    let is_lt = f_name == "core::cmp::PartialOrd::lt";
-    let is_gt = f_name == "core::cmp::PartialOrd::gt";
-    let is_builtin_add = f_name == "builtin::add";
-    let is_builtin_sub = f_name == "builtin::sub";
-    let is_builtin_mul = f_name == "builtin::mul";
-    let is_add = f_name == "std::ops::Add::add";
-    let is_sub = f_name == "std::ops::Sub::sub";
-    let is_mul = f_name == "std::ops::Mul::mul";
-    let is_spec_eq = f_name == "builtin::spec_eq";
-    let is_spec_le = f_name == "builtin::SpecOrd::spec_le";
-    let is_spec_ge = f_name == "builtin::SpecOrd::spec_ge";
-    let is_spec_lt = f_name == "builtin::SpecOrd::spec_lt";
-    let is_spec_gt = f_name == "builtin::SpecOrd::spec_gt";
-    let is_spec_neg = f_name == "builtin::SpecNeg::spec_neg";
-    let is_spec_add = f_name == "builtin::SpecAdd::spec_add";
-    let is_spec_sub = f_name == "builtin::SpecSub::spec_sub";
-    let is_spec_mul = f_name == "builtin::SpecMul::spec_mul";
-    let is_spec_euclidean_div = f_name == "builtin::SpecEuclideanDiv::spec_euclidean_div";
-    let is_spec_euclidean_mod = f_name == "builtin::SpecEuclideanMod::spec_euclidean_mod";
-    let is_spec_bitand = f_name == "builtin::SpecBitAnd::spec_bitand";
-    let is_spec_bitor = f_name == "builtin::SpecBitOr::spec_bitor";
-    let is_spec_bitxor = f_name == "builtin::SpecBitXor::spec_bitxor";
-    let is_spec_shl = f_name == "builtin::SpecShl::spec_shl";
-    let is_spec_shr = f_name == "builtin::SpecShr::spec_shr";
-    let is_spec_literal_integer = f_name == "builtin::spec_literal_integer";
-    let is_spec_literal_int = f_name == "builtin::spec_literal_int";
-    let is_spec_literal_nat = f_name == "builtin::spec_literal_nat";
-    let is_spec_cast_integer = f_name == "builtin::spec_cast_integer";
-    let is_panic = f_name == "core::panicking::panic";
-    let is_ghost_view = f_name == "builtin::Ghost::<A>::view";
-    let is_ghost_borrow = f_name == "builtin::Ghost::<A>::borrow";
-    let is_ghost_borrow_mut = f_name == "builtin::Ghost::<A>::borrow_mut";
-    let is_ghost_new = f_name == "builtin::Ghost::<A>::new";
-    let is_ghost_exec = f_name == "builtin::ghost_exec";
+    let verus_item = bctx.ctxt.get_verus_item(f);
+    let rust_item = verus_items::get_rust_item(tcx, f);
+
+    // TODO these are broken (they sometimes appear as std::cmp::*); do we need them?
+    // let is_eq = f_name == "core::cmp::PartialEq::eq";
+    // let is_ne = f_name == "core::cmp::PartialEq::ne";
+    // let is_le = f_name == "core::cmp::PartialOrd::le";
+    // let is_ge = f_name == "core::cmp::PartialOrd::ge";
+    // let is_lt = f_name == "core::cmp::PartialOrd::lt";
+    // let is_gt = f_name == "core::cmp::PartialOrd::gt";
+    // let is_add = f_name == "std::ops::Add::add";
+    // let is_sub = f_name == "std::ops::Sub::sub";
+    // let is_mul = f_name == "std::ops::Mul::mul";
+
+    // TODO: replace with diagnostic item? [
     let is_ghost_split_tuple = f_name.starts_with("builtin::ghost_split_tuple");
-    let is_tracked_view = f_name == "builtin::Tracked::<A>::view";
-    let is_tracked_borrow = f_name == "builtin::Tracked::<A>::borrow";
-    let is_tracked_borrow_mut = f_name == "builtin::Tracked::<A>::borrow_mut";
-    let is_tracked_new = f_name == "builtin::Tracked::<A>::new";
-    let is_tracked_exec = f_name == "builtin::tracked_exec";
-    let is_tracked_exec_borrow = f_name == "builtin::tracked_exec_borrow";
-    let is_tracked_get = f_name == "builtin::Tracked::<A>::get";
     let is_tracked_split_tuple = f_name.starts_with("builtin::tracked_split_tuple");
-    let is_new_strlit = tcx.is_diagnostic_item(Symbol::intern("pervasive::string::new_strlit"), f);
+    // ]
 
-    let is_signed_min = f_name == "builtin::signed_min";
-    let is_signed_max = f_name == "builtin::signed_max";
-    let is_unsigned_max = f_name == "builtin::unsigned_max";
-    let is_arch_word_bits = f_name == "builtin::arch_word_bits";
-    let is_height = f_name == "builtin::height";
-
-    let is_reveal_strlit = tcx.is_diagnostic_item(Symbol::intern("builtin::reveal_strlit"), f);
-    let is_strslice_len = tcx.is_diagnostic_item(Symbol::intern("builtin::strslice_len"), f);
-    let is_strslice_get_char =
-        tcx.is_diagnostic_item(Symbol::intern("builtin::strslice_get_char"), f);
-    let is_strslice_is_ascii =
-        tcx.is_diagnostic_item(Symbol::intern("builtin::strslice_is_ascii"), f);
-    let is_closure_to_fn_spec =
-        tcx.is_diagnostic_item(Symbol::intern("builtin::closure_to_fn_spec"), f);
-
-    let is_spec = is_admit
-        || is_no_method_body
-        || is_requires
-        || is_recommends
-        || is_ensures
-        || is_invariant
-        || is_invariant_ensures
-        || is_decreases
-        || is_decreases_when
-        || is_decreases_by
-        || is_opens_invariants_none
-        || is_opens_invariants_any
-        || is_opens_invariants
-        || is_opens_invariants_except;
-    let is_quant = is_forall || is_exists || is_forall_arith;
-    let is_directive =
-        is_extra_dependency || is_hide || is_reveal || is_reveal_fuel || is_reveal_strlit;
-    let is_cmp = is_eq || is_ne || is_le || is_ge || is_lt || is_gt;
-    let is_arith_binary =
-        is_builtin_add || is_builtin_sub || is_builtin_mul || is_add || is_sub || is_mul;
-    let is_equality = is_equal || is_spec_eq || is_ext_equal || is_ext_equal_deep;
-    let is_spec_cmp = is_equality || is_spec_le || is_spec_ge || is_spec_lt || is_spec_gt;
-    let is_spec_arith_binary =
-        is_spec_add || is_spec_sub || is_spec_mul || is_spec_euclidean_div || is_spec_euclidean_mod;
-    let is_spec_bitwise_binary =
-        is_spec_bitand || is_spec_bitor || is_spec_bitxor || is_spec_shl || is_spec_shr;
-    let is_chained_ineq = is_chained_le || is_chained_lt || is_chained_ge || is_chained_gt;
-    let is_spec_literal = is_spec_literal_int || is_spec_literal_nat || is_spec_literal_integer;
-    let is_spec_op = is_spec_cast_integer
-        || is_spec_cmp
-        || is_spec_arith_binary
-        || is_spec_bitwise_binary
-        || is_spec_neg
-        || is_chained_ineq
-        || is_spec_literal
-        || is_chained_cmp
-        || is_chained_value
-        || is_chained_ineq;
-    let is_spec_ghost_tracked =
-        is_ghost_view || is_ghost_borrow || is_ghost_borrow_mut || is_tracked_view;
+    let is_spec_op = matches!(verus_item, Some(
+        VerusItem::BinaryOp(
+            BinaryOpItem::SpecArith(_) | BinaryOpItem::SpecBitwise(_) | BinaryOpItem::Equality(_) | BinaryOpItem::SpecOrd(_)) |
+        VerusItem::Chained(_) |
+        VerusItem::UnaryOp(UnaryOpItem::SpecLiteral(_) | UnaryOpItem::SpecCastInteger | UnaryOpItem::SpecNeg)
+    ));
 
     // These functions are all no-ops in the SMT encoding, so we don't emit any VIR
     let is_smartptr_new = f_name == "std::boxed::Box::<T>::new"
         || f_name == "std::rc::Rc::<T>::new"
         || f_name == "std::sync::Arc::<T>::new";
 
-    let vstd_name = vir::def::name_as_vstd_name(&f_name);
-    if vstd_name == Some(BUILTIN_INV_ATOMIC_BEGIN.to_string())
-        || vstd_name == Some(BUILTIN_INV_LOCAL_BEGIN.to_string())
-        || vstd_name == Some(BUILTIN_INV_END.to_string())
-    {
+    if let Some(VerusItem::OpenInvariantBlock(_)) = verus_item {
         // `open_invariant_begin` and `open_invariant_end` calls should only appear
         // through use of the `open_invariant!` macro, which creates an invariant block.
         // Thus, they should end up being processed by `invariant_block_to_vir` before
@@ -653,14 +522,17 @@ fn fn_call_to_vir<'tcx>(
     }
 
     if bctx.external_body
-        && !is_requires
-        && !is_recommends
-        && !is_ensures
-        && !is_opens_invariants_none
-        && !is_opens_invariants_any
-        && !is_opens_invariants
-        && !is_opens_invariants_except
-        && !is_extra_dependency
+        && !matches!(verus_item,
+            Some(VerusItem::Spec(
+                SpecItem::Requires
+                | SpecItem::Recommends
+                | SpecItem::Ensures
+                | SpecItem::OpensInvariantsNone
+                | SpecItem::OpensInvariantsAny
+                | SpecItem::OpensInvariants
+                | SpecItem::OpensInvariantsExcept
+            ) | VerusItem::Directive(DirectiveItem::ExtraDependency))
+        )
     {
         return Ok(bctx.spanned_typed_new(
             expr.span,
@@ -669,7 +541,7 @@ fn fn_call_to_vir<'tcx>(
         ));
     }
 
-    if is_panic {
+    if matches!(rust_item, Some(RustItem::Panic)) {
         return err_span(
             expr.span,
             format!(
@@ -688,49 +560,48 @@ fn fn_call_to_vir<'tcx>(
         "call of trait impl"
     );
 
-    let is_spec_no_proof_args = is_spec
-        || is_quant
-        || is_directive
-        || is_choose
-        || is_choose_tuple
-        || is_with_triggers
-        || is_assume
-        || is_assert
-        || is_assert_by
-        || is_assert_by_compute
-        || is_assert_by_compute_only
-        || is_assert_nonlinear_by
-        || is_assert_bitvector_by
-        || is_assert_forall_by
-        || is_assert_bit_vector
-        || is_old
-        || is_spec_ghost_tracked
-        || is_strslice_len
-        || is_strslice_get_char
-        || is_strslice_is_ascii
-        || is_closure_to_fn_spec
-        || is_arch_word_bits
-        || is_height;
+    let is_spec_no_proof_args = 
+        matches!(verus_item, Some(
+            VerusItem::Spec(_) | VerusItem::Quant(_) | VerusItem::Directive(_) |
+            VerusItem::Expr(
+                ExprItem::Choose |
+                ExprItem::ChooseTuple |
+                ExprItem::Old |
+                ExprItem::StrSliceLen |
+                ExprItem::StrSliceGetChar |
+                ExprItem::StrSliceIsAscii |
+                ExprItem::ClosureToFnSpec |
+                ExprItem::ArchWordBits |
+                ExprItem::Height
+            ) |
+            VerusItem::Assert(_) |
+            VerusItem::WithTriggers |
+            VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(_))
+        ));
     let is_spec_allow_proof_args_pre = is_spec_op
-        || is_builtin_add
-        || is_builtin_sub
-        || is_builtin_mul
-        || is_signed_max
-        || is_signed_min
-        || is_unsigned_max;
-    let is_compilable_operator = match () {
-        _ if is_implies => Some(CompilableOperator::Implies),
-        _ if is_smartptr_new => Some(CompilableOperator::SmartPtrNew),
-        _ if is_new_strlit => Some(CompilableOperator::NewStrLit),
-        _ if is_ghost_exec || is_ghost_new => Some(CompilableOperator::GhostExec),
-        _ if is_tracked_new => Some(CompilableOperator::TrackedNew),
-        _ if is_tracked_exec => Some(CompilableOperator::TrackedExec),
-        _ if is_tracked_exec_borrow => Some(CompilableOperator::TrackedExecBorrow),
-        _ if is_tracked_get => Some(CompilableOperator::TrackedGet),
-        _ if is_tracked_borrow => Some(CompilableOperator::TrackedBorrow),
-        _ if is_tracked_borrow_mut => Some(CompilableOperator::TrackedBorrowMut),
-        _ if is_ghost_split_tuple => Some(CompilableOperator::GhostSplitTuple),
-        _ if is_tracked_split_tuple => Some(CompilableOperator::TrackedSplitTuple),
+        || matches!(verus_item, Some(
+            VerusItem::Expr(
+                ExprItem::SignedMax |
+                ExprItem::SignedMin |
+                ExprItem::UnsignedMax
+            ) |
+            VerusItem::BinaryOp(BinaryOpItem::Arith(_))
+        ));
+    let is_compilable_operator = match verus_item {
+        Some(VerusItem::CompilableOpr(compilable_opr)) => Some(match compilable_opr {
+            CompilableOprItem::Implies => CompilableOperator::Implies,
+            CompilableOprItem::NewStrLit => CompilableOperator::NewStrLit,
+            CompilableOprItem::GhostExec | CompilableOprItem::GhostNew => CompilableOperator::GhostExec,
+            CompilableOprItem::TrackedNew => CompilableOperator::TrackedNew,
+            CompilableOprItem::TrackedExec => CompilableOperator::TrackedExec,
+            CompilableOprItem::TrackedExecBorrow => CompilableOperator::TrackedExecBorrow,
+            CompilableOprItem::TrackedGet => CompilableOperator::TrackedGet,
+            CompilableOprItem::TrackedBorrow => CompilableOperator::TrackedBorrow,
+            CompilableOprItem::TrackedBorrowMut => CompilableOperator::TrackedBorrowMut,
+        }),
+        None if is_smartptr_new => Some(CompilableOperator::SmartPtrNew),
+        None if is_ghost_split_tuple => Some(CompilableOperator::GhostSplitTuple),
+        None if is_tracked_split_tuple => Some(CompilableOperator::TrackedSplitTuple),
         _ => None,
     };
     let needs_name = !(is_spec_no_proof_args
@@ -778,7 +649,7 @@ fn fn_call_to_vir<'tcx>(
             for typ_arg in substs {
                 match typ_arg.unpack() {
                     GenericArgKind::Type(ty) => {
-                        typ_args.push(mid_ty_to_vir(tcx, expr.span, &ty, false)?);
+                        typ_args.push(mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?);
                     }
                     GenericArgKind::Lifetime(_) => {}
                     GenericArgKind::Const(cnst) => {
@@ -843,326 +714,424 @@ fn fn_call_to_vir<'tcx>(
     let mk_expr = |x: ExprX| Ok(bctx.spanned_typed_new(expr.span, &expr_typ()?, x));
     let mk_expr_span = |span: Span, x: ExprX| Ok(bctx.spanned_typed_new(span, &expr_typ()?, x));
 
-    if is_spec_literal_int || is_spec_literal_nat || is_spec_literal_integer {
-        unsupported_err_unless!(len == 1, expr.span, "expected spec_literal_*", &args);
-        let arg = &args[0];
-        let is_num = |s: &String| s.chars().count() > 0 && s.chars().all(|c| c.is_digit(10));
-        match &args[0] {
-            Expr { kind: ExprKind::Lit(Spanned { node: LitKind::Str(s, _), .. }), .. }
-                if is_num(&s.to_string()) =>
-            {
-                // TODO: negative literals for is_spec_literal_int and is_spec_literal_integer
-                if is_spec_literal_integer {
-                    // TODO: big integers for int, nat
-                    let i: u128 = match s.to_string().parse() {
-                        Ok(i) => i,
-                        Err(err) => {
-                            return err_span(arg.span, format!("integer out of range {}", err));
-                        }
-                    };
-                    let in_negative_literal = false;
-                    check_lit_int(&bctx.ctxt, expr.span, in_negative_literal, i, &expr_typ()?)?
+    match verus_item {
+        Some(VerusItem::UnaryOp(UnaryOpItem::SpecLiteral(spec_literal_item))) => {
+            unsupported_err_unless!(len == 1, expr.span, "expected spec_literal_*", &args);
+            let arg = &args[0];
+            let is_num = |s: &String| s.chars().count() > 0 && s.chars().all(|c| c.is_digit(10));
+            match &args[0] {
+                Expr { kind: ExprKind::Lit(Spanned { node: LitKind::Str(s, _), .. }), .. }
+                    if is_num(&s.to_string()) =>
+                {
+                    // TODO: negative literals for is_spec_literal_int and is_spec_literal_integer
+                    if spec_literal_item == &SpecLiteralItem::Integer {
+                        // TODO: big integers for int, nat
+                        let i: u128 = match s.to_string().parse() {
+                            Ok(i) => i,
+                            Err(err) => {
+                                return err_span(arg.span, format!("integer out of range {}", err));
+                            }
+                        };
+                        let in_negative_literal = false;
+                        check_lit_int(&bctx.ctxt, expr.span, in_negative_literal, i, &expr_typ()?)?
+                    }
+                    return mk_expr(ExprX::Const(const_int_from_string(s.to_string())));
                 }
-                return mk_expr(ExprX::Const(const_int_from_string(s.to_string())));
+                _ => {
+                    return err_span(arg.span, "spec_literal_* requires a string literal");
+                }
+            }
+        }
+        Some(VerusItem::UnaryOp(UnaryOpItem::SpecNeg | UnaryOpItem::SpecCastInteger | UnaryOpItem::SpecGhostTracked(_))) => {
+            // handled separately later
+        }
+        Some(VerusItem::Spec(spec_item)) => match spec_item {
+            SpecItem::NoMethodBody => {
+                return mk_expr(ExprX::Header(Arc::new(HeaderExprX::NoMethodBody)));
+            }
+            SpecItem::Requires | SpecItem::Recommends => {
+                unsupported_err_unless!(len == 1, expr.span, "expected requires/recommends", &args);
+                let bctx = &BodyCtxt { external_body: false, in_ghost: true, ..bctx.clone() };
+                let subargs = extract_array(args[0]);
+                for arg in &subargs {
+                    if !matches!(bctx.types.node_type(arg.hir_id).kind(), TyKind::Bool) {
+                        return err_span(arg.span, "requires/recommends needs a bool expression");
+                    }
+                }
+                let vir_args =
+                    vec_map_result(&subargs, |arg| expr_to_vir(&bctx, arg, ExprModifier::REGULAR))?;
+                let header = match spec_item {
+                    SpecItem::Requires => Arc::new(HeaderExprX::Requires(Arc::new(vir_args))),
+                    SpecItem::Recommends => Arc::new(HeaderExprX::Recommends(Arc::new(vir_args))),
+                    _ => unreachable!(),
+                };
+                return mk_expr(ExprX::Header(header));
+            }
+            SpecItem::OpensInvariants | SpecItem::OpensInvariantsExcept => {
+                return err_span(
+                    expr.span,
+                    "'is_opens_invariants' and 'is_opens_invariants_except' are not yet implemented",
+                );
+            }
+            SpecItem::OpensInvariantsNone => {
+                let header = Arc::new(HeaderExprX::InvariantOpens(Arc::new(Vec::new())));
+                return mk_expr(ExprX::Header(header));
+            }
+            SpecItem::OpensInvariantsAny => {
+                let header = Arc::new(HeaderExprX::InvariantOpensExcept(Arc::new(Vec::new())));
+                return mk_expr(ExprX::Header(header));
+            }
+            SpecItem::Ensures => {
+                unsupported_err_unless!(len == 1, expr.span, "expected ensures", &args);
+                let bctx = &BodyCtxt { external_body: false, in_ghost: true, ..bctx.clone() };
+                let header = extract_ensures(&bctx, args[0])?;
+                let expr = mk_expr_span(args[0].span, ExprX::Header(header));
+                // extract_ensures does most of the necessary work, so we can return at this point
+                return expr;
+            }
+            SpecItem::Decreases => {
+                unsupported_err_unless!(len == 1, expr.span, "expected decreases", &args);
+                let subargs = extract_tuple(args[0]);
+                let bctx = &BodyCtxt { external_body: false, in_ghost: true, ..bctx.clone() };
+                let vir_args =
+                    vec_map_result(&subargs, |arg| expr_to_vir(&bctx, arg, ExprModifier::REGULAR))?;
+                let header = Arc::new(HeaderExprX::Decreases(Arc::new(vir_args)));
+                return mk_expr(ExprX::Header(header));
+            }
+            SpecItem::Invariant | SpecItem::InvariantEnsures => {
+                unsupported_err_unless!(len == 1, expr.span, "expected invariant", &args);
+                let subargs = extract_array(args[0]);
+                for arg in &subargs {
+                    if !matches!(bctx.types.node_type(arg.hir_id).kind(), TyKind::Bool) {
+                        return err_span(arg.span, "invariant needs a bool expression");
+                    }
+                }
+                let bctx = &BodyCtxt { external_body: false, in_ghost: true, ..bctx.clone() };
+                let vir_args =
+                    vec_map_result(&subargs, |arg| expr_to_vir(&bctx, arg, ExprModifier::REGULAR))?;
+                let header = match spec_item {
+                    SpecItem::Invariant => Arc::new(HeaderExprX::Invariant(Arc::new(vir_args))),
+                    SpecItem::InvariantEnsures => Arc::new(HeaderExprX::InvariantEnsures(Arc::new(vir_args))),
+                    _ => unreachable!(),
+                };
+                return mk_expr(ExprX::Header(header));
+            }
+            SpecItem::DecreasesBy | SpecItem::RecommendsBy => {
+                unsupported_err_unless!(len == 1, expr.span, "expected function", &args);
+                let x = get_fn_path(bctx, &args[0])?;
+                let header = Arc::new(HeaderExprX::DecreasesBy(x));
+                return mk_expr(ExprX::Header(header));
+            }
+            SpecItem::DecreasesWhen | SpecItem::Admit | SpecItem::Assume => {
+                // handled later, they require VIR args
+            }
+        },
+        Some(VerusItem::Quant(quant_item)) => {
+            unsupported_err_unless!(len == 1, expr.span, "expected forall/exists", &args);
+            let quant = match quant_item {
+                QuantItem::Forall | QuantItem::ForallArith => air::ast::Quant::Forall,
+                QuantItem::Exists => air::ast::Quant::Exists,
+            };
+            let quant = Quant { quant, boxed_params: quant_item != &QuantItem::ForallArith };
+            return extract_quant(bctx, expr.span, quant, args[0]);
+        },
+        Some(VerusItem::Directive(directive_item)) => match directive_item {
+            DirectiveItem::ExtraDependency | DirectiveItem::Hide | DirectiveItem::Reveal => {
+                unsupported_err_unless!(len == 1, expr.span, "expected hide/reveal", &args);
+                let x = get_fn_path(bctx, &args[0])?;
+                match directive_item {
+                    DirectiveItem::Hide => {
+                        let header = Arc::new(HeaderExprX::Hide(x));
+                        return mk_expr(ExprX::Header(header));
+                    }
+                    DirectiveItem::ExtraDependency => {
+                        let header = Arc::new(HeaderExprX::ExtraDependency(x));
+                        return mk_expr(ExprX::Header(header));
+                    }
+                    DirectiveItem::Reveal => {
+                        return mk_expr(ExprX::Fuel(x, 1));
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            DirectiveItem::RevealFuel => {
+                unsupported_err_unless!(len == 2, expr.span, "expected reveal_fuel", &args);
+                let x = get_fn_path(bctx, &args[0])?;
+                match &expr_to_vir(bctx, &args[1], ExprModifier::REGULAR)?.x {
+                    ExprX::Const(Constant::Int(i)) => {
+                        let n =
+                            vir::ast_util::const_int_to_u32(&bctx.ctxt.spans.to_air_span(expr.span), i)?;
+                        return mk_expr(ExprX::Fuel(x, n));
+                    }
+                    _ => panic!("internal error: is_reveal_fuel"),
+                }
+            }
+            DirectiveItem::RevealStrlit => {
+                if let Some(s) = if let ExprKind::Lit(lit0) = &args[0].kind {
+                    if let rustc_ast::LitKind::Str(s, _) = lit0.node { Some(s) } else { None }
+                } else {
+                    None
+                } {
+                    return mk_expr(ExprX::RevealString(Arc::new(s.to_string())));
+                } else {
+                    return err_span(args[0].span, "string literal expected".to_string());
+                }
+            }
+        },
+        Some(VerusItem::Expr(expr_item)) => match expr_item {
+            crate::verus_items::ExprItem::Choose => {
+                unsupported_err_unless!(len == 1, expr.span, "expected choose", &args);
+                return extract_choose(bctx, expr.span, args[0], false, expr_typ()?);
+            }
+            crate::verus_items::ExprItem::ChooseTuple => {
+                unsupported_err_unless!(len == 1, expr.span, "expected choose", &args);
+                return extract_choose(bctx, expr.span, args[0], true, expr_typ()?);
+            }
+            crate::verus_items::ExprItem::Old => {
+                if let ExprKind::Path(QPath::Resolved(None, rustc_hir::Path { res: Res::Local(id), .. })) =
+                    &args[0].kind
+                {
+                    if let Node::Pat(pat) = tcx.hir().get(*id) {
+                        let typ = typ_of_node_expect_mut_ref(bctx, args[0].span, &expr.hir_id)?;
+                        return Ok(bctx.spanned_typed_new(
+                            expr.span,
+                            &typ,
+                            ExprX::VarAt(Arc::new(pat_to_var(pat)?), VarAt::Pre),
+                        ));
+                    }
+                }
+                return err_span(expr.span, "only a variable binding is allowed as the argument to old");
+            }
+            crate::verus_items::ExprItem::StrSliceLen => {
+                return match &expr.kind {
+                    ExprKind::Call(_, args) => {
+                        assert!(args.len() == 1);
+                        let arg0 = args.first().unwrap();
+                        let arg0 = expr_to_vir(bctx, arg0, ExprModifier::REGULAR)
+                            .expect("internal compiler error");
+                        mk_expr(ExprX::Unary(UnaryOp::StrLen, arg0))
+                    }
+                    _ => panic!(
+                        "Expected a call for builtin::strslice_len with one argument but did not receive it"
+                    ),
+                };
+            }
+            crate::verus_items::ExprItem::StrSliceGetChar => {
+                return match &expr.kind {
+                    ExprKind::Call(_, args) if args.len() == 2 => {
+                        let arg0 = args.first().unwrap();
+                        let arg0 = expr_to_vir(bctx, arg0, ExprModifier::REGULAR).expect(
+                            "invalid parameter for builtin::strslice_get_char at arg0, arg0 must be self",
+                        );
+                        let arg1 = &args[1];
+                        let arg1 = expr_to_vir(bctx, arg1, ExprModifier::REGULAR)
+                            .expect("invalid parameter for builtin::strslice_get_char at arg1, arg1 must be an integer");
+                        mk_expr(ExprX::Binary(BinaryOp::StrGetChar, arg0, arg1))
+                    }
+                    _ => panic!(
+                        "Expected a call for builtin::strslice_get_char with two argument but did not receive it"
+                    ),
+                };
+            }
+            crate::verus_items::ExprItem::StrSliceIsAscii => {
+                return match &expr.kind {
+                    ExprKind::Call(_, args) => {
+                        assert!(args.len() == 1);
+                        let arg0 = args.first().unwrap();
+                        let arg0 = expr_to_vir(bctx, arg0, ExprModifier::REGULAR)
+                            .expect("internal compiler error");
+                        mk_expr(ExprX::Unary(UnaryOp::StrIsAscii, arg0))
+                    }
+                    _ => panic!(
+                        "Expected a call for builtin::strslice_is_ascii with one argument but did not receive it"
+                    ),
+                };
+            }
+            crate::verus_items::ExprItem::ArchWordBits => {
+                assert!(args.len() == 0);
+                let arg = bctx.spanned_typed_new(
+                    expr.span,
+                    &Arc::new(TypX::Int(IntRange::Int)),
+                    ExprX::Const(vir::ast_util::const_int_from_u128(0)),
+                );
+
+                let kind = IntegerTypeBoundKind::ArchWordBits;
+
+                return mk_expr(ExprX::UnaryOpr(UnaryOpr::IntegerTypeBound(kind, Mode::Spec), arg));
+            }
+            ExprItem::ClosureToFnSpec => {
+                unsupported_err_unless!(len == 1, expr.span, "expected closure_to_spec_fn", &args);
+                if let ExprKind::Closure(..) = &args[0].kind {
+                    return closure_to_vir(bctx, &args[0], expr_typ()?, true, ExprModifier::REGULAR);
+                } else {
+                    return err_span(
+                        args[0].span,
+                        "the argument to `closure_to_spec_fn` must be a closure",
+                    );
+                }
+            }
+            ExprItem::SignedMin | ExprItem::SignedMax | ExprItem::UnsignedMax => {
+                assert!(args.len() == 1);
+                let arg = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
+                let kind = match expr_item {
+                    ExprItem::SignedMin => IntegerTypeBoundKind::SignedMin,
+                    ExprItem::SignedMax => IntegerTypeBoundKind::SignedMax,
+                    ExprItem::UnsignedMax => IntegerTypeBoundKind::UnsignedMax,
+                    _ => unreachable!(),
+                };
+                return mk_expr(ExprX::UnaryOpr(UnaryOpr::IntegerTypeBound(kind, Mode::Spec), arg));
+            }
+            ExprItem::Height => {
+                assert!(args.len() == 1);
+                let arg = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
+                return mk_expr(ExprX::UnaryOpr(UnaryOpr::Height, arg));
+            }
+        },
+        Some(VerusItem::CompilableOpr(compilable_opr)) => match compilable_opr {
+            CompilableOprItem::NewStrLit => {
+                let s = if let ExprKind::Lit(lit0) = &args[0].kind {
+                    if let rustc_ast::LitKind::Str(s, _) = lit0.node {
+                        s
+                    } else {
+                        panic!("unexpected arguments to new_strlit")
+                    }
+                } else {
+                    panic!("unexpected arguments to new_strlit")
+                };
+
+                let c = vir::ast::Constant::StrSlice(Arc::new(s.to_string()));
+                return mk_expr(ExprX::Const(c));
             }
             _ => {
-                return err_span(arg.span, "spec_literal_* requires a string literal");
+                // handled later, they require VIR args
             }
+        },
+        Some(VerusItem::BinaryOp(_) | VerusItem::Chained(_)) => {
+            // handled elsewhere
         }
-    }
-    if is_no_method_body {
-        return mk_expr(ExprX::Header(Arc::new(HeaderExprX::NoMethodBody)));
-    }
-    if is_requires || is_recommends {
-        unsupported_err_unless!(len == 1, expr.span, "expected requires/recommends", &args);
-        let bctx = &BodyCtxt { external_body: false, in_ghost: true, ..bctx.clone() };
-        let subargs = extract_array(args[0]);
-        for arg in &subargs {
-            if !matches!(bctx.types.node_type(arg.hir_id).kind(), TyKind::Bool) {
-                return err_span(arg.span, "requires/recommends needs a bool expression");
+        Some(VerusItem::Assert(assert_item)) => match assert_item {
+            AssertItem::Assert => {
+                unsupported_err_unless!(len == 1, expr.span, "expected assert", &args);
+                let exp = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
+                return mk_expr(ExprX::AssertAssume { is_assume: false, expr: exp });
             }
-        }
-        let vir_args =
-            vec_map_result(&subargs, |arg| expr_to_vir(&bctx, arg, ExprModifier::REGULAR))?;
-        let header = if is_requires {
-            Arc::new(HeaderExprX::Requires(Arc::new(vir_args)))
-        } else {
-            Arc::new(HeaderExprX::Recommends(Arc::new(vir_args)))
-        };
-        return mk_expr(ExprX::Header(header));
-    }
-    if is_opens_invariants || is_opens_invariants_except {
-        return err_span(
-            expr.span,
-            "'is_opens_invariants' and 'is_opens_invariants_except' are not yet implemented",
-        );
-    }
-    if is_opens_invariants_none {
-        let header = Arc::new(HeaderExprX::InvariantOpens(Arc::new(Vec::new())));
-        return mk_expr(ExprX::Header(header));
-    }
-    if is_opens_invariants_any {
-        let header = Arc::new(HeaderExprX::InvariantOpensExcept(Arc::new(Vec::new())));
-        return mk_expr(ExprX::Header(header));
-    }
-    if is_ensures {
-        unsupported_err_unless!(len == 1, expr.span, "expected ensures", &args);
-        let bctx = &BodyCtxt { external_body: false, in_ghost: true, ..bctx.clone() };
-        let header = extract_ensures(&bctx, args[0])?;
-        let expr = mk_expr_span(args[0].span, ExprX::Header(header));
-        // extract_ensures does most of the necessary work, so we can return at this point
-        return expr;
-    }
-    if is_invariant || is_invariant_ensures {
-        unsupported_err_unless!(len == 1, expr.span, "expected invariant", &args);
-        let subargs = extract_array(args[0]);
-        for arg in &subargs {
-            if !matches!(bctx.types.node_type(arg.hir_id).kind(), TyKind::Bool) {
-                return err_span(arg.span, "invariant needs a bool expression");
-            }
-        }
-        let bctx = &BodyCtxt { external_body: false, in_ghost: true, ..bctx.clone() };
-        let vir_args =
-            vec_map_result(&subargs, |arg| expr_to_vir(&bctx, arg, ExprModifier::REGULAR))?;
-        let header = if is_invariant {
-            Arc::new(HeaderExprX::Invariant(Arc::new(vir_args)))
-        } else {
-            Arc::new(HeaderExprX::InvariantEnsures(Arc::new(vir_args)))
-        };
-        return mk_expr(ExprX::Header(header));
-    }
-    if is_decreases {
-        unsupported_err_unless!(len == 1, expr.span, "expected decreases", &args);
-        let subargs = extract_tuple(args[0]);
-        let bctx = &BodyCtxt { external_body: false, in_ghost: true, ..bctx.clone() };
-        let vir_args =
-            vec_map_result(&subargs, |arg| expr_to_vir(&bctx, arg, ExprModifier::REGULAR))?;
-        let header = Arc::new(HeaderExprX::Decreases(Arc::new(vir_args)));
-        return mk_expr(ExprX::Header(header));
-    }
-    if is_forall || is_exists || is_forall_arith {
-        unsupported_err_unless!(len == 1, expr.span, "expected forall/exists", &args);
-        let quant = if is_forall || is_forall_arith {
-            air::ast::Quant::Forall
-        } else {
-            air::ast::Quant::Exists
-        };
-        let quant = Quant { quant, boxed_params: !is_forall_arith };
-        return extract_quant(bctx, expr.span, quant, args[0]);
-    }
-    if is_closure_to_fn_spec {
-        unsupported_err_unless!(len == 1, expr.span, "expected closure_to_spec_fn", &args);
-        if let ExprKind::Closure(..) = &args[0].kind {
-            return closure_to_vir(bctx, &args[0], expr_typ()?, true, ExprModifier::REGULAR);
-        } else {
-            return err_span(
-                args[0].span,
-                "the argument to `closure_to_spec_fn` must be a closure",
-            );
-        }
-    }
-
-    if is_choose {
-        unsupported_err_unless!(len == 1, expr.span, "expected choose", &args);
-        return extract_choose(bctx, expr.span, args[0], false, expr_typ()?);
-    }
-    if is_choose_tuple {
-        unsupported_err_unless!(len == 1, expr.span, "expected choose", &args);
-        return extract_choose(bctx, expr.span, args[0], true, expr_typ()?);
-    }
-    if is_with_triggers {
-        unsupported_err_unless!(len == 2, expr.span, "expected with_triggers", &args);
-        let modifier = ExprModifier::REGULAR;
-        let triggers_tuples = expr_to_vir(bctx, args[0], modifier)?;
-        let body = expr_to_vir(bctx, args[1], modifier)?;
-        let mut trigs: Vec<vir::ast::Exprs> = Vec::new();
-        if let ExprX::Tuple(triggers) = &triggers_tuples.x {
-            for trigger_tuple in triggers.iter() {
-                if let ExprX::Tuple(terms) = &trigger_tuple.x {
-                    trigs.push(terms.clone());
-                } else {
-                    return err_span(expr.span, "expected tuple arguments to with_triggers");
-                }
-            }
-        } else {
-            return err_span(expr.span, "expected tuple arguments to with_triggers");
-        }
-        let triggers = Arc::new(trigs);
-        return mk_expr(ExprX::WithTriggers { triggers, body });
-    }
-    if is_old {
-        if let ExprKind::Path(QPath::Resolved(None, rustc_hir::Path { res: Res::Local(id), .. })) =
-            &args[0].kind
-        {
-            if let Node::Pat(pat) = tcx.hir().get(*id) {
-                let typ = typ_of_node_expect_mut_ref(bctx, args[0].span, &expr.hir_id)?;
-                return Ok(bctx.spanned_typed_new(
+            AssertItem::AssertBy => {
+                unsupported_err_unless!(len == 2, expr.span, "expected assert_by", &args);
+                let vars = Arc::new(vec![]);
+                let require = bctx.spanned_typed_new(
                     expr.span,
-                    &typ,
-                    ExprX::VarAt(Arc::new(pat_to_var(pat)?), VarAt::Pre),
-                ));
+                    &Arc::new(TypX::Bool),
+                    ExprX::Const(Constant::Bool(true)),
+                );
+                let ensure = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
+                let proof = expr_to_vir(bctx, &args[1], ExprModifier::REGULAR)?;
+                return mk_expr(ExprX::Forall { vars, require, ensure, proof });
+            }
+            AssertItem::AssertByCompute => {
+                unsupported_err_unless!(len == 1, expr.span, "expected assert_by_compute", &args);
+                let exp = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
+                return mk_expr(ExprX::AssertCompute(exp, ComputeMode::Z3));
+            }
+            AssertItem::AssertByComputeOnly => {
+                unsupported_err_unless!(len == 1, expr.span, "expected assert_by_compute_only", &args);
+                let exp = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
+                return mk_expr(ExprX::AssertCompute(exp, ComputeMode::ComputeOnly));
+            }
+            AssertItem::AssertNonlinearBy | AssertItem::AssertBitvectorBy => {
+                unsupported_err_unless!(
+                    len == 1,
+                    expr.span,
+                    "expected assert_nonlinear_by/assert_bitvector_by with one argument",
+                    &args
+                );
+                let mut vir_expr = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
+                let header = vir::headers::read_header(&mut vir_expr)?;
+                let requires = if header.require.len() >= 1 {
+                    header.require
+                } else {
+                    Arc::new(vec![bctx.spanned_typed_new(
+                        expr.span,
+                        &Arc::new(TypX::Bool),
+                        ExprX::Const(Constant::Bool(true)),
+                    )])
+                };
+                if header.ensure.len() == 0 {
+                    return err_span(
+                        expr.span,
+                        "assert_nonlinear_by/assert_bitvector_by must have at least one ensures",
+                    );
+                }
+                let ensures = header.ensure;
+                let proof = vir_expr;
+
+                let expr_attrs = bctx.ctxt.tcx.hir().attrs(expr.hir_id);
+                let expr_vattrs = get_verifier_attrs(expr_attrs)?;
+                if expr_vattrs.spinoff_prover {
+                    return err_span(
+                        expr.span,
+                        "#[verifier(spinoff_prover)] is implied for assert by nonlinear_arith and assert by bit_vector",
+                    );
+                }
+                return mk_expr(ExprX::AssertQuery {
+                    requires,
+                    ensures,
+                    proof,
+                    mode: match assert_item {
+                        AssertItem::AssertNonlinearBy => AssertQueryMode::NonLinear,
+                        AssertItem::AssertBitvectorBy => AssertQueryMode::BitVector,
+                        _ => unreachable!(),
+                    },
+                });
+            }
+            AssertItem::AssertForallBy => {
+                unsupported_err_unless!(len == 1, expr.span, "expected assert_forall_by", &args);
+                return extract_assert_forall_by(bctx, expr.span, args[0]);
+            }
+            // internally translate this into `assert_bitvector_by`. REVIEW: consider deprecating this at all
+            AssertItem::AssertBitVector => {
+                let vir_expr = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
+                let requires = Arc::new(vec![bctx.spanned_typed_new(
+                    expr.span,
+                    &Arc::new(TypX::Bool),
+                    ExprX::Const(Constant::Bool(true)),
+                )]);
+                let ensures = Arc::new(vec![vir_expr]);
+                let proof = bctx.spanned_typed_new(
+                    expr.span,
+                    &Arc::new(TypX::Tuple(Arc::new(vec![]))),
+                    ExprX::Block(Arc::new(vec![]), None),
+                );
+                return mk_expr(ExprX::AssertQuery {
+                    requires,
+                    ensures,
+                    proof,
+                    mode: AssertQueryMode::BitVector,
+                });
             }
         }
-        return err_span(expr.span, "only a variable binding is allowed as the argument to old");
-    }
-
-    if is_decreases_by {
-        unsupported_err_unless!(len == 1, expr.span, "expected function", &args);
-        let x = get_fn_path(bctx, &args[0])?;
-        let header = Arc::new(HeaderExprX::DecreasesBy(x));
-        return mk_expr(ExprX::Header(header));
-    }
-    if is_extra_dependency || is_hide || is_reveal {
-        unsupported_err_unless!(len == 1, expr.span, "expected hide/reveal", &args);
-        let x = get_fn_path(bctx, &args[0])?;
-        if is_hide {
-            let header = Arc::new(HeaderExprX::Hide(x));
-            return mk_expr(ExprX::Header(header));
-        } else if is_extra_dependency {
-            let header = Arc::new(HeaderExprX::ExtraDependency(x));
-            return mk_expr(ExprX::Header(header));
-        } else {
-            return mk_expr(ExprX::Fuel(x, 1));
-        }
-    }
-    if is_reveal_fuel {
-        unsupported_err_unless!(len == 2, expr.span, "expected reveal_fuel", &args);
-        let x = get_fn_path(bctx, &args[0])?;
-        match &expr_to_vir(bctx, &args[1], ExprModifier::REGULAR)?.x {
-            ExprX::Const(Constant::Int(i)) => {
-                let n =
-                    vir::ast_util::const_int_to_u32(&bctx.ctxt.spans.to_air_span(expr.span), i)?;
-                return mk_expr(ExprX::Fuel(x, n));
-            }
-            _ => panic!("internal error: is_reveal_fuel"),
-        }
-    }
-    if is_assert_by {
-        unsupported_err_unless!(len == 2, expr.span, "expected assert_by", &args);
-        let vars = Arc::new(vec![]);
-        let require = bctx.spanned_typed_new(
-            expr.span,
-            &Arc::new(TypX::Bool),
-            ExprX::Const(Constant::Bool(true)),
-        );
-        let ensure = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
-        let proof = expr_to_vir(bctx, &args[1], ExprModifier::REGULAR)?;
-        return mk_expr(ExprX::Forall { vars, require, ensure, proof });
-    }
-    if is_assert_by_compute {
-        unsupported_err_unless!(len == 1, expr.span, "expected assert_by_compute", &args);
-        let exp = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
-        return mk_expr(ExprX::AssertCompute(exp, ComputeMode::Z3));
-    }
-    if is_assert_by_compute_only {
-        unsupported_err_unless!(len == 1, expr.span, "expected assert_by_compute_only", &args);
-        let exp = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
-        return mk_expr(ExprX::AssertCompute(exp, ComputeMode::ComputeOnly));
-    }
-    if is_assert_nonlinear_by || is_assert_bitvector_by {
-        unsupported_err_unless!(
-            len == 1,
-            expr.span,
-            "expected assert_nonlinear_by/assert_bitvector_by with one argument",
-            &args
-        );
-        let mut vir_expr = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
-        let header = vir::headers::read_header(&mut vir_expr)?;
-        let requires = if header.require.len() >= 1 {
-            header.require
-        } else {
-            Arc::new(vec![bctx.spanned_typed_new(
-                expr.span,
-                &Arc::new(TypX::Bool),
-                ExprX::Const(Constant::Bool(true)),
-            )])
-        };
-        if header.ensure.len() == 0 {
-            return err_span(
-                expr.span,
-                "assert_nonlinear_by/assert_bitvector_by must have at least one ensures",
-            );
-        }
-        let ensures = header.ensure;
-        let proof = vir_expr;
-
-        let expr_attrs = bctx.ctxt.tcx.hir().attrs(expr.hir_id);
-        let expr_vattrs = get_verifier_attrs(expr_attrs)?;
-        if expr_vattrs.spinoff_prover {
-            return err_span(
-                expr.span,
-                "#[verifier(spinoff_prover)] is implied for assert by nonlinear_arith and assert by bit_vector",
-            );
-        }
-        return mk_expr(ExprX::AssertQuery {
-            requires,
-            ensures,
-            proof,
-            mode: if is_assert_nonlinear_by {
-                AssertQueryMode::NonLinear
+        Some(VerusItem::WithTriggers) => {
+            unsupported_err_unless!(len == 2, expr.span, "expected with_triggers", &args);
+            let modifier = ExprModifier::REGULAR;
+            let triggers_tuples = expr_to_vir(bctx, args[0], modifier)?;
+            let body = expr_to_vir(bctx, args[1], modifier)?;
+            let mut trigs: Vec<vir::ast::Exprs> = Vec::new();
+            if let ExprX::Tuple(triggers) = &triggers_tuples.x {
+                for trigger_tuple in triggers.iter() {
+                    if let ExprX::Tuple(terms) = &trigger_tuple.x {
+                        trigs.push(terms.clone());
+                    } else {
+                        return err_span(expr.span, "expected tuple arguments to with_triggers");
+                    }
+                }
             } else {
-                AssertQueryMode::BitVector
-            },
-        });
-    }
-    if is_assert_forall_by {
-        unsupported_err_unless!(len == 1, expr.span, "expected assert_forall_by", &args);
-        return extract_assert_forall_by(bctx, expr.span, args[0]);
-    }
-
-    // internally translate this into `assert_bitvector_by`. REVIEW: consider deprecating this at all
-    if is_assert_bit_vector {
-        let vir_expr = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
-        let requires = Arc::new(vec![bctx.spanned_typed_new(
-            expr.span,
-            &Arc::new(TypX::Bool),
-            ExprX::Const(Constant::Bool(true)),
-        )]);
-        let ensures = Arc::new(vec![vir_expr]);
-        let proof = bctx.spanned_typed_new(
-            expr.span,
-            &Arc::new(TypX::Tuple(Arc::new(vec![]))),
-            ExprX::Block(Arc::new(vec![]), None),
-        );
-        return mk_expr(ExprX::AssertQuery {
-            requires,
-            ensures,
-            proof,
-            mode: AssertQueryMode::BitVector,
-        });
-    }
-
-    if is_signed_min || is_signed_max || is_unsigned_max {
-        assert!(args.len() == 1);
-        let arg = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
-
-        let kind = if is_signed_min {
-            IntegerTypeBoundKind::SignedMin
-        } else if is_signed_max {
-            IntegerTypeBoundKind::SignedMax
-        } else {
-            IntegerTypeBoundKind::UnsignedMax
-        };
-
-        return mk_expr(ExprX::UnaryOpr(UnaryOpr::IntegerTypeBound(kind, Mode::Spec), arg));
-    }
-    if is_arch_word_bits {
-        assert!(args.len() == 0);
-        let arg = bctx.spanned_typed_new(
-            expr.span,
-            &Arc::new(TypX::Int(IntRange::Int)),
-            ExprX::Const(vir::ast_util::const_int_from_u128(0)),
-        );
-
-        let kind = IntegerTypeBoundKind::ArchWordBits;
-
-        return mk_expr(ExprX::UnaryOpr(UnaryOpr::IntegerTypeBound(kind, Mode::Spec), arg));
-    }
-
-    if is_height {
-        assert!(args.len() == 1);
-        let arg = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
-        return mk_expr(ExprX::UnaryOpr(UnaryOpr::Height, arg));
+                return err_span(expr.span, "expected tuple arguments to with_triggers");
+            }
+            let triggers = Arc::new(trigs);
+            return mk_expr(ExprX::WithTriggers { triggers, body });
+        }
+        Some(VerusItem::OpenInvariantBlock(_) | VerusItem::Pervasive(_) | VerusItem::Marker(_)) => {
+        }
+        None => (),
     }
 
     if is_smartptr_new {
@@ -1170,81 +1139,6 @@ fn fn_call_to_vir<'tcx>(
         let arg = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
 
         return Ok(arg);
-    }
-
-    if is_new_strlit {
-        let s = if let ExprKind::Lit(lit0) = &args[0].kind {
-            if let rustc_ast::LitKind::Str(s, _) = lit0.node {
-                s
-            } else {
-                panic!("unexpected arguments to new_strlit")
-            }
-        } else {
-            panic!("unexpected arguments to new_strlit")
-        };
-
-        let c = vir::ast::Constant::StrSlice(Arc::new(s.to_string()));
-        return mk_expr(ExprX::Const(c));
-    }
-
-    if is_reveal_strlit {
-        if let Some(s) = if let ExprKind::Lit(lit0) = &args[0].kind {
-            if let rustc_ast::LitKind::Str(s, _) = lit0.node { Some(s) } else { None }
-        } else {
-            None
-        } {
-            return mk_expr(ExprX::RevealString(Arc::new(s.to_string())));
-        } else {
-            return err_span(args[0].span, "string literal expected".to_string());
-        }
-    }
-
-    if is_strslice_get_char {
-        return match &expr.kind {
-            ExprKind::Call(_, args) if args.len() == 2 => {
-                let arg0 = args.first().unwrap();
-                let arg0 = expr_to_vir(bctx, arg0, ExprModifier::REGULAR).expect(
-                    "invalid parameter for builtin::strslice_get_char at arg0, arg0 must be self",
-                );
-                let arg1 = &args[1];
-                let arg1 = expr_to_vir(bctx, arg1, ExprModifier::REGULAR)
-                    .expect("invalid parameter for builtin::strslice_get_char at arg1, arg1 must be an integer");
-                mk_expr(ExprX::Binary(BinaryOp::StrGetChar, arg0, arg1))
-            }
-            _ => panic!(
-                "Expected a call for builtin::strslice_get_char with two argument but did not receive it"
-            ),
-        };
-    }
-
-    if is_strslice_len {
-        return match &expr.kind {
-            ExprKind::Call(_, args) => {
-                assert!(args.len() == 1);
-                let arg0 = args.first().unwrap();
-                let arg0 = expr_to_vir(bctx, arg0, ExprModifier::REGULAR)
-                    .expect("internal compiler error");
-                mk_expr(ExprX::Unary(UnaryOp::StrLen, arg0))
-            }
-            _ => panic!(
-                "Expected a call for builtin::strslice_len with one argument but did not receive it"
-            ),
-        };
-    }
-
-    if is_strslice_is_ascii {
-        return match &expr.kind {
-            ExprKind::Call(_, args) => {
-                assert!(args.len() == 1);
-                let arg0 = args.first().unwrap();
-                let arg0 = expr_to_vir(bctx, arg0, ExprModifier::REGULAR)
-                    .expect("internal compiler error");
-                mk_expr(ExprX::Unary(UnaryOp::StrIsAscii, arg0))
-            }
-            _ => panic!(
-                "Expected a call for builtin::strslice_is_ascii with one argument but did not receive it"
-            ),
-        };
     }
 
     // TODO(main_new) is calling `subst` still correct with the new API?
@@ -1259,7 +1153,10 @@ fn fn_call_to_vir<'tcx>(
                 TyKind::Ref(_, _, rustc_hir::Mutability::Mut) => true,
                 _ => false,
             };
-            if is_ghost_borrow_mut || is_tracked_borrow_mut {
+            if matches!(verus_item, Some(
+                VerusItem::CompilableOpr(CompilableOprItem::TrackedBorrowMut) |
+                VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(SpecGhostTrackedItem::GhostBorrowMut))
+            )) {
                 expr_to_vir(bctx, arg, is_expr_typ_mut_ref(bctx, arg, outer_modifier)?)
             } else if is_mut_ref_param {
                 let arg_x = match &arg.kind {
@@ -1306,7 +1203,7 @@ fn fn_call_to_vir<'tcx>(
         None => {}
     }
 
-    let is_smt_unary = if is_spec_neg {
+    let is_smt_unary = if verus_item == Some(&VerusItem::UnaryOp(UnaryOpItem::SpecNeg)) {
         match *undecorate_typ(&typ_of_node(bctx, args[0].span, &args[0].hir_id, false)?) {
             TypX::Int(_) => true,
             _ => false,
@@ -1314,244 +1211,264 @@ fn fn_call_to_vir<'tcx>(
     } else {
         false
     };
-
-    let is_smt_binary = if is_equal || is_ext_equal || is_ext_equal_deep {
-        true
-    } else if is_spec_eq {
-        let t1 = typ_of_node(bctx, args[0].span, &args[0].hir_id, true)?;
-        let t2 = typ_of_node(bctx, args[1].span, &args[1].hir_id, true)?;
-        // REVIEW: there's some code that (harmlessly) uses == on types that are
-        // different in decoration; Rust would reject this, but we currently allow it:
-        let t1 = undecorate_typ(&t1);
-        let t2 = undecorate_typ(&t2);
-        if types_equal(&t1, &t2)
-            || is_smt_arith(bctx, args[0].span, args[1].span, &args[0].hir_id, &args[1].hir_id)?
-        {
-            true
-        } else {
-            return err_span(expr.span, "types must be compatible to use == or !=");
+    let is_smt_binary = match verus_item {
+        Some(verus_item) => match verus_item {
+            VerusItem::BinaryOp(BinaryOpItem::Equality(
+                EqualityItem::Equal |
+                EqualityItem::ExtEqual |
+                EqualityItem::ExtEqualDeep
+            )) => true,
+            VerusItem::BinaryOp(BinaryOpItem::Equality(EqualityItem::SpecEq)) => {
+                let t1 = typ_of_node(bctx, args[0].span, &args[0].hir_id, true)?;
+                let t2 = typ_of_node(bctx, args[1].span, &args[1].hir_id, true)?;
+                // REVIEW: there's some code that (harmlessly) uses == on types that are
+                // different in decoration; Rust would reject this, but we currently allow it:
+                let t1 = undecorate_typ(&t1);
+                let t2 = undecorate_typ(&t2);
+                if types_equal(&t1, &t2)
+                    || is_smt_arith(bctx, args[0].span, args[1].span, &args[0].hir_id, &args[1].hir_id)?
+                {
+                    true
+                } else {
+                    return err_span(expr.span, "types must be compatible to use == or !=");
+                }
+            }
+            VerusItem::CompilableOpr(CompilableOprItem::Implies) |
+                VerusItem::BinaryOp(BinaryOpItem::Arith(_) | BinaryOpItem::SpecArith(_) | BinaryOpItem::SpecBitwise(_) | BinaryOpItem::SpecOrd(_)) => {
+                is_smt_arith(bctx, args[0].span, args[1].span, &args[0].hir_id, &args[1].hir_id)?
+            }
+            _ => false
         }
-    } else if is_eq || is_ne {
-        is_smt_equality(bctx, expr.span, &args[0].hir_id, &args[1].hir_id)?
-    } else if is_cmp
-        || is_arith_binary
-        || is_implies
-        || is_spec_cmp
-        || is_spec_arith_binary
-        || is_spec_bitwise_binary
-    {
-        is_smt_arith(bctx, args[0].span, args[1].span, &args[0].hir_id, &args[1].hir_id)?
-    } else {
-        false
+        None => false,
     };
 
-    if is_ghost_exec || is_tracked_exec {
-        // Handle some of the is_ghost_exec || is_tracked_exec cases here
-        // (specifically, the exec-mode cases)
-        unsupported_err_unless!(len == 1, expr.span, "expected Ghost/Tracked", &args);
-        let arg = &args[0];
-        if get_ghost_block_opt(bctx.ctxt.tcx.hir().attrs(expr.hir_id))
-            == Some(GhostBlockAttr::Wrapper)
-        {
-            let vir_arg = vir_args[0].clone();
-            match (is_tracked_exec, get_ghost_block_opt(bctx.ctxt.tcx.hir().attrs(arg.hir_id))) {
-                (false, Some(GhostBlockAttr::GhostWrapped)) => {
-                    let exprx =
-                        ExprX::Ghost { alloc_wrapper: true, tracked: false, expr: vir_arg.clone() };
-                    return Ok(bctx.spanned_typed_new(arg.span, &vir_arg.typ.clone(), exprx));
+    match verus_item {
+        Some(VerusItem::CompilableOpr(compilable_opr)) => match compilable_opr {
+            CompilableOprItem::GhostExec | CompilableOprItem::TrackedExec => {
+                // Handle some of the is_ghost_exec || is_tracked_exec cases here
+                // (specifically, the exec-mode cases)
+                unsupported_err_unless!(len == 1, expr.span, "expected Ghost/Tracked", &args);
+                let arg = &args[0];
+                if get_ghost_block_opt(bctx.ctxt.tcx.hir().attrs(expr.hir_id))
+                    == Some(GhostBlockAttr::Wrapper)
+                {
+                    let vir_arg = vir_args[0].clone();
+                    match (compilable_opr, get_ghost_block_opt(bctx.ctxt.tcx.hir().attrs(arg.hir_id))) {
+                        (CompilableOprItem::GhostExec, Some(GhostBlockAttr::GhostWrapped)) => {
+                            let exprx =
+                                ExprX::Ghost { alloc_wrapper: true, tracked: false, expr: vir_arg.clone() };
+                            return Ok(bctx.spanned_typed_new(arg.span, &vir_arg.typ.clone(), exprx));
+                        }
+                        (CompilableOprItem::TrackedExec, Some(GhostBlockAttr::TrackedWrapped)) => {
+                            let exprx =
+                                ExprX::Ghost { alloc_wrapper: true, tracked: true, expr: vir_arg.clone() };
+                            return Ok(bctx.spanned_typed_new(arg.span, &vir_arg.typ.clone(), exprx));
+                        }
+                        (_, attr) => {
+                            return err_span(
+                                expr.span,
+                                format!("unexpected ghost block attribute {:?}", attr),
+                            );
+                        }
+                    }
                 }
-                (true, Some(GhostBlockAttr::TrackedWrapped)) => {
-                    let exprx =
-                        ExprX::Ghost { alloc_wrapper: true, tracked: true, expr: vir_arg.clone() };
-                    return Ok(bctx.spanned_typed_new(arg.span, &vir_arg.typ.clone(), exprx));
+            }
+            _ => {
+                // handled later
+            }
+        }
+        Some(VerusItem::Spec(spec_item)) => match spec_item {
+            SpecItem::DecreasesWhen => {
+                unsupported_err_unless!(len == 1, expr.span, "expected decreases_when", &args);
+                let header = Arc::new(HeaderExprX::DecreasesWhen(vir_args[0].clone()));
+                return mk_expr(ExprX::Header(header));
+            }
+            SpecItem::Admit => {
+                unsupported_err_unless!(len == 0, expr.span, "expected admit", args);
+                let f = bctx.spanned_typed_new(
+                    expr.span,
+                    &Arc::new(TypX::Bool),
+                    ExprX::Const(Constant::Bool(false)),
+                );
+                return mk_expr(ExprX::AssertAssume { is_assume: true, expr: f });
+            }
+            SpecItem::Assume => {
+                unsupported_err_unless!(len == 1, expr.span, "expected assume", args);
+                return mk_expr(ExprX::AssertAssume { is_assume: true, expr: vir_args[0].clone() });
+            }
+            _ => unreachable!(),
+        }
+        Some(VerusItem::UnaryOp(UnaryOpItem::SpecCastInteger)) => {
+            unsupported_err_unless!(len == 1, expr.span, "spec_cast_integer", args);
+            let source_vir = vir_args[0].clone();
+            let source_ty = undecorate_typ(&source_vir.typ);
+            let to_ty = undecorate_typ(&expr_typ()?);
+            match (&*source_ty, &*to_ty) {
+                (TypX::Int(IntRange::U(_)), TypX::Int(IntRange::Nat)) => return Ok(source_vir),
+                (TypX::Int(IntRange::USize), TypX::Int(IntRange::Nat)) => return Ok(source_vir),
+                (TypX::Int(IntRange::Nat), TypX::Int(IntRange::Nat)) => return Ok(source_vir),
+                (TypX::Int(IntRange::Int), TypX::Int(IntRange::Nat)) => {
+                    return Ok(mk_ty_clip(&to_ty, &source_vir, true));
                 }
-                (_, attr) => {
+                (TypX::Int(_), TypX::Int(_)) => {
+                    let expr_attrs = bctx.ctxt.tcx.hir().attrs(expr.hir_id);
+                    let expr_vattrs = get_verifier_attrs(expr_attrs)?;
+                    return Ok(mk_ty_clip(&to_ty, &source_vir, expr_vattrs.truncate));
+                }
+                (TypX::Char, TypX::Int(_)) => {
+                    let expr_attrs = bctx.ctxt.tcx.hir().attrs(expr.hir_id);
+                    let expr_vattrs = get_verifier_attrs(expr_attrs)?;
+                    let source_unicode = mk_expr(ExprX::Unary(UnaryOp::CharToInt, source_vir.clone()))?;
+                    return Ok(mk_ty_clip(&to_ty, &source_unicode, expr_vattrs.truncate));
+                }
+                _ => {
                     return err_span(
                         expr.span,
-                        format!("unexpected ghost block attribute {:?}", attr),
+                        "Verus currently only supports casts from integer types and `char` to integer types",
                     );
                 }
             }
         }
+        _ => (),
     }
 
-    if is_decreases_when {
-        unsupported_err_unless!(len == 1, expr.span, "expected decreases_when", &args);
-        let header = Arc::new(HeaderExprX::DecreasesWhen(vir_args[0].clone()));
-        mk_expr(ExprX::Header(header))
-    } else if is_admit {
-        unsupported_err_unless!(len == 0, expr.span, "expected admit", args);
-        let f = bctx.spanned_typed_new(
-            expr.span,
-            &Arc::new(TypX::Bool),
-            ExprX::Const(Constant::Bool(false)),
-        );
-        mk_expr(ExprX::AssertAssume { is_assume: true, expr: f })
-    } else if is_assume {
-        unsupported_err_unless!(len == 1, expr.span, "expected assume", args);
-        mk_expr(ExprX::AssertAssume { is_assume: true, expr: vir_args[0].clone() })
-    } else if is_assert {
-        unsupported_err_unless!(len == 1, expr.span, "expected assert", args);
-        mk_expr(ExprX::AssertAssume { is_assume: false, expr: vir_args[0].clone() })
-    } else if is_spec_cast_integer {
-        unsupported_err_unless!(len == 1, expr.span, "spec_cast_integer", args);
-        let source_vir = vir_args[0].clone();
-        let source_ty = undecorate_typ(&source_vir.typ);
-        let to_ty = undecorate_typ(&expr_typ()?);
-        match (&*source_ty, &*to_ty) {
-            (TypX::Int(IntRange::U(_)), TypX::Int(IntRange::Nat)) => Ok(source_vir),
-            (TypX::Int(IntRange::USize), TypX::Int(IntRange::Nat)) => Ok(source_vir),
-            (TypX::Int(IntRange::Nat), TypX::Int(IntRange::Nat)) => Ok(source_vir),
-            (TypX::Int(IntRange::Int), TypX::Int(IntRange::Nat)) => {
-                return Ok(mk_ty_clip(&to_ty, &source_vir, true));
-            }
-            (TypX::Int(_), TypX::Int(_)) => {
-                let expr_attrs = bctx.ctxt.tcx.hir().attrs(expr.hir_id);
-                let expr_vattrs = get_verifier_attrs(expr_attrs)?;
-                return Ok(mk_ty_clip(&to_ty, &source_vir, expr_vattrs.truncate));
-            }
-            (TypX::Char, TypX::Int(_)) => {
-                let expr_attrs = bctx.ctxt.tcx.hir().attrs(expr.hir_id);
-                let expr_vattrs = get_verifier_attrs(expr_attrs)?;
-                let source_unicode = mk_expr(ExprX::Unary(UnaryOp::CharToInt, source_vir.clone()))?;
-                return Ok(mk_ty_clip(&to_ty, &source_unicode, expr_vattrs.truncate));
-            }
-            _ => {
-                return err_span(
-                    expr.span,
-                    "Verus currently only supports casts from integer types and `char` to integer types",
-                );
-            }
-        }
-    } else if is_smt_unary {
+    if is_smt_unary {
         unsupported_err_unless!(len == 1, expr.span, "expected unary op", args);
         let varg = vir_args[0].clone();
-        if is_spec_neg {
-            let zero_const = vir::ast_util::const_int_from_u128(0);
-            let zero = mk_expr(ExprX::Const(zero_const))?;
-            mk_expr(ExprX::Binary(BinaryOp::Arith(ArithOp::Sub, None), zero, varg))
-        } else {
-            panic!("internal error")
+        match verus_item {
+            Some(&VerusItem::UnaryOp(UnaryOpItem::SpecNeg)) => {
+                let zero_const = vir::ast_util::const_int_from_u128(0);
+                let zero = mk_expr(ExprX::Const(zero_const))?;
+                mk_expr(ExprX::Binary(BinaryOp::Arith(ArithOp::Sub, None), zero, varg))
+            }
+            _ => unreachable!("internal error")
         }
     } else if is_smt_binary {
         unsupported_err_unless!(len == 2, expr.span, "expected binary op", args);
         let lhs = vir_args[0].clone();
         let rhs = vir_args[1].clone();
-        if is_ext_equal || is_ext_equal_deep {
+        if let Some(
+            VerusItem::BinaryOp(BinaryOpItem::Equality(ei@(EqualityItem::ExtEqual | EqualityItem::ExtEqualDeep)))
+        ) = verus_item {
             assert!(node_substs.len() == 1);
             let t = match node_substs[0].unpack() {
-                GenericArgKind::Type(ty) => mid_ty_to_vir(tcx, expr.span, &ty, false)?,
+                GenericArgKind::Type(ty) => mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?,
                 _ => panic!("unexpected ext_equal type argument"),
             };
-            let vop = vir::ast::BinaryOpr::ExtEq(is_ext_equal_deep, t);
+            let vop = vir::ast::BinaryOpr::ExtEq(ei == &EqualityItem::ExtEqualDeep, t);
             return Ok(mk_expr(ExprX::BinaryOpr(vop, lhs, rhs))?);
         }
-        let vop = if is_equal || is_spec_eq {
-            BinaryOp::Eq(Mode::Spec)
-        } else if is_eq {
-            BinaryOp::Eq(Mode::Exec)
-        } else if is_ne {
-            BinaryOp::Ne
-        } else if is_le || is_spec_le {
-            BinaryOp::Inequality(InequalityOp::Le)
-        } else if is_ge || is_spec_ge {
-            BinaryOp::Inequality(InequalityOp::Ge)
-        } else if is_lt || is_spec_lt {
-            BinaryOp::Inequality(InequalityOp::Lt)
-        } else if is_gt || is_spec_gt {
-            BinaryOp::Inequality(InequalityOp::Gt)
-        } else if is_add || is_builtin_add {
-            BinaryOp::Arith(ArithOp::Add, Some(bctx.ctxt.infer_mode()))
-        } else if is_sub || is_builtin_sub {
-            BinaryOp::Arith(ArithOp::Sub, Some(bctx.ctxt.infer_mode()))
-        } else if is_mul || is_builtin_mul {
-            BinaryOp::Arith(ArithOp::Mul, Some(bctx.ctxt.infer_mode()))
-        } else if is_spec_add {
-            BinaryOp::Arith(ArithOp::Add, None)
-        } else if is_spec_sub {
-            BinaryOp::Arith(ArithOp::Sub, None)
-        } else if is_spec_mul {
-            BinaryOp::Arith(ArithOp::Mul, None)
-        } else if is_spec_euclidean_div {
-            BinaryOp::Arith(ArithOp::EuclideanDiv, None)
-        } else if is_spec_euclidean_mod {
-            BinaryOp::Arith(ArithOp::EuclideanMod, None)
-        } else if is_spec_bitand {
-            BinaryOp::Bitwise(BitwiseOp::BitAnd, Mode::Spec)
-        } else if is_spec_bitor {
-            BinaryOp::Bitwise(BitwiseOp::BitOr, Mode::Spec)
-        } else if is_spec_bitxor {
-            if matches!(*vir_args[0].typ, TypX::Bool) {
-                BinaryOp::Xor
-            } else {
-                BinaryOp::Bitwise(BitwiseOp::BitXor, Mode::Spec)
+        let vop = match verus_item.expect("internal error") {
+            VerusItem::BinaryOp(BinaryOpItem::Equality(equality_item)) => match equality_item {
+                EqualityItem::Equal | EqualityItem::SpecEq => BinaryOp::Eq(Mode::Spec),
+                EqualityItem::ExtEqual | EqualityItem::ExtEqualDeep => unreachable!(),
             }
-        } else if is_spec_shl {
-            BinaryOp::Bitwise(BitwiseOp::Shl, Mode::Spec)
-        } else if is_spec_shr {
-            BinaryOp::Bitwise(BitwiseOp::Shr, Mode::Spec)
-        } else if is_implies {
-            BinaryOp::Implies
-        } else {
-            panic!("internal error")
+            VerusItem::BinaryOp(BinaryOpItem::SpecOrd(spec_ord_item)) => match spec_ord_item {
+                SpecOrdItem::Le => BinaryOp::Inequality(InequalityOp::Le),
+                SpecOrdItem::Ge => BinaryOp::Inequality(InequalityOp::Ge),
+                SpecOrdItem::Lt => BinaryOp::Inequality(InequalityOp::Lt),
+                SpecOrdItem::Gt => BinaryOp::Inequality(InequalityOp::Gt),
+            }
+            VerusItem::BinaryOp(BinaryOpItem::Arith(arith_item)) => match arith_item {
+                ArithItem::BuiltinAdd => BinaryOp::Arith(ArithOp::Add, Some(bctx.ctxt.infer_mode())),
+                ArithItem::BuiltinSub => BinaryOp::Arith(ArithOp::Sub, Some(bctx.ctxt.infer_mode())),
+                ArithItem::BuiltinMul => BinaryOp::Arith(ArithOp::Mul, Some(bctx.ctxt.infer_mode())),
+            }
+            VerusItem::BinaryOp(BinaryOpItem::SpecArith(spec_arith_item)) => match spec_arith_item {
+                SpecArithItem::Add => BinaryOp::Arith(ArithOp::Add, None),
+                SpecArithItem::Sub => BinaryOp::Arith(ArithOp::Sub, None),
+                SpecArithItem::Mul => BinaryOp::Arith(ArithOp::Mul, None),
+                SpecArithItem::EuclideanDiv => BinaryOp::Arith(ArithOp::EuclideanDiv, None),
+                SpecArithItem::EuclideanMod => BinaryOp::Arith(ArithOp::EuclideanMod, None),
+            }
+            VerusItem::BinaryOp(BinaryOpItem::SpecBitwise(spec_bitwise)) => match spec_bitwise {
+                verus_items::SpecBitwiseItem::BitAnd => BinaryOp::Bitwise(BitwiseOp::BitAnd, Mode::Spec),
+                verus_items::SpecBitwiseItem::BitOr => BinaryOp::Bitwise(BitwiseOp::BitOr, Mode::Spec),
+                verus_items::SpecBitwiseItem::BitXor => {
+                    if matches!(*vir_args[0].typ, TypX::Bool) {
+                        BinaryOp::Xor
+                    } else {
+                        BinaryOp::Bitwise(BitwiseOp::BitXor, Mode::Spec)
+                    }
+                },
+                verus_items::SpecBitwiseItem::Shl => BinaryOp::Bitwise(BitwiseOp::Shl, Mode::Spec),
+                verus_items::SpecBitwiseItem::Shr => BinaryOp::Bitwise(BitwiseOp::Shr, Mode::Spec),
+            }
+            VerusItem::CompilableOpr(CompilableOprItem::Implies) => BinaryOp::Implies,
+            _ => unreachable!("internal error"),
         };
         let e = mk_expr(ExprX::Binary(vop, lhs, rhs))?;
-        if is_arith_binary || is_spec_arith_binary {
+        if matches!(verus_item, Some(
+            VerusItem::BinaryOp(BinaryOpItem::Arith(_) | BinaryOpItem::SpecArith(_))
+        )) {
             Ok(mk_ty_clip(&expr_typ()?, &e, true))
         } else {
             Ok(e)
         }
-    } else if is_chained_value {
-        unsupported_err_unless!(len == 1, expr.span, "spec_chained_value", &args);
-        unsupported_err_unless!(
-            matches!(*undecorate_typ(&vir_args[0].typ), TypX::Int(_)),
-            expr.span,
-            "chained inequalities for non-integer types",
-            &args
-        );
-        let exprx =
-            ExprX::Multi(MultiOp::Chained(Arc::new(vec![])), Arc::new(vec![vir_args[0].clone()]));
-        Ok(bctx.spanned_typed_new(expr.span, &Arc::new(TypX::Bool), exprx))
-    } else if is_chained_ineq {
-        unsupported_err_unless!(len == 2, expr.span, "chained inequality", &args);
-        unsupported_err_unless!(
-            matches!(&vir_args[0].x, ExprX::Multi(MultiOp::Chained(_), _)),
-            expr.span,
-            "chained inequalities for non-integer types",
-            &args
-        );
-        unsupported_err_unless!(
-            matches!(*undecorate_typ(&vir_args[1].typ), TypX::Int(_)),
-            expr.span,
-            "chained inequalities for non-integer types",
-            &args
-        );
-        let op = if is_chained_le {
-            InequalityOp::Le
-        } else if is_chained_lt {
-            InequalityOp::Lt
-        } else if is_chained_ge {
-            InequalityOp::Ge
-        } else if is_chained_gt {
-            InequalityOp::Gt
-        } else {
-            panic!("is_chained_ineq")
-        };
-        if let ExprX::Multi(MultiOp::Chained(ops), es) = &vir_args[0].x {
-            let mut ops = (**ops).clone();
-            let mut es = (**es).clone();
-            ops.push(op);
-            es.push(vir_args[1].clone());
-            let exprx = ExprX::Multi(MultiOp::Chained(Arc::new(ops)), Arc::new(es));
-            Ok(bctx.spanned_typed_new(expr.span, &Arc::new(TypX::Bool), exprx))
-        } else {
-            panic!("is_chained_ineq")
+    } else if let Some(VerusItem::Chained(chained_item)) = verus_item {
+        match chained_item {
+            ChainedItem::Value => {
+                unsupported_err_unless!(len == 1, expr.span, "spec_chained_value", &args);
+                unsupported_err_unless!(
+                    matches!(*undecorate_typ(&vir_args[0].typ), TypX::Int(_)),
+                    expr.span,
+                    "chained inequalities for non-integer types",
+                    &args
+                );
+                let exprx =
+                    ExprX::Multi(MultiOp::Chained(Arc::new(vec![])), Arc::new(vec![vir_args[0].clone()]));
+                Ok(bctx.spanned_typed_new(expr.span, &Arc::new(TypX::Bool), exprx))
+            }
+            ChainedItem::Cmp => {
+                unsupported_err_unless!(len == 1, expr.span, "spec_chained_cmp", args);
+                Ok(vir_args[0].clone())
+            }
+            ChainedItem::Le |
+            ChainedItem::Lt |
+            ChainedItem::Ge |
+            ChainedItem::Gt => {
+                unsupported_err_unless!(len == 2, expr.span, "chained inequality", &args);
+                unsupported_err_unless!(
+                    matches!(&vir_args[0].x, ExprX::Multi(MultiOp::Chained(_), _)),
+                    expr.span,
+                    "chained inequalities for non-integer types",
+                    &args
+                );
+                unsupported_err_unless!(
+                    matches!(*undecorate_typ(&vir_args[1].typ), TypX::Int(_)),
+                    expr.span,
+                    "chained inequalities for non-integer types",
+                    &args
+                );
+                let op = match chained_item {
+                    ChainedItem::Le => InequalityOp::Le,
+                    ChainedItem::Lt => InequalityOp::Lt,
+                    ChainedItem::Ge => InequalityOp::Ge,
+                    ChainedItem::Gt => InequalityOp::Gt,
+                    ChainedItem::Value | ChainedItem::Cmp => unreachable!(),
+                };
+                if let ExprX::Multi(MultiOp::Chained(ops), es) = &vir_args[0].x {
+                    let mut ops = (**ops).clone();
+                    let mut es = (**es).clone();
+                    ops.push(op);
+                    es.push(vir_args[1].clone());
+                    let exprx = ExprX::Multi(MultiOp::Chained(Arc::new(ops)), Arc::new(es));
+                    Ok(bctx.spanned_typed_new(expr.span, &Arc::new(TypX::Bool), exprx))
+                } else {
+                    panic!("is_chained_ineq")
+                }
+            }
         }
-    } else if is_chained_cmp {
-        unsupported_err_unless!(len == 1, expr.span, "spec_chained_cmp", args);
-        Ok(vir_args[0].clone())
-    } else if is_ghost_view || is_ghost_borrow || is_tracked_view || is_ghost_new {
+    } else if let Some(
+        VerusItem::CompilableOpr(CompilableOprItem::GhostNew) |
+        VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(
+            SpecGhostTrackedItem::GhostView |
+            SpecGhostTrackedItem::GhostBorrow |
+            SpecGhostTrackedItem::TrackedView
+        ))
+    ) = verus_item {
         assert!(vir_args.len() == 1);
+        let is_ghost_new = verus_item == Some(&VerusItem::CompilableOpr(CompilableOprItem::GhostNew));
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Spec,
             from_mode: Mode::Spec,
@@ -1559,7 +1476,8 @@ fn fn_call_to_vir<'tcx>(
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if is_ghost_exec {
+    } else if matches!(verus_item,
+        Some(VerusItem::CompilableOpr(CompilableOprItem::GhostExec))) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Exec,
@@ -1568,7 +1486,8 @@ fn fn_call_to_vir<'tcx>(
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if is_tracked_new {
+    } else if matches!(verus_item,
+        Some(VerusItem::CompilableOpr(CompilableOprItem::TrackedNew))) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Proof,
@@ -1577,7 +1496,10 @@ fn fn_call_to_vir<'tcx>(
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if is_tracked_exec || is_tracked_exec_borrow {
+    } else if matches!(verus_item,
+        Some(VerusItem::CompilableOpr(
+            CompilableOprItem::TrackedExec | CompilableOprItem::TrackedExecBorrow
+        ))) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Exec,
@@ -1586,7 +1508,10 @@ fn fn_call_to_vir<'tcx>(
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if is_tracked_get || is_tracked_borrow {
+    } else if matches!(verus_item,
+        Some(VerusItem::CompilableOpr(
+            CompilableOprItem::TrackedGet | CompilableOprItem::TrackedBorrow
+        ))) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Proof,
@@ -1604,7 +1529,8 @@ fn fn_call_to_vir<'tcx>(
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if is_ghost_borrow_mut {
+    } else if matches!(verus_item,
+        Some(VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(SpecGhostTrackedItem::GhostBorrowMut)))) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Proof,
@@ -1614,7 +1540,8 @@ fn fn_call_to_vir<'tcx>(
         };
         let typ = typ_of_node(bctx, expr.span, &expr.hir_id, true)?;
         Ok(bctx.spanned_typed_new(expr.span, &typ, ExprX::Unary(op, vir_args[0].clone())))
-    } else if is_tracked_borrow_mut {
+    } else if matches!(verus_item,
+        Some(VerusItem::CompilableOpr(CompilableOprItem::TrackedBorrowMut))) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Proof,
@@ -1635,7 +1562,7 @@ fn fn_call_to_vir<'tcx>(
                 if name == "core::ops::function::Fn" {
                     for s in t.trait_ref.substs {
                         if let GenericArgKind::Type(ty) = s.unpack() {
-                            if let TypX::TypParam(x) = &*mid_ty_to_vir(tcx, expr.span, &ty, false)?
+                            if let TypX::TypParam(x) = &*mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?
                             {
                                 fn_params.push(x.clone());
                             }
@@ -1851,7 +1778,7 @@ pub(crate) fn pattern_to_vir_inner<'tcx>(
                     let actual_idx = i + pos_to_insert_wildcards;
                     let field_def = &variant_def.fields[actual_idx];
                     let typ = field_def.ty(bctx.ctxt.tcx, substs);
-                    let vir_typ = mid_ty_to_vir(bctx.ctxt.tcx, pat.span, &typ, false)?;
+                    let vir_typ = mid_ty_to_vir(bctx.ctxt.tcx, &bctx.ctxt.verus_items, pat.span, &typ, false)?;
                     let pattern =
                         bctx.spanned_typed_new(pat.span, &vir_typ, PatternX::Wildcard(true));
                     wildcard_binders
@@ -1974,7 +1901,7 @@ fn malformed_inv_block_err<'tcx>(expr: &Expr<'tcx>) -> Result<vir::ast::Expr, Vi
 }
 
 pub(crate) fn invariant_block_open<'a>(
-    tcx: TyCtxt,
+    verus_items: &verus_items::VerusItems,
     open_stmt: &'a Stmt,
 ) -> Option<(HirId, HirId, &'a rustc_hir::Pat<'a>, &'a rustc_hir::Expr<'a>, InvAtomicity)> {
     match open_stmt.kind {
@@ -2031,13 +1958,15 @@ pub(crate) fn invariant_block_open<'a>(
                 }),
             ..
         }) if dot_dot_pos.as_opt_usize().is_none() => {
-            let f_name = vir::ast_util::path_as_vstd_name(&def_id_to_vir_path(tcx, *fun_id));
-            let atomicity = if f_name == Some(BUILTIN_INV_ATOMIC_BEGIN.to_string()) {
-                InvAtomicity::Atomic
-            } else if f_name == Some(BUILTIN_INV_LOCAL_BEGIN.to_string()) {
-                InvAtomicity::NonAtomic
-            } else {
-                return None;
+            let verus_item = verus_items.id_to_name.get(fun_id);
+            let atomicity = match verus_item {
+                Some(VerusItem::OpenInvariantBlock(OpenInvariantBlockItem::OpenAtomicInvariantBegin)) =>
+                    InvAtomicity::Atomic,
+                Some(VerusItem::OpenInvariantBlock(OpenInvariantBlockItem::OpenLocalInvariantBegin)) =>
+                    InvAtomicity::NonAtomic,
+                _ => {
+                    return None;
+                }
             };
             Some((*guard_hir, *inner_hir, inner_pat, arg, atomicity))
         }
@@ -2121,7 +2050,7 @@ fn invariant_block_to_vir<'tcx>(
     let close_stmt = &body.stmts[body.stmts.len() - 1];
 
     let (guard_hir, inner_hir, inner_pat, inv_arg, atomicity) = {
-        if let Some(block_open) = invariant_block_open(bctx.ctxt.tcx, open_stmt) {
+        if let Some(block_open) = invariant_block_open(&bctx.ctxt.verus_items, open_stmt) {
             block_open
         } else {
             return malformed_inv_block_err(expr);
@@ -2129,9 +2058,8 @@ fn invariant_block_to_vir<'tcx>(
     };
 
     if let Some((hir_id1, hir_id2, fun_id)) = invariant_block_close(close_stmt) {
-        let vstd_name =
-            vir::ast_util::path_as_vstd_name(&def_id_to_vir_path(bctx.ctxt.tcx, fun_id));
-        if vstd_name != Some(BUILTIN_INV_END.to_string()) {
+        let verus_item = bctx.ctxt.verus_items.id_to_name.get(&fun_id);
+        if verus_item != Some(&VerusItem::OpenInvariantBlock(OpenInvariantBlockItem::OpenInvariantEnd)) {
             return malformed_inv_block_err(expr);
         }
 
@@ -2721,6 +2649,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     ExprKind::Field(lhs, _) => {
                         let deref_ghost = mid_ty_to_vir_ghost(
                             bctx.ctxt.tcx,
+                            &bctx.ctxt.verus_items,
                             lhs.span,
                             &bctx.types.node_type(lhs.hir_id),
                             false,
@@ -2970,6 +2899,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
         ExprKind::MethodCall(_name_and_generics, receiver, other_args, fn_span) => {
             let receiver_typ = mid_ty_to_vir_datatype(
                 bctx.ctxt.tcx,
+                &bctx.ctxt.verus_items,
                 receiver.span,
                 bctx.types.node_type(receiver.hir_id),
                 true,
@@ -3047,7 +2977,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                         for typ_arg in bctx.types.node_substs(expr.hir_id) {
                             match typ_arg.unpack() {
                                 GenericArgKind::Type(ty) => {
-                                    typ_args.push(mid_ty_to_vir(tcx, expr.span, &ty, false)?);
+                                    typ_args.push(mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?);
                                 }
                                 GenericArgKind::Lifetime(_) => {}
                                 _ => unsupported_err!(
