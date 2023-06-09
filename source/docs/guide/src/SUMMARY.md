@@ -45,7 +45,7 @@
     - [Exec closures]()
 - [SMT solving, automation, and where automation fails]() <!--- Chris --->
     - [What's decidable, what's undecidable, what's fast, what's slow]() <!--- Chris --->
-    - [integers: nonlinear arithmetic and bit vectors]() <!--- Chris and Chanhee --->
+    - [integers: nonlinear arithmetic and bit vectors](nonlinear_bitvec.md) <!--- Chris and Chanhee --->
     - [forall and exists: writing and using triggers, inline functions]() <!--- Chris --->
     - [recursive functions]() <!--- Chris --->
     - [extensional equality]() <!--- Chris --->
