@@ -489,11 +489,6 @@ fn fn_call_to_vir<'tcx>(
     // let is_sub = f_name == "std::ops::Sub::sub";
     // let is_mul = f_name == "std::ops::Mul::mul";
 
-    // TODO: replace with diagnostic item? [
-    let is_ghost_split_tuple = f_name.starts_with("builtin::ghost_split_tuple");
-    let is_tracked_split_tuple = f_name.starts_with("builtin::tracked_split_tuple");
-    // ]
-
     let is_spec_op = matches!(verus_item, Some(
         VerusItem::BinaryOp(
             BinaryOpItem::SpecArith(_) | BinaryOpItem::SpecBitwise(_) | BinaryOpItem::Equality(_) | BinaryOpItem::SpecOrd(_)) |
@@ -600,8 +595,6 @@ fn fn_call_to_vir<'tcx>(
             CompilableOprItem::TrackedBorrowMut => CompilableOperator::TrackedBorrowMut,
         }),
         None if is_smartptr_new => Some(CompilableOperator::SmartPtrNew),
-        None if is_ghost_split_tuple => Some(CompilableOperator::GhostSplitTuple),
-        None if is_tracked_split_tuple => Some(CompilableOperator::TrackedSplitTuple),
         _ => None,
     };
     let needs_name = !(is_spec_no_proof_args
@@ -1517,15 +1510,6 @@ fn fn_call_to_vir<'tcx>(
             op_mode: Mode::Proof,
             from_mode: Mode::Proof,
             to_mode: Mode::Proof,
-            kind: ModeCoercion::Other,
-        };
-        mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if is_ghost_split_tuple || is_tracked_split_tuple {
-        assert!(vir_args.len() == 1);
-        let op = UnaryOp::CoerceMode {
-            op_mode: Mode::Exec,
-            from_mode: Mode::Exec,
-            to_mode: Mode::Exec,
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
