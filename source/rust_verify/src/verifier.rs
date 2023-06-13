@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use vir::ast::{Fun, Function, Ident, InferMode, Krate, Mode, VirErr, Visibility};
-use vir::ast_util::{fun_as_rust_dbg, fun_name_crate_relative, is_visible_to};
+use vir::ast_util::{fun_as_friendly_rust_name, friendly_fun_name_crate_relative, is_visible_to};
 use vir::def::{CommandsWithContext, CommandsWithContextX, SnapPos};
 use vir::func_to_air::SstMap;
 use vir::prelude::PreludeConfig;
@@ -490,7 +490,7 @@ impl Verifier {
     ) -> bool {
         if let Some(verify_function) = &self.args.verify_function {
             if let Some(function_name) = function_name {
-                let name = fun_name_crate_relative(&module, function_name);
+                let name = friendly_fun_name_crate_relative(&module, function_name);
                 if &name != verify_function {
                     return false;
                 }
@@ -743,7 +743,7 @@ impl Verifier {
                 continue;
             }
             let commands = vir::func_to_air::func_name_to_air(ctx, &reporter, &function)?;
-            let comment = "Function-Decl ".to_string() + &fun_as_rust_dbg(&function.x.name);
+            let comment = "Function-Decl ".to_string() + &fun_as_friendly_rust_name(&function.x.name);
             self.run_commands(&reporter, &mut air_context, &commands, &comment);
             function_decl_commands.push((commands.clone(), comment.clone()));
         }
@@ -774,7 +774,7 @@ impl Verifier {
                 .map(|(_, (f, _))| f)
                 .filter(|f| Some(module.clone()) == f.x.owning_module);
             let mut module_fun_names: Vec<String> =
-                module_funs.map(|f| fun_name_crate_relative(&module, &f.x.name)).collect();
+                module_funs.map(|f| friendly_fun_name_crate_relative(&module, &f.x.name)).collect();
             if !module_fun_names.iter().any(|f| f == verify_function) {
                 module_fun_names.sort();
                 let msg = vec![
@@ -817,7 +817,7 @@ impl Verifier {
                 let decl_commands =
                     vir::func_to_air::func_decl_to_air(ctx, &reporter, &fun_ssts, &function)?;
                 ctx.fun = None;
-                let comment = "Function-Specs ".to_string() + &fun_as_rust_dbg(f);
+                let comment = "Function-Specs ".to_string() + &fun_as_friendly_rust_name(f);
                 self.run_commands(&reporter, &mut air_context, &decl_commands, &comment);
                 function_spec_commands.push((decl_commands.clone(), comment.clone()));
             }
@@ -863,7 +863,7 @@ impl Verifier {
                     &ctx.global.qid_map.borrow(),
                     module,
                     Some(&function.x.name),
-                    &("Function-Termination ".to_string() + &fun_as_rust_dbg(f)),
+                    &("Function-Termination ".to_string() + &fun_as_friendly_rust_name(f)),
                     Some("function termination: "),
                 );
                 let check_recommends = function.x.attrs.check_recommends;
@@ -895,7 +895,7 @@ impl Verifier {
                             &ctx.global.qid_map.borrow(),
                             module,
                             Some(&function.x.name),
-                            &(s.to_string() + &fun_as_rust_dbg(&function.x.name)),
+                            &(s.to_string() + &fun_as_friendly_rust_name(&function.x.name)),
                             Some("recommends check: "),
                         );
                     }
@@ -908,7 +908,7 @@ impl Verifier {
                     continue;
                 }
                 let decl_commands = &fun_axioms[f];
-                let comment = "Function-Axioms ".to_string() + &fun_as_rust_dbg(f);
+                let comment = "Function-Axioms ".to_string() + &fun_as_friendly_rust_name(f);
                 self.run_commands(&reporter, &mut air_context, &decl_commands, &comment);
                 function_axiom_commands.push((decl_commands.clone(), comment.clone()));
                 funs.remove(f);
@@ -1021,7 +1021,7 @@ impl Verifier {
                         &ctx.global.qid_map.borrow(),
                         module,
                         Some(&function.x.name),
-                        &(s.to_string() + &fun_as_rust_dbg(&function.x.name)),
+                        &(s.to_string() + &fun_as_friendly_rust_name(&function.x.name)),
                         desc_prefix,
                     );
                     if do_spinoff {

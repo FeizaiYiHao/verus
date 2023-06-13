@@ -10,6 +10,7 @@
 
 use core::marker::PhantomData;
 
+
 #[rustc_diagnostic_item = "verus::builtin::admit"]
 #[verifier::proof]
 pub fn admit() {
@@ -277,12 +278,12 @@ pub fn assert_bit_vector(_: bool) {
     unimplemented!();
 }
 
-// Used internally by erase.rs
-#[rustc_diagnostic_item = "verus::builtin::internal_arbitrary"]
-#[verifier::spec]
-pub fn internal_arbitrary<A>(_: u64) -> A {
-    unimplemented!()
-}
+// TODO // Used internally by erase.rs
+// TODO #[rustc_diagnostic_item = "verus::builtin::internal_arbitrary"]
+// TODO #[verifier::spec]
+// TODO pub fn internal_arbitrary<A>(_: u64) -> A {
+// TODO     unimplemented!()
+// TODO }
 
 //
 // Ghost, Tracked
@@ -421,6 +422,7 @@ pub fn tracked_exec_borrow<'a, A>(#[verifier::proof] _a: &'a A) -> &'a Tracked<A
 // int and nat
 //
 
+#[rustc_diagnostic_item = "verus::builtin::int"]
 #[allow(non_camel_case_types)]
 pub struct int;
 
@@ -488,6 +490,7 @@ impl core::cmp::Ord for int {
     }
 }
 
+#[rustc_diagnostic_item = "verus::builtin::nat"]
 #[allow(non_camel_case_types)]
 pub struct nat;
 
@@ -707,7 +710,6 @@ pub fn spec_eq<Lhs, Rhs>(_lhs: Lhs, _rhs: Rhs) -> bool {
     unimplemented!()
 }
 
-#[rustc_diagnostic_item = "verus::builtin::SpecOrd"]
 pub trait SpecOrd<Rhs = Self> {
     #[rustc_diagnostic_item = "verus::builtin::SpecOrd::spec_lt"]
     #[verifier::spec]
@@ -1033,6 +1035,7 @@ pub fn reveal_strlit<A>(_a: A) {
     unimplemented!()
 }
 
+#[rustc_diagnostic_item = "verus::builtin::FnSpec"]
 pub struct FnSpec<Args, Output> {
     phantom: PhantomData<(Args, Output)>,
 }
@@ -1065,19 +1068,21 @@ pub fn closure_to_fn_spec<Args: core::marker::Tuple, F: FnOnce<Args>>(
 
 pub trait FnWithSpecification<Args> {
     type Output;
+
+    #[rustc_diagnostic_item = "verus::builtin::FnWithSpecification::requires"]
     fn requires(&self, args: Args) -> bool;
+
+    #[rustc_diagnostic_item = "verus::builtin::FnWithSpecification::ensures"]
     fn ensures(&self, args: Args, output: Self::Output) -> bool;
 }
 
 impl<Args: core::marker::Tuple, F: FnOnce<Args>> FnWithSpecification<Args> for F {
     type Output = F::Output;
 
-    #[rustc_diagnostic_item = "verus::builtin::FnWithSpecification::requires"]
     fn requires(&self, _args: Args) -> bool {
         unimplemented!();
     }
 
-    #[rustc_diagnostic_item = "verus::builtin::FnWithSpecification::ensures"]
     fn ensures(&self, _args: Args, _output: Self::Output) -> bool {
         unimplemented!();
     }

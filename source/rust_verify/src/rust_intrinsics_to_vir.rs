@@ -34,6 +34,7 @@ pub(crate) fn int_intrinsic_constant_to_vir(
         )));
     };
 
+    // TODO TODO TODO verus-items
     match f_name {
         // MIN
         "core::num::<impl u8>::MIN" => lit_expr(0),

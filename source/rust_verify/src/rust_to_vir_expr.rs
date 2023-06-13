@@ -5,13 +5,13 @@ use crate::attributes::{
 use crate::context::{BodyCtxt, Context};
 use crate::erase::{CompilableOperator, ResolvedCall};
 use crate::rust_to_vir_base::{
-    def_id_self_to_vir_path, def_id_self_to_vir_path_expect, def_id_to_vir_path, get_range,
+    def_id_to_vir_path, get_range,
     is_smt_arith, is_smt_equality, is_type_std_rc_or_arc_or_ref, local_to_var, mid_ty_simplify,
     mid_ty_to_vir, mid_ty_to_vir_datatype, mid_ty_to_vir_ghost, mk_range, typ_of_node,
-    typ_of_node_expect_mut_ref,
+    typ_of_node_expect_mut_ref, def_id_to_vir_path_option,
 };
 use crate::util::{err_span, slice_vec_map_result, unsupported_err_span, vec_map, vec_map_result};
-use crate::verus_items::{VerusItem, SpecItem, QuantItem, DirectiveItem, ExprItem, CompilableOprItem, self, RustItem, BinaryOpItem, EqualityItem, SpecOrdItem, ArithItem, SpecArithItem, ChainedItem, AssertItem, UnaryOpItem, SpecLiteralItem, SpecGhostTrackedItem, OpenInvariantBlockItem};
+use crate::verus_items::{VerusItem, SpecItem, QuantItem, DirectiveItem, ExprItem, CompilableOprItem, self, RustItem, BinaryOpItem, EqualityItem, SpecOrdItem, ArithItem, SpecArithItem, ChainedItem, AssertItem, UnaryOpItem, SpecLiteralItem, SpecGhostTrackedItem, OpenInvariantBlockItem, BuiltinFunctionItem};
 use crate::{unsupported_err, unsupported_err_unless};
 use air::ast::{Binder, BinderX};
 use air::ast_util::str_ident;
@@ -36,7 +36,7 @@ use vir::ast::{
     SpannedTyped, StmtX, Stmts, Typ, TypX, UnaryOp, UnaryOpr, VarAt, VirErr,
 };
 use vir::ast_util::{
-    const_int_from_string, ident_binder, path_as_rust_name, types_equal, undecorate_typ,
+    const_int_from_string, ident_binder, path_as_friendly_rust_name, types_equal, undecorate_typ,
 };
 use vir::def::positional_field_ident;
 
@@ -314,8 +314,8 @@ fn skip_closure_coercion<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &'tcx Expr<'tcx>) ->
                 let def = bctx.types.qpath_res(&qpath, fun.hir_id);
                 match def {
                     rustc_hir::def::Res::Def(_, def_id) => {
-                        let f_name = bctx.ctxt.tcx.def_path_str(def_id);
-                        if f_name == "builtin::closure_to_fn_spec" {
+                        let verus_item = bctx.ctxt.verus_items.id_to_name.get(&def_id);
+                        if verus_item == Some(&VerusItem::Expr(ExprItem::ClosureToFnSpec)) {
                             return &args_slice[0];
                         }
                     }
@@ -446,7 +446,7 @@ fn get_fn_path<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &Expr<'tcx>) -> Result<vir::as
             {
                 unsupported_err!(expr.span, format!("Fn {:?}", id))
             } else {
-                let path = def_id_self_to_vir_path_expect(bctx.ctxt.tcx, id);
+                let path = def_id_to_vir_path(bctx.ctxt.tcx, &bctx.ctxt.verus_items, id);
                 Ok(Arc::new(FunX { path }))
             }
         }
@@ -465,20 +465,15 @@ fn fn_call_to_vir<'tcx>(
     outer_modifier: ExprModifier,
 ) -> Result<vir::ast::Expr, VirErr> {
     let tcx = bctx.ctxt.tcx;
-    let f_name = {
-        let mut path_str = tcx.def_path_str(f);
-        // TODO REVIEW HACK this is a temporary hack to address https://github.com/verus-lang/verus/issues/588
-        // @utaal is working on a more long term solution that doesn't rely on string matching
-        if path_str.starts_with("vstd::prelude") {
-            path_str = path_str.replace("vstd::prelude", "builtin");
-        }
-        path_str
-    };
+
+    // DO NOT use f_name to find items (i.e. do not use f_name == "core::cmp::Eq"),
+    // use `crate::verus_item::get_rust_item` instead
+    let f_name = tcx.def_path_str(f);
 
     let verus_item = bctx.ctxt.get_verus_item(f);
     let rust_item = verus_items::get_rust_item(tcx, f);
 
-    // TODO these are broken (they sometimes appear as std::cmp::*); do we need them?
+    // TODO these were broken (they sometimes/often appear as std::cmp::*); do we need them?
     // let is_eq = f_name == "core::cmp::PartialEq::eq";
     // let is_ne = f_name == "core::cmp::PartialEq::ne";
     // let is_le = f_name == "core::cmp::PartialOrd::le";
@@ -497,9 +492,8 @@ fn fn_call_to_vir<'tcx>(
     ));
 
     // These functions are all no-ops in the SMT encoding, so we don't emit any VIR
-    let is_smartptr_new = f_name == "std::boxed::Box::<T>::new"
-        || f_name == "std::rc::Rc::<T>::new"
-        || f_name == "std::sync::Arc::<T>::new";
+    let is_smartptr_new = matches!(rust_item,
+        Some(RustItem::BoxNew | RustItem::RcNew | RustItem::ArcNew));
 
     if let Some(VerusItem::OpenInvariantBlock(_)) = verus_item {
         // `open_invariant_begin` and `open_invariant_end` calls should only appear
@@ -600,7 +594,7 @@ fn fn_call_to_vir<'tcx>(
     let needs_name = !(is_spec_no_proof_args
         || is_spec_allow_proof_args_pre
         || is_compilable_operator.is_some());
-    let path = if !needs_name { None } else { Some(def_id_to_vir_path(tcx, f)) };
+    let path = if !needs_name { None } else { Some(def_id_to_vir_path(tcx, &bctx.ctxt.verus_items, f)) };
 
     let is_get_variant = {
         let fn_attrs = if f.as_local().is_some() {
@@ -677,7 +671,7 @@ fn fn_call_to_vir<'tcx>(
             if let rustc_middle::ty::InstanceDef::Item(item) = inst.def {
                 if let rustc_middle::ty::WithOptConstParam { did, const_param_did: None } = item {
                     let typs = mk_typ_args(&inst.substs)?;
-                    let f = Arc::new(FunX { path: def_id_to_vir_path(tcx, did) });
+                    let f = Arc::new(FunX { path: def_id_to_vir_path(tcx, &bctx.ctxt.verus_items, did) });
                     resolved = Some((f, typs));
                 }
             }
@@ -1122,7 +1116,7 @@ fn fn_call_to_vir<'tcx>(
             let triggers = Arc::new(trigs);
             return mk_expr(ExprX::WithTriggers { triggers, body });
         }
-        Some(VerusItem::OpenInvariantBlock(_) | VerusItem::Pervasive(_) | VerusItem::Marker(_)) => {
+        Some(VerusItem::OpenInvariantBlock(_) | VerusItem::Pervasive(_) | VerusItem::Marker(_) | VerusItem::BuiltinType(_) | VerusItem::BuiltinFunction(_)) => {
         }
         None => (),
     }
@@ -1542,8 +1536,8 @@ fn fn_call_to_vir<'tcx>(
         let mut fn_params: Vec<Ident> = Vec::new();
         for (x, _) in tcx.predicates_of(f).predicates {
             if let PredicateKind::Clause(Clause::Trait(t)) = x.kind().skip_binder() {
-                let name = path_as_rust_name(&def_id_to_vir_path(tcx, t.trait_ref.def_id));
-                if name == "core::ops::function::Fn" {
+                let trait_ref_def_id = t.trait_ref.def_id;
+                if let Some(RustItem::Fn) = verus_items::get_rust_item(tcx, trait_ref_def_id) {
                     for s in t.trait_ref.substs {
                         if let GenericArgKind::Type(ty) = s.unpack() {
                             if let TypX::TypParam(x) = &*mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?
@@ -1647,7 +1641,7 @@ pub(crate) fn expr_tuple_datatype_ctor_to_vir<'tcx>(
 
     let (adt_def_id, variant_def, _is_enum) = get_adt_res(tcx, *res, fun_span)?;
     let variant_name = str_ident(&variant_def.ident(tcx).as_str());
-    let vir_path = def_id_to_vir_path(bctx.ctxt.tcx, adt_def_id);
+    let vir_path = def_id_to_vir_path(bctx.ctxt.tcx, &bctx.ctxt.verus_items, adt_def_id);
 
     let vir_fields = Arc::new(
         args_slice
@@ -1704,7 +1698,7 @@ pub(crate) fn pattern_to_vir_inner<'tcx>(
             let res = bctx.types.qpath_res(qpath, pat.hir_id);
             let (adt_def_id, variant_def, _is_enum) = get_adt_res(tcx, res, pat.span)?;
             let variant_name = str_ident(&variant_def.ident(tcx).as_str());
-            let vir_path = def_id_to_vir_path(bctx.ctxt.tcx, adt_def_id);
+            let vir_path = def_id_to_vir_path(bctx.ctxt.tcx, &bctx.ctxt.verus_items, adt_def_id);
             PatternX::Constructor(vir_path, variant_name, Arc::new(vec![]))
         }
         PatKind::Tuple(pats, dot_dot_pos) => {
@@ -1735,7 +1729,7 @@ pub(crate) fn pattern_to_vir_inner<'tcx>(
             let res = bctx.types.qpath_res(qpath, pat.hir_id);
             let (adt_def_id, variant_def, _is_enum) = get_adt_res(tcx, res, pat.span)?;
             let variant_name = str_ident(&variant_def.ident(tcx).as_str());
-            let vir_path = def_id_to_vir_path(bctx.ctxt.tcx, adt_def_id);
+            let vir_path = def_id_to_vir_path(bctx.ctxt.tcx, &bctx.ctxt.verus_items, adt_def_id);
 
             let (n_wildcards, pos_to_insert_wildcards) =
                 handle_dot_dot(pats.len(), variant_def.fields.len(), &dot_dot_pos);
@@ -1781,7 +1775,7 @@ pub(crate) fn pattern_to_vir_inner<'tcx>(
             let res = bctx.types.qpath_res(qpath, pat.hir_id);
             let (adt_def_id, variant_def, _is_enum) = get_adt_res(tcx, res, pat.span)?;
             let variant_name = str_ident(&variant_def.ident(tcx).as_str());
-            let vir_path = def_id_to_vir_path(bctx.ctxt.tcx, adt_def_id);
+            let vir_path = def_id_to_vir_path(bctx.ctxt.tcx, &bctx.ctxt.verus_items, adt_def_id);
 
             let mut binders: Vec<Binder<vir::ast::Pattern>> = Vec::new();
             for fpat in pats.iter() {
@@ -2119,6 +2113,7 @@ fn is_expr_typ_mut_ref<'tcx>(
 
 pub(crate) fn call_self_path(
     tcx: TyCtxt,
+    verus_items: &verus_items::VerusItems,
     types: &rustc_middle::ty::TypeckResults,
     qpath: &QPath,
 ) -> Option<vir::ast::Path> {
@@ -2127,7 +2122,7 @@ pub(crate) fn call_self_path(
         QPath::LangItem(_, _, _) => None,
         QPath::TypeRelative(ty, _) => match &ty.kind {
             rustc_hir::TyKind::Path(qpath) => match types.qpath_res(&qpath, ty.hir_id) {
-                rustc_hir::def::Res::Def(_, def_id) => def_id_self_to_vir_path(tcx, def_id),
+                rustc_hir::def::Res::Def(_, def_id) => def_id_to_vir_path_option(tcx, verus_items, def_id),
                 _ => None,
             },
             _ => {
@@ -2185,8 +2180,8 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     let def = bctx.types.qpath_res(&qpath, expr.hir_id);
                     match def {
                         rustc_hir::def::Res::Def(_, def_id) => {
-                            let f_name = tcx.def_path_str(def_id);
-                            f_name == "builtin::spec_cast_integer"
+                            bctx.ctxt.verus_items.id_to_name.get(&def_id) ==
+                                Some(&VerusItem::UnaryOp(UnaryOpItem::SpecCastInteger))
                         }
                         _ => false,
                     }
@@ -2241,7 +2236,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                 )),
                 ExprKind::Path(qpath) => {
                     let res = bctx.types.qpath_res(&qpath, fun.hir_id);
-                    let self_path = call_self_path(bctx.ctxt.tcx, &bctx.types, qpath);
+                    let self_path = call_self_path(bctx.ctxt.tcx, &bctx.ctxt.verus_items, &bctx.types, qpath);
                     match res {
                         // A datatype constructor
                         rustc_hir::def::Res::Def(DefKind::Ctor(_, _), _)
@@ -2513,7 +2508,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     Ok(mk_ty_clip(&expr_typ()?, &e, true))
                 }
                 BinOpKind::Div | BinOpKind::Rem => {
-                    match mk_range(tcx, &tc.node_type(expr.hir_id)) {
+                    match mk_range(tcx, &bctx.ctxt.verus_items, &tc.node_type(expr.hir_id)) {
                         IntRange::Int | IntRange::Nat | IntRange::U(_) | IntRange::USize => {
                             // Euclidean division
                             Ok(mk_ty_clip(&expr_typ()?, &e, true))
@@ -2551,6 +2546,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     expr_tuple_datatype_ctor_to_vir(bctx, expr, &res, &[], expr.span, modifier)
                 }
                 Res::Def(DefKind::AssocConst, id) => {
+                    /// TODO TODO TODO verus-items
                     let f_name = bctx.ctxt.tcx.def_path_str(id);
                     if let Some(vir_expr) =
                         int_intrinsic_constant_to_vir(&bctx.ctxt, expr.span, &expr_typ()?, &f_name)
@@ -2567,7 +2563,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     }
                 }
                 Res::Def(DefKind::Const, id) => {
-                    let path = def_id_to_vir_path(tcx, id);
+                    let path = def_id_to_vir_path(tcx, &bctx.ctxt.verus_items, id);
                     let fun = FunX { path };
                     mk_expr(ExprX::ConstVar(Arc::new(fun)))
                 }
@@ -2664,7 +2660,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
             let lhs_modifier = is_expr_typ_mut_ref(bctx, lhs, modifier)?;
             let vir_lhs = expr_to_vir(bctx, lhs, lhs_modifier)?;
             let lhs_ty = tc.node_type(lhs.hir_id);
-            let lhs_ty = mid_ty_simplify(tcx, &lhs_ty, true);
+            let lhs_ty = mid_ty_simplify(tcx, &bctx.ctxt.verus_items, &lhs_ty, true);
             let (datatype, variant_name, field_name) = if let Some(adt_def) = lhs_ty.ty_adt_def() {
                 unsupported_err_unless!(
                     adt_def.variants().len() == 1,
@@ -2672,7 +2668,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     "field_of_adt_with_multiple_variants",
                     expr
                 );
-                let datatype_path = def_id_to_vir_path(tcx, adt_def.did());
+                let datatype_path = def_id_to_vir_path(tcx, &bctx.ctxt.verus_items, adt_def.did());
                 let hir_def = bctx.ctxt.tcx.adt_def(adt_def.did());
                 let variant = hir_def.variants().iter().next().unwrap();
                 let variant_name = str_ident(&variant.ident(tcx).as_str());
@@ -2864,7 +2860,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
             let res = bctx.types.qpath_res(qpath, expr.hir_id);
             let (adt_def_id, variant_def, _is_enum) = get_adt_res(tcx, res, expr.span)?;
             let variant_name = str_ident(&variant_def.ident(tcx).as_str());
-            let path = def_id_to_vir_path(bctx.ctxt.tcx, adt_def_id);
+            let path = def_id_to_vir_path(bctx.ctxt.tcx, &bctx.ctxt.verus_items, adt_def_id);
 
             let vir_fields = Arc::new(
                 fields
@@ -2910,8 +2906,8 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     // Special case `clone` for standard Rc and Arc types
                     // (Could also handle it for other types where cloning is the identity
                     // operation in the SMT encoding.)
-                    let f_name = tcx.def_path_str(fn_def_id);
-                    if f_name == "std::clone::Clone::clone" {
+                    let rust_item = verus_items::get_rust_item(tcx, fn_def_id);
+                    if rust_item == Some(RustItem::Clone) {
                         assert!(other_args.len() == 0);
                         let node_substs = bctx.types.node_substs(expr.hir_id);
                         let arg_typ = match node_substs[0].unpack() {
@@ -2933,10 +2929,11 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                         }
                     }
 
-                    let is_closure_req = f_name == "builtin::FnWithSpecification::requires";
-                    let is_closure_ens = f_name == "builtin::FnWithSpecification::ensures";
-
-                    if is_closure_req || is_closure_ens {
+                    let verus_item = bctx.ctxt.verus_items.id_to_name.get(&fn_def_id);
+                    if let Some(VerusItem::BuiltinFunction(re@(
+                        BuiltinFunctionItem::FnWithSpecificationRequires |
+                        BuiltinFunctionItem::FnWithSpecificationEnsures
+                    ))) = verus_item {
                         {
                             let mut erasure_info = bctx.ctxt.erasure_info.borrow_mut();
                             erasure_info.resolved_calls.push((
@@ -2945,12 +2942,15 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                                 ResolvedCall::Spec,
                             ));
                         }
-                        let bsf = if is_closure_req {
-                            assert!(other_args.len() == 1);
-                            BuiltinSpecFun::ClosureReq
-                        } else {
-                            assert!(other_args.len() == 2);
-                            BuiltinSpecFun::ClosureEns
+                        let bsf = match re {
+                            BuiltinFunctionItem::FnWithSpecificationRequires => {
+                                assert!(other_args.len() == 1);
+                                BuiltinSpecFun::ClosureReq
+                            }
+                            BuiltinFunctionItem::FnWithSpecificationEnsures => {
+                                assert!(other_args.len() == 2);
+                                BuiltinSpecFun::ClosureEns
+                            }
                         };
                         let vir_args = std::iter::once(*receiver)
                             .chain(other_args.iter())
@@ -3093,17 +3093,15 @@ fn unwrap_parameter_to_vir<'tcx>(
             .types
             .type_dependent_def_id(expr_get.hir_id)
             .expect("def id of the method definition");
-        let f_name = bctx.ctxt.tcx.def_path_str(fn_def_id);
-        let is_ghost_view = f_name == "builtin::Ghost::<A>::view";
-        let is_tracked_get = f_name == "builtin::Tracked::<A>::get";
+        let verus_item = bctx.ctxt.verus_items.id_to_name.get(&fn_def_id);
         let ident_x = crate::rust_to_vir_base::qpath_to_ident(bctx.ctxt.tcx, path_x);
         let ident_y = crate::rust_to_vir_base::qpath_to_ident(bctx.ctxt.tcx, path_y);
-        let mode = if is_ghost_view {
-            Some((Mode::Spec, ResolvedCall::Spec))
-        } else if is_tracked_get {
-            Some((Mode::Proof, ResolvedCall::CompilableOperator(CompilableOperator::TrackedGet)))
-        } else {
-            None
+        let mode = match verus_item {
+            Some(VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(SpecGhostTrackedItem::GhostView))) => 
+                Some((Mode::Spec, ResolvedCall::Spec)),
+            Some(VerusItem::CompilableOpr(CompilableOprItem::TrackedGet)) =>
+                Some((Mode::Proof, ResolvedCall::CompilableOperator(CompilableOperator::TrackedGet))),
+            _ => None,
         };
         Some((expr_x.hir_id, expr_y.hir_id, expr_get.hir_id, ident_x, ident_y, mode))
     } else {

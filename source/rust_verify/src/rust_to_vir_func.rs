@@ -8,6 +8,7 @@ use crate::rust_to_vir_base::{
 };
 use crate::rust_to_vir_expr::{expr_to_vir, pat_to_mut_var, ExprModifier};
 use crate::util::{err_span, unsupported_err_span};
+use crate::verus_items::{VerusItem, BuiltinTypeItem};
 use crate::{unsupported_err, unsupported_err_unless};
 use rustc_ast::Attribute;
 use rustc_hir::{
@@ -155,7 +156,7 @@ fn check_new_strlit<'tcx>(ctx: &Context<'tcx>, sig: &'tcx FnSig<'tcx>) -> Result
         _ => return err_span(span, format!("")),
     };
 
-    if ctx.verus_items.id_to_name.get(&id) != Some(&crate::verus_items::VerusItem::Pervasive(crate::verus_items::PervasiveItem::StrSlice)) {
+    if !matches!(ctx.verus_items.id_to_name.get(&id), Some(&crate::verus_items::VerusItem::Pervasive(crate::verus_items::PervasiveItem::StrSlice, _))) {
         return err_span(span, format!("expected a StrSlice"));
     }
     Ok(())
@@ -211,8 +212,8 @@ pub(crate) fn handle_external_fn<'tcx>(
     };
 
     let body = find_body(ctxt, body_id);
-    let (external_id, kind) = get_external_def_id(ctxt.tcx, id, body_id, body, sig)?;
-    let external_path = def_id_to_vir_path(ctxt.tcx, external_id);
+    let (external_id, kind) = get_external_def_id(ctxt.tcx, &ctxt.verus_items, id, body_id, body, sig)?;
+    let external_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, external_id);
 
     if external_path.krate == Some(Arc::new("builtin".to_string())) {
         return err_span(
@@ -296,7 +297,7 @@ pub(crate) fn check_item_fn<'tcx>(
     generics: &'tcx Generics,
     body_id: CheckItemFnEither<&BodyId, &[Ident]>,
 ) -> Result<Option<Fun>, VirErr> {
-    let this_path = def_id_to_vir_path(ctxt.tcx, id);
+    let this_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id);
 
     let is_verus_spec = this_path.segments.last().expect("segment.last").starts_with(VERUS_SPEC);
     let is_new_strlit =
@@ -341,7 +342,7 @@ pub(crate) fn check_item_fn<'tcx>(
     }
 
     let self_typ_params = if let Some((cg, impl_def_id)) = self_generics {
-        Some(check_generics_bounds_fun(ctxt.tcx, cg, impl_def_id)?)
+        Some(check_generics_bounds_fun(ctxt.tcx, &ctxt.verus_items, cg, impl_def_id)?)
     } else {
         None
     };
@@ -379,7 +380,7 @@ pub(crate) fn check_item_fn<'tcx>(
         return Ok(None);
     }
 
-    let sig_typ_bounds = check_generics_bounds_fun(ctxt.tcx, generics, id)?;
+    let sig_typ_bounds = check_generics_bounds_fun(ctxt.tcx, &ctxt.verus_items, generics, id)?;
     let fuel = get_fuel(&vattrs);
 
     let (vir_body, header, params): (_, _, Vec<(String, Span, Option<HirId>)>) = match body_id {
@@ -673,13 +674,16 @@ fn is_mut_ty<'tcx>(
         TyKind::Ref(_, tys, rustc_ast::Mutability::Mut) => Some((tys, None)),
         TyKind::Adt(AdtDef(adt_def_data), args) => {
             let did = adt_def_data.did;
-            let def_name = vir::ast_util::path_as_rust_name(&def_id_to_vir_path(ctxt.tcx, did));
-            let is_ghost = def_name == "builtin::Ghost" && args.len() == 1;
-            let is_tracked = def_name == "builtin::Tracked" && args.len() == 1;
-            if is_ghost || is_tracked {
+            let verus_item = ctxt.verus_items.id_to_name.get(&did);
+            if let Some(VerusItem::BuiltinType(bt@(BuiltinTypeItem::Ghost | BuiltinTypeItem::Tracked))) = verus_item {
+                assert_eq!(args.len(), 1);
                 if let subst::GenericArgKind::Type(t) = args[0].unpack() {
                     if let Some((inner, None)) = is_mut_ty(ctxt, t) {
-                        let mode = if is_ghost { Mode::Spec } else { Mode::Proof };
+                        let mode = match bt {
+                            BuiltinTypeItem::Ghost => Mode::Spec,
+                            BuiltinTypeItem::Tracked => Mode::Proof,
+                            _ => unreachable!(),
+                        };
                         return Some((inner, Some(mode)));
                     }
                 }
@@ -749,6 +753,7 @@ fn all_predicates<'tcx>(
 
 pub(crate) fn get_external_def_id<'tcx>(
     tcx: TyCtxt<'tcx>,
+    verus_items: &crate::verus_items::VerusItems,
     proxy_fun_id: DefId,
     body_id: &BodyId,
     body: &Body<'tcx>,
@@ -816,7 +821,7 @@ pub(crate) fn get_external_def_id<'tcx>(
         if let Ok(Some(inst)) = inst {
             if let rustc_middle::ty::InstanceDef::Item(item) = inst.def {
                 if let rustc_middle::ty::WithOptConstParam { did, const_param_did: None } = item {
-                    let trait_path = def_id_to_vir_path(tcx, trait_def_id);
+                    let trait_path = def_id_to_vir_path(tcx, verus_items, trait_def_id);
                     let kind = FunctionKind::ForeignTraitMethodImpl(trait_path);
                     return Ok((did, kind));
                 }
@@ -843,7 +848,7 @@ pub(crate) fn check_item_const<'tcx>(
     typ: &Typ,
     body_id: &BodyId,
 ) -> Result<(), VirErr> {
-    let path = def_id_to_vir_path(ctxt.tcx, id);
+    let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id);
     let name = Arc::new(FunX { path });
     let mode = get_mode(Mode::Exec, attrs);
     let vattrs = get_verifier_attrs(attrs)?;
@@ -914,7 +919,7 @@ pub(crate) fn check_foreign_item_fn<'tcx>(
     let inputs = fn_sig.inputs();
 
     let ret_typ_mode = check_fn_decl(span, ctxt, decl, attrs, mode, fn_sig.output())?;
-    let typ_bounds = check_generics_bounds_fun(ctxt.tcx, generics, id)?;
+    let typ_bounds = check_generics_bounds_fun(ctxt.tcx, &ctxt.verus_items, generics, id)?;
     let vattrs = get_verifier_attrs(attrs)?;
     let fuel = get_fuel(&vattrs);
     let mut vir_params: Vec<vir::ast::Param> = Vec::new();
@@ -939,7 +944,7 @@ pub(crate) fn check_foreign_item_fn<'tcx>(
         );
         vir_params.push(vir_param);
     }
-    let path = def_id_to_vir_path(ctxt.tcx, id);
+    let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id);
     let name = Arc::new(FunX { path });
     let params = Arc::new(vir_params);
     let (ret_typ, ret_mode) = match ret_typ_mode {

@@ -321,9 +321,9 @@ fn erase_ty<'tcx>(ctxt: &Context<'tcx>, state: &mut State, ty: &Ty<'tcx>) -> Typ
         TyKind::Adt(AdtDef(adt_def_data), args) => {
             let did = adt_def_data.did;
             state.reach_datatype(ctxt, did);
-            let path = def_id_to_vir_path(ctxt.tcx, did);
+            let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, did);
             let is_box = Some(did) == ctxt.tcx.lang_items().owned_box() && args.len() == 2;
-            let def_name = vir::ast_util::path_as_rust_name(&def_id_to_vir_path(ctxt.tcx, did));
+            let def_name = vir::ast_util::path_as_friendly_rust_name(&def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, did));
             let is_smart_ptr = def_name == "alloc::rc::Rc" || def_name == "alloc::sync::Arc";
             let mut typ_args: Vec<Typ> = Vec::new();
             for arg in args.iter() {
@@ -384,7 +384,7 @@ fn erase_pat<'tcx>(ctxt: &Context<'tcx>, state: &mut State, pat: &Pat) -> Patter
             let res = ctxt.types().qpath_res(qpath, pat.hir_id);
             let (adt_def_id, variant_def, is_enum) = get_adt_res(ctxt.tcx, res, pat.span).unwrap();
             let variant_name = str_ident(&variant_def.ident(ctxt.tcx).as_str());
-            let vir_path = def_id_to_vir_path(ctxt.tcx, adt_def_id);
+            let vir_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, adt_def_id);
 
             let name = state.datatype_name(&vir_path);
             let variant =
@@ -410,7 +410,7 @@ fn erase_pat<'tcx>(ctxt: &Context<'tcx>, state: &mut State, pat: &Pat) -> Patter
             let res = ctxt.types().qpath_res(qpath, pat.hir_id);
             let (adt_def_id, variant_def, is_enum) = get_adt_res(ctxt.tcx, res, pat.span).unwrap();
             let variant_name = str_ident(&variant_def.ident(ctxt.tcx).as_str());
-            let vir_path = def_id_to_vir_path(ctxt.tcx, adt_def_id);
+            let vir_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, adt_def_id);
 
             let name = state.datatype_name(&vir_path);
             let variant_name = state.variant(variant_name.to_string());
@@ -425,7 +425,7 @@ fn erase_pat<'tcx>(ctxt: &Context<'tcx>, state: &mut State, pat: &Pat) -> Patter
             let res = ctxt.types().qpath_res(qpath, pat.hir_id);
             let (adt_def_id, variant_def, is_enum) = get_adt_res(ctxt.tcx, res, pat.span).unwrap();
             let variant_name = str_ident(&variant_def.ident(ctxt.tcx).as_str());
-            let vir_path = def_id_to_vir_path(ctxt.tcx, adt_def_id);
+            let vir_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, adt_def_id);
 
             let variant_opt =
                 if is_enum { Some(state.variant(variant_name.to_string())) } else { None };
@@ -852,7 +852,7 @@ fn erase_expr<'tcx>(
                     let (adt_def_id, variant_def, is_enum) =
                         get_adt_res(ctxt.tcx, res, expr.span).unwrap();
                     let variant_name = str_ident(&variant_def.ident(ctxt.tcx).as_str());
-                    let vir_path = def_id_to_vir_path(ctxt.tcx, adt_def_id);
+                    let vir_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, adt_def_id);
 
                     let variant =
                         if is_enum { Some(state.variant(variant_name.to_string())) } else { None };
@@ -874,7 +874,7 @@ fn erase_expr<'tcx>(
                     }
                 }
                 Res::Def(DefKind::Const, id) => {
-                    let vir_path = def_id_to_vir_path(ctxt.tcx, id);
+                    let vir_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id);
                     let fun_name = Arc::new(FunX { path: vir_path });
                     return mk_exp(ExpX::Var(state.fun_name(&fun_name)));
                 }
@@ -916,7 +916,7 @@ fn erase_expr<'tcx>(
             };
             let (self_path, fn_def_id) = if let ExprKind::Path(qpath) = &e0.kind {
                 let self_path =
-                    crate::rust_to_vir_expr::call_self_path(ctxt.tcx, ctxt.types(), qpath);
+                    crate::rust_to_vir_expr::call_self_path(ctxt.tcx, &ctxt.verus_items, ctxt.types(), qpath);
                 let def = ctxt.types().qpath_res(&qpath, e0.hir_id);
                 if let Res::Def(_, fn_def_id) = def {
                     (self_path, Some(fn_def_id))
@@ -984,7 +984,7 @@ fn erase_expr<'tcx>(
                 let (adt_def_id, variant_def, is_enum) =
                     get_adt_res(ctxt.tcx, res, expr.span).unwrap();
                 let variant_name = str_ident(&variant_def.ident(ctxt.tcx).as_str());
-                let vir_path = def_id_to_vir_path(ctxt.tcx, adt_def_id);
+                let vir_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, adt_def_id);
 
                 let datatype = &ctxt.datatypes[&vir_path];
                 let variant = datatype.x.get_variant(&variant_name);
@@ -1273,7 +1273,7 @@ fn erase_const<'tcx>(
     external_body: bool,
     body_id: &BodyId,
 ) {
-    let path = def_id_to_vir_path(ctxt.tcx, id);
+    let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id);
     if let Some(s) = path.segments.last() {
         if s.to_string().starts_with("_DERIVE_builtin_Structural_FOR_") {
             return;
@@ -1449,7 +1449,7 @@ fn erase_fn_common<'tcx>(
     if ctxt.ignored_functions.contains(&id) {
         return;
     }
-    let path = def_id_to_vir_path(ctxt.tcx, id);
+    let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id);
     let is_verus_spec = path.segments.last().expect("segment.last").starts_with(VERUS_SPEC);
     if is_verus_spec {
         return;
@@ -1683,7 +1683,7 @@ fn erase_datatype<'tcx>(
     datatype: Datatype,
 ) {
     let datatype = Box::new(datatype);
-    let path = def_id_to_vir_path(ctxt.tcx, id);
+    let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id);
     let name = state.datatype_name(&path);
     let implements_copy = ctxt.copy_types.get(&id).cloned();
     let mut lifetimes: Vec<GenericParam> = Vec::new();
@@ -1777,7 +1777,7 @@ fn erase_mir_datatype<'tcx>(ctxt: &Context<'tcx>, state: &mut State, id: DefId) 
     if is_box {
         return;
     }
-    let def_name = vir::ast_util::path_as_rust_name(&def_id_to_vir_path(ctxt.tcx, id));
+    let def_name = vir::ast_util::path_as_friendly_rust_name(&def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id));
     let is_smart_ptr = def_name == "alloc::rc::Rc" || def_name == "alloc::sync::Arc";
     if is_smart_ptr {
         return;
@@ -1947,7 +1947,7 @@ pub(crate) fn gen_check_tracked_lifetimes<'tcx>(
                             } else {
                                 let body = ctxt.tcx.hir().body(*body_id);
                                 let (def_id, _) = crate::rust_to_vir_func::get_external_def_id(
-                                    ctxt.tcx, id, body_id, body, sig,
+                                    ctxt.tcx, &ctxt.verus_items, id, body_id, body, sig,
                                 )
                                 .unwrap();
 

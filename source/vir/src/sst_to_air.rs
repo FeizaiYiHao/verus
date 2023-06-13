@@ -4,7 +4,7 @@ use crate::ast::{
     SpannedTyped, Typ, TypX, Typs, UnaryOp, UnaryOpr, VarAt, VirErr, Visibility,
 };
 use crate::ast_util::{
-    allowed_bitvector_type, bitwidth_from_int_range, bitwidth_from_type, error, fun_as_rust_dbg,
+    allowed_bitvector_type, bitwidth_from_int_range, bitwidth_from_type, error, fun_as_friendly_rust_name,
     get_field, get_variant, is_integer_type, msg_error, undecorate_typ, IntegerTypeBitwidth,
 };
 use crate::context::Ctx;
@@ -588,7 +588,7 @@ fn bitvector_expect_exact(
 
 // Generate a unique quantifier ID and map it to the quantifier's span
 fn new_user_qid(ctx: &Ctx, exp: &Exp) -> Qid {
-    let fun_name = fun_as_rust_dbg(
+    let fun_name = fun_as_friendly_rust_name(
         &ctx.fun.as_ref().expect("Expressions are expected to be within a function").current_fun,
     );
     let qcount = ctx.quantifier_count.get();
@@ -2221,7 +2221,7 @@ fn set_fuel(ctx: &Ctx, local: &mut Vec<Decl>, hidden: &Vec<Fun>) {
         let triggers: Triggers = Arc::new(vec![trigger]);
         let binders: Binders<air::ast::Typ> = Arc::new(vec![ident_binder(&id, &str_typ(FUEL_ID))]);
 
-        let fun_name = fun_as_rust_dbg(
+        let fun_name = fun_as_friendly_rust_name(
             &ctx.fun.as_ref().expect("Missing a current function value").current_fun,
         );
         let qid = new_internal_qid(format!("{}_nondefault_fuel", fun_name));
