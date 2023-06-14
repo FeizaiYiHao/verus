@@ -10,7 +10,6 @@
 
 use core::marker::PhantomData;
 
-
 #[rustc_diagnostic_item = "verus::builtin::admit"]
 #[verifier::proof]
 pub fn admit() {

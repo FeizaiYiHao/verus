@@ -1,44 +1,38 @@
-use crate::attributes::{
-    get_custom_err_annotations, get_ghost_block_opt, get_trigger, get_var_mode, get_verifier_attrs,
-    parse_attrs, Attr, GetVariantField, GhostBlockAttr,
-};
-use crate::context::{BodyCtxt, Context};
-use crate::erase::{CompilableOperator, ResolvedCall};
+use crate::attributes::{get_ghost_block_opt, get_verifier_attrs, GetVariantField, GhostBlockAttr};
+use crate::context::BodyCtxt;
+use crate::erase::CompilableOperator;
 use crate::rust_to_vir_base::{
-    def_id_to_vir_path, get_range,
-    is_smt_arith, is_smt_equality, is_type_std_rc_or_arc_or_ref, local_to_var, mid_ty_simplify,
-    mid_ty_to_vir, mid_ty_to_vir_datatype, mid_ty_to_vir_ghost, mk_range, typ_of_node,
-    typ_of_node_expect_mut_ref, def_id_to_vir_path_option,
+    def_id_to_vir_path, is_smt_arith, mid_ty_to_vir, typ_of_node, typ_of_node_expect_mut_ref,
 };
-use crate::rust_to_vir_expr::{ExprModifier, record_fun, check_lit_int, extract_array, expr_to_vir, extract_ensures, extract_tuple, get_fn_path, extract_quant, extract_choose, pat_to_var, closure_to_vir, extract_assert_forall_by, is_expr_typ_mut_ref, mk_ty_clip};
-use crate::util::{err_span, slice_vec_map_result, unsupported_err_span, vec_map, vec_map_result};
-use crate::verus_items::{VerusItem, SpecItem, QuantItem, DirectiveItem, ExprItem, CompilableOprItem, self, RustItem, BinaryOpItem, EqualityItem, SpecOrdItem, ArithItem, SpecArithItem, ChainedItem, AssertItem, UnaryOpItem, SpecLiteralItem, SpecGhostTrackedItem, OpenInvariantBlockItem, BuiltinFunctionItem};
-use crate::{unsupported_err, unsupported_err_unless};
-use air::ast::{Binder, BinderX};
+use crate::rust_to_vir_expr::{
+    check_lit_int, closure_to_vir, expr_to_vir, extract_array, extract_assert_forall_by,
+    extract_choose, extract_ensures, extract_quant, extract_tuple, get_fn_path,
+    is_expr_typ_mut_ref, mk_ty_clip, pat_to_var, record_fun, ExprModifier,
+};
+use crate::unsupported_err_unless;
+use crate::util::{err_span, unsupported_err_span, vec_map_result};
+use crate::verus_items::{
+    self, ArithItem, AssertItem, BinaryOpItem, ChainedItem, CompilableOprItem, DirectiveItem,
+    EqualityItem, ExprItem, QuantItem, RustItem, SpecArithItem, SpecGhostTrackedItem, SpecItem,
+    SpecLiteralItem, SpecOrdItem, UnaryOpItem, VerusItem,
+};
 use air::ast_util::str_ident;
-use rustc_ast::{Attribute, BorrowKind, ByRef, LitKind, Mutability};
-use rustc_hir::def::{DefKind, Res};
-use rustc_hir::{
-    BinOpKind, BindingAnnotation, Block, Closure, Destination, Expr, ExprKind, Guard, HirId, Let,
-    Local, LoopSource, Node, Pat, PatKind, QPath, Stmt, StmtKind, UnOp,
-};
-use crate::rust_intrinsics_to_vir::int_intrinsic_constant_to_vir;
+use rustc_ast::{BorrowKind, LitKind, Mutability};
+use rustc_hir::def::Res;
+use rustc_hir::{Expr, ExprKind, Node, QPath};
 use rustc_middle::ty::subst::GenericArgKind;
-use rustc_middle::ty::DefIdTree;
-use rustc_middle::ty::{AdtDef, Clause, EarlyBinder, PredicateKind, TyCtxt, TyKind, VariantDef};
+use rustc_middle::ty::{Clause, EarlyBinder, PredicateKind, TyKind};
 use rustc_span::def_id::DefId;
 use rustc_span::source_map::Spanned;
 use rustc_span::Span;
 use std::sync::Arc;
 use vir::ast::{
-    ArithOp, ArmX, AssertQueryMode, AutospecUsage, BinaryOp, BitwiseOp, BuiltinSpecFun, CallTarget,
-    ComputeMode, Constant, ExprX, FieldOpr, FunX, HeaderExpr, HeaderExprX, Ident, InequalityOp,
-    IntRange, IntegerTypeBoundKind, InvAtomicity, Mode, ModeCoercion, MultiOp, PatternX, Quant,
-    SpannedTyped, StmtX, Stmts, Typ, TypX, UnaryOp, UnaryOpr, VarAt, VirErr,
+    ArithOp, AssertQueryMode, AutospecUsage, BinaryOp, BitwiseOp, CallTarget, ComputeMode,
+    Constant, ExprX, FieldOpr, FunX, HeaderExprX, Ident, InequalityOp, IntRange,
+    IntegerTypeBoundKind, Mode, ModeCoercion, MultiOp, Quant, Typ, TypX, UnaryOp, UnaryOpr, VarAt,
+    VirErr,
 };
-use vir::ast_util::{
-    const_int_from_string, ident_binder, path_as_friendly_rust_name, types_equal, undecorate_typ,
-};
+use vir::ast_util::{const_int_from_string, types_equal, undecorate_typ};
 use vir::def::positional_field_ident;
 
 pub(crate) fn fn_call_to_vir<'tcx>(
@@ -71,16 +65,26 @@ pub(crate) fn fn_call_to_vir<'tcx>(
     // let is_sub = f_name == "std::ops::Sub::sub";
     // let is_mul = f_name == "std::ops::Mul::mul";
 
-    let is_spec_op = matches!(verus_item, Some(
-        VerusItem::BinaryOp(
-            BinaryOpItem::SpecArith(_) | BinaryOpItem::SpecBitwise(_) | BinaryOpItem::Equality(_) | BinaryOpItem::SpecOrd(_)) |
-        VerusItem::Chained(_) |
-        VerusItem::UnaryOp(UnaryOpItem::SpecLiteral(_) | UnaryOpItem::SpecCastInteger | UnaryOpItem::SpecNeg)
-    ));
+    let is_spec_op = matches!(
+        verus_item,
+        Some(
+            VerusItem::BinaryOp(
+                BinaryOpItem::SpecArith(_)
+                    | BinaryOpItem::SpecBitwise(_)
+                    | BinaryOpItem::Equality(_)
+                    | BinaryOpItem::SpecOrd(_)
+            ) | VerusItem::Chained(_)
+                | VerusItem::UnaryOp(
+                    UnaryOpItem::SpecLiteral(_)
+                        | UnaryOpItem::SpecCastInteger
+                        | UnaryOpItem::SpecNeg
+                )
+        )
+    );
 
     // These functions are all no-ops in the SMT encoding, so we don't emit any VIR
-    let is_smartptr_new = matches!(rust_item,
-        Some(RustItem::BoxNew | RustItem::RcNew | RustItem::ArcNew));
+    let is_smartptr_new =
+        matches!(rust_item, Some(RustItem::BoxNew | RustItem::RcNew | RustItem::ArcNew));
 
     if let Some(VerusItem::OpenInvariantBlock(_)) = verus_item {
         // `open_invariant_begin` and `open_invariant_end` calls should only appear
@@ -98,16 +102,19 @@ pub(crate) fn fn_call_to_vir<'tcx>(
     }
 
     if bctx.external_body
-        && !matches!(verus_item,
-            Some(VerusItem::Spec(
-                SpecItem::Requires
-                | SpecItem::Recommends
-                | SpecItem::Ensures
-                | SpecItem::OpensInvariantsNone
-                | SpecItem::OpensInvariantsAny
-                | SpecItem::OpensInvariants
-                | SpecItem::OpensInvariantsExcept
-            ) | VerusItem::Directive(DirectiveItem::ExtraDependency))
+        && !matches!(
+            verus_item,
+            Some(
+                VerusItem::Spec(
+                    SpecItem::Requires
+                        | SpecItem::Recommends
+                        | SpecItem::Ensures
+                        | SpecItem::OpensInvariantsNone
+                        | SpecItem::OpensInvariantsAny
+                        | SpecItem::OpensInvariants
+                        | SpecItem::OpensInvariantsExcept
+                ) | VerusItem::Directive(DirectiveItem::ExtraDependency)
+            )
         )
     {
         return Ok(bctx.spanned_typed_new(
@@ -136,38 +143,43 @@ pub(crate) fn fn_call_to_vir<'tcx>(
         "call of trait impl"
     );
 
-    let is_spec_no_proof_args = 
-        matches!(verus_item, Some(
-            VerusItem::Spec(_) | VerusItem::Quant(_) | VerusItem::Directive(_) |
-            VerusItem::Expr(
-                ExprItem::Choose |
-                ExprItem::ChooseTuple |
-                ExprItem::Old |
-                ExprItem::StrSliceLen |
-                ExprItem::StrSliceGetChar |
-                ExprItem::StrSliceIsAscii |
-                ExprItem::ClosureToFnSpec |
-                ExprItem::ArchWordBits |
-                ExprItem::Height
-            ) |
-            VerusItem::Assert(_) |
-            VerusItem::WithTriggers |
-            VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(_))
-        ));
+    let is_spec_no_proof_args = matches!(
+        verus_item,
+        Some(
+            VerusItem::Spec(_)
+                | VerusItem::Quant(_)
+                | VerusItem::Directive(_)
+                | VerusItem::Expr(
+                    ExprItem::Choose
+                        | ExprItem::ChooseTuple
+                        | ExprItem::Old
+                        | ExprItem::StrSliceLen
+                        | ExprItem::StrSliceGetChar
+                        | ExprItem::StrSliceIsAscii
+                        | ExprItem::ClosureToFnSpec
+                        | ExprItem::ArchWordBits
+                        | ExprItem::Height
+                )
+                | VerusItem::Assert(_)
+                | VerusItem::WithTriggers
+                | VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(_))
+        )
+    );
     let is_spec_allow_proof_args_pre = is_spec_op
-        || matches!(verus_item, Some(
-            VerusItem::Expr(
-                ExprItem::SignedMax |
-                ExprItem::SignedMin |
-                ExprItem::UnsignedMax
-            ) |
-            VerusItem::BinaryOp(BinaryOpItem::Arith(_))
-        ));
+        || matches!(
+            verus_item,
+            Some(
+                VerusItem::Expr(ExprItem::SignedMax | ExprItem::SignedMin | ExprItem::UnsignedMax)
+                    | VerusItem::BinaryOp(BinaryOpItem::Arith(_))
+            )
+        );
     let is_compilable_operator = match verus_item {
         Some(VerusItem::CompilableOpr(compilable_opr)) => Some(match compilable_opr {
             CompilableOprItem::Implies => CompilableOperator::Implies,
             CompilableOprItem::NewStrLit => CompilableOperator::NewStrLit,
-            CompilableOprItem::GhostExec | CompilableOprItem::GhostNew => CompilableOperator::GhostExec,
+            CompilableOprItem::GhostExec | CompilableOprItem::GhostNew => {
+                CompilableOperator::GhostExec
+            }
             CompilableOprItem::TrackedNew => CompilableOperator::TrackedNew,
             CompilableOprItem::TrackedExec => CompilableOperator::TrackedExec,
             CompilableOprItem::TrackedExecBorrow => CompilableOperator::TrackedExecBorrow,
@@ -181,7 +193,8 @@ pub(crate) fn fn_call_to_vir<'tcx>(
     let needs_name = !(is_spec_no_proof_args
         || is_spec_allow_proof_args_pre
         || is_compilable_operator.is_some());
-    let path = if !needs_name { None } else { Some(def_id_to_vir_path(tcx, &bctx.ctxt.verus_items, f)) };
+    let path =
+        if !needs_name { None } else { Some(def_id_to_vir_path(tcx, &bctx.ctxt.verus_items, f)) };
 
     let is_get_variant = {
         let fn_attrs = if f.as_local().is_some() {
@@ -223,7 +236,13 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             for typ_arg in substs {
                 match typ_arg.unpack() {
                     GenericArgKind::Type(ty) => {
-                        typ_args.push(mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?);
+                        typ_args.push(mid_ty_to_vir(
+                            tcx,
+                            &bctx.ctxt.verus_items,
+                            expr.span,
+                            &ty,
+                            false,
+                        )?);
                     }
                     GenericArgKind::Lifetime(_) => {}
                     GenericArgKind::Const(cnst) => {
@@ -258,7 +277,9 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             if let rustc_middle::ty::InstanceDef::Item(item) = inst.def {
                 if let rustc_middle::ty::WithOptConstParam { did, const_param_did: None } = item {
                     let typs = mk_typ_args(&inst.substs)?;
-                    let f = Arc::new(FunX { path: def_id_to_vir_path(tcx, &bctx.ctxt.verus_items, did) });
+                    let f = Arc::new(FunX {
+                        path: def_id_to_vir_path(tcx, &bctx.ctxt.verus_items, did),
+                    });
                     resolved = Some((f, typs));
                 }
             }
@@ -316,7 +337,9 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                 }
             }
         }
-        Some(VerusItem::UnaryOp(UnaryOpItem::SpecNeg | UnaryOpItem::SpecCastInteger | UnaryOpItem::SpecGhostTracked(_))) => {
+        Some(VerusItem::UnaryOp(
+            UnaryOpItem::SpecNeg | UnaryOpItem::SpecCastInteger | UnaryOpItem::SpecGhostTracked(_),
+        )) => {
             // handled separately later
         }
         Some(VerusItem::Spec(spec_item)) => match spec_item {
@@ -385,7 +408,9 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                     vec_map_result(&subargs, |arg| expr_to_vir(&bctx, arg, ExprModifier::REGULAR))?;
                 let header = match spec_item {
                     SpecItem::Invariant => Arc::new(HeaderExprX::Invariant(Arc::new(vir_args))),
-                    SpecItem::InvariantEnsures => Arc::new(HeaderExprX::InvariantEnsures(Arc::new(vir_args))),
+                    SpecItem::InvariantEnsures => {
+                        Arc::new(HeaderExprX::InvariantEnsures(Arc::new(vir_args)))
+                    }
                     _ => unreachable!(),
                 };
                 return mk_expr(ExprX::Header(header));
@@ -408,7 +433,7 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             };
             let quant = Quant { quant, boxed_params: quant_item != &QuantItem::ForallArith };
             return extract_quant(bctx, expr.span, quant, args[0]);
-        },
+        }
         Some(VerusItem::Directive(directive_item)) => match directive_item {
             DirectiveItem::ExtraDependency | DirectiveItem::Hide | DirectiveItem::Reveal => {
                 unsupported_err_unless!(len == 1, expr.span, "expected hide/reveal", &args);
@@ -433,8 +458,10 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                 let x = get_fn_path(bctx, &args[0])?;
                 match &expr_to_vir(bctx, &args[1], ExprModifier::REGULAR)?.x {
                     ExprX::Const(Constant::Int(i)) => {
-                        let n =
-                            vir::ast_util::const_int_to_u32(&bctx.ctxt.spans.to_air_span(expr.span), i)?;
+                        let n = vir::ast_util::const_int_to_u32(
+                            &bctx.ctxt.spans.to_air_span(expr.span),
+                            i,
+                        )?;
                         return mk_expr(ExprX::Fuel(x, n));
                     }
                     _ => panic!("internal error: is_reveal_fuel"),
@@ -462,8 +489,10 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                 return extract_choose(bctx, expr.span, args[0], true, expr_typ()?);
             }
             crate::verus_items::ExprItem::Old => {
-                if let ExprKind::Path(QPath::Resolved(None, rustc_hir::Path { res: Res::Local(id), .. })) =
-                    &args[0].kind
+                if let ExprKind::Path(QPath::Resolved(
+                    None,
+                    rustc_hir::Path { res: Res::Local(id), .. },
+                )) = &args[0].kind
                 {
                     if let Node::Pat(pat) = tcx.hir().get(*id) {
                         let typ = typ_of_node_expect_mut_ref(bctx, args[0].span, &expr.hir_id)?;
@@ -474,7 +503,10 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                         ));
                     }
                 }
-                return err_span(expr.span, "only a variable binding is allowed as the argument to old");
+                return err_span(
+                    expr.span,
+                    "only a variable binding is allowed as the argument to old",
+                );
             }
             crate::verus_items::ExprItem::StrSliceLen => {
                 return match &expr.kind {
@@ -536,7 +568,13 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             ExprItem::ClosureToFnSpec => {
                 unsupported_err_unless!(len == 1, expr.span, "expected closure_to_spec_fn", &args);
                 if let ExprKind::Closure(..) = &args[0].kind {
-                    return closure_to_vir(bctx, &args[0], expr_typ()?, true, ExprModifier::REGULAR);
+                    return closure_to_vir(
+                        bctx,
+                        &args[0],
+                        expr_typ()?,
+                        true,
+                        ExprModifier::REGULAR,
+                    );
                 } else {
                     return err_span(
                         args[0].span,
@@ -607,7 +645,12 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                 return mk_expr(ExprX::AssertCompute(exp, ComputeMode::Z3));
             }
             AssertItem::AssertByComputeOnly => {
-                unsupported_err_unless!(len == 1, expr.span, "expected assert_by_compute_only", &args);
+                unsupported_err_unless!(
+                    len == 1,
+                    expr.span,
+                    "expected assert_by_compute_only",
+                    &args
+                );
                 let exp = expr_to_vir(bctx, &args[0], ExprModifier::REGULAR)?;
                 return mk_expr(ExprX::AssertCompute(exp, ComputeMode::ComputeOnly));
             }
@@ -682,7 +725,7 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                     mode: AssertQueryMode::BitVector,
                 });
             }
-        }
+        },
         Some(VerusItem::WithTriggers) => {
             unsupported_err_unless!(len == 2, expr.span, "expected with_triggers", &args);
             let modifier = ExprModifier::REGULAR;
@@ -703,8 +746,13 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             let triggers = Arc::new(trigs);
             return mk_expr(ExprX::WithTriggers { triggers, body });
         }
-        Some(VerusItem::OpenInvariantBlock(_) | VerusItem::Pervasive(_, _) | VerusItem::Marker(_) | VerusItem::BuiltinType(_) | VerusItem::BuiltinFunction(_)) => {
-        }
+        Some(
+            VerusItem::OpenInvariantBlock(_)
+            | VerusItem::Pervasive(_, _)
+            | VerusItem::Marker(_)
+            | VerusItem::BuiltinType(_)
+            | VerusItem::BuiltinFunction(_),
+        ) => {}
         None => (),
     }
 
@@ -727,10 +775,15 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                 TyKind::Ref(_, _, rustc_hir::Mutability::Mut) => true,
                 _ => false,
             };
-            if matches!(verus_item, Some(
-                VerusItem::CompilableOpr(CompilableOprItem::TrackedBorrowMut) |
-                VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(SpecGhostTrackedItem::GhostBorrowMut))
-            )) {
+            if matches!(
+                verus_item,
+                Some(
+                    VerusItem::CompilableOpr(CompilableOprItem::TrackedBorrowMut)
+                        | VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(
+                            SpecGhostTrackedItem::GhostBorrowMut
+                        ))
+                )
+            ) {
                 expr_to_vir(bctx, arg, is_expr_typ_mut_ref(bctx, arg, outer_modifier)?)
             } else if is_mut_ref_param {
                 let arg_x = match &arg.kind {
@@ -788,9 +841,7 @@ pub(crate) fn fn_call_to_vir<'tcx>(
     let is_smt_binary = match verus_item {
         Some(verus_item) => match verus_item {
             VerusItem::BinaryOp(BinaryOpItem::Equality(
-                EqualityItem::Equal |
-                EqualityItem::ExtEqual |
-                EqualityItem::ExtEqualDeep
+                EqualityItem::Equal | EqualityItem::ExtEqual | EqualityItem::ExtEqualDeep,
             )) => true,
             VerusItem::BinaryOp(BinaryOpItem::Equality(EqualityItem::SpecEq)) => {
                 let t1 = typ_of_node(bctx, args[0].span, &args[0].hir_id, true)?;
@@ -800,19 +851,28 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                 let t1 = undecorate_typ(&t1);
                 let t2 = undecorate_typ(&t2);
                 if types_equal(&t1, &t2)
-                    || is_smt_arith(bctx, args[0].span, args[1].span, &args[0].hir_id, &args[1].hir_id)?
+                    || is_smt_arith(
+                        bctx,
+                        args[0].span,
+                        args[1].span,
+                        &args[0].hir_id,
+                        &args[1].hir_id,
+                    )?
                 {
                     true
                 } else {
                     return err_span(expr.span, "types must be compatible to use == or !=");
                 }
             }
-            VerusItem::CompilableOpr(CompilableOprItem::Implies) |
-                VerusItem::BinaryOp(BinaryOpItem::Arith(_) | BinaryOpItem::SpecArith(_) | BinaryOpItem::SpecBitwise(_) | BinaryOpItem::SpecOrd(_)) => {
-                is_smt_arith(bctx, args[0].span, args[1].span, &args[0].hir_id, &args[1].hir_id)?
-            }
-            _ => false
-        }
+            VerusItem::CompilableOpr(CompilableOprItem::Implies)
+            | VerusItem::BinaryOp(
+                BinaryOpItem::Arith(_)
+                | BinaryOpItem::SpecArith(_)
+                | BinaryOpItem::SpecBitwise(_)
+                | BinaryOpItem::SpecOrd(_),
+            ) => is_smt_arith(bctx, args[0].span, args[1].span, &args[0].hir_id, &args[1].hir_id)?,
+            _ => false,
+        },
         None => false,
     };
 
@@ -827,16 +887,33 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                     == Some(GhostBlockAttr::Wrapper)
                 {
                     let vir_arg = vir_args[0].clone();
-                    match (compilable_opr, get_ghost_block_opt(bctx.ctxt.tcx.hir().attrs(arg.hir_id))) {
+                    match (
+                        compilable_opr,
+                        get_ghost_block_opt(bctx.ctxt.tcx.hir().attrs(arg.hir_id)),
+                    ) {
                         (CompilableOprItem::GhostExec, Some(GhostBlockAttr::GhostWrapped)) => {
-                            let exprx =
-                                ExprX::Ghost { alloc_wrapper: true, tracked: false, expr: vir_arg.clone() };
-                            return Ok(bctx.spanned_typed_new(arg.span, &vir_arg.typ.clone(), exprx));
+                            let exprx = ExprX::Ghost {
+                                alloc_wrapper: true,
+                                tracked: false,
+                                expr: vir_arg.clone(),
+                            };
+                            return Ok(bctx.spanned_typed_new(
+                                arg.span,
+                                &vir_arg.typ.clone(),
+                                exprx,
+                            ));
                         }
                         (CompilableOprItem::TrackedExec, Some(GhostBlockAttr::TrackedWrapped)) => {
-                            let exprx =
-                                ExprX::Ghost { alloc_wrapper: true, tracked: true, expr: vir_arg.clone() };
-                            return Ok(bctx.spanned_typed_new(arg.span, &vir_arg.typ.clone(), exprx));
+                            let exprx = ExprX::Ghost {
+                                alloc_wrapper: true,
+                                tracked: true,
+                                expr: vir_arg.clone(),
+                            };
+                            return Ok(bctx.spanned_typed_new(
+                                arg.span,
+                                &vir_arg.typ.clone(),
+                                exprx,
+                            ));
                         }
                         (_, attr) => {
                             return err_span(
@@ -850,7 +927,7 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             _ => {
                 // handled later
             }
-        }
+        },
         Some(VerusItem::Spec(spec_item)) => match spec_item {
             SpecItem::DecreasesWhen => {
                 unsupported_err_unless!(len == 1, expr.span, "expected decreases_when", &args);
@@ -871,7 +948,7 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                 return mk_expr(ExprX::AssertAssume { is_assume: true, expr: vir_args[0].clone() });
             }
             _ => unreachable!(),
-        }
+        },
         Some(VerusItem::UnaryOp(UnaryOpItem::SpecCastInteger)) => {
             unsupported_err_unless!(len == 1, expr.span, "spec_cast_integer", args);
             let source_vir = vir_args[0].clone();
@@ -892,7 +969,8 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                 (TypX::Char, TypX::Int(_)) => {
                     let expr_attrs = bctx.ctxt.tcx.hir().attrs(expr.hir_id);
                     let expr_vattrs = get_verifier_attrs(expr_attrs)?;
-                    let source_unicode = mk_expr(ExprX::Unary(UnaryOp::CharToInt, source_vir.clone()))?;
+                    let source_unicode =
+                        mk_expr(ExprX::Unary(UnaryOp::CharToInt, source_vir.clone()))?;
                     return Ok(mk_ty_clip(&to_ty, &source_unicode, expr_vattrs.truncate));
                 }
                 _ => {
@@ -915,18 +993,21 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                 let zero = mk_expr(ExprX::Const(zero_const))?;
                 mk_expr(ExprX::Binary(BinaryOp::Arith(ArithOp::Sub, None), zero, varg))
             }
-            _ => unreachable!("internal error")
+            _ => unreachable!("internal error"),
         }
     } else if is_smt_binary {
         unsupported_err_unless!(len == 2, expr.span, "expected binary op", args);
         let lhs = vir_args[0].clone();
         let rhs = vir_args[1].clone();
-        if let Some(
-            VerusItem::BinaryOp(BinaryOpItem::Equality(ei@(EqualityItem::ExtEqual | EqualityItem::ExtEqualDeep)))
-        ) = verus_item {
+        if let Some(VerusItem::BinaryOp(BinaryOpItem::Equality(
+            ei @ (EqualityItem::ExtEqual | EqualityItem::ExtEqualDeep),
+        ))) = verus_item
+        {
             assert!(node_substs.len() == 1);
             let t = match node_substs[0].unpack() {
-                GenericArgKind::Type(ty) => mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?,
+                GenericArgKind::Type(ty) => {
+                    mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?
+                }
                 _ => panic!("unexpected ext_equal type argument"),
             };
             let vop = vir::ast::BinaryOpr::ExtEq(ei == &EqualityItem::ExtEqualDeep, t);
@@ -936,45 +1017,58 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             VerusItem::BinaryOp(BinaryOpItem::Equality(equality_item)) => match equality_item {
                 EqualityItem::Equal | EqualityItem::SpecEq => BinaryOp::Eq(Mode::Spec),
                 EqualityItem::ExtEqual | EqualityItem::ExtEqualDeep => unreachable!(),
-            }
+            },
             VerusItem::BinaryOp(BinaryOpItem::SpecOrd(spec_ord_item)) => match spec_ord_item {
                 SpecOrdItem::Le => BinaryOp::Inequality(InequalityOp::Le),
                 SpecOrdItem::Ge => BinaryOp::Inequality(InequalityOp::Ge),
                 SpecOrdItem::Lt => BinaryOp::Inequality(InequalityOp::Lt),
                 SpecOrdItem::Gt => BinaryOp::Inequality(InequalityOp::Gt),
-            }
+            },
             VerusItem::BinaryOp(BinaryOpItem::Arith(arith_item)) => match arith_item {
-                ArithItem::BuiltinAdd => BinaryOp::Arith(ArithOp::Add, Some(bctx.ctxt.infer_mode())),
-                ArithItem::BuiltinSub => BinaryOp::Arith(ArithOp::Sub, Some(bctx.ctxt.infer_mode())),
-                ArithItem::BuiltinMul => BinaryOp::Arith(ArithOp::Mul, Some(bctx.ctxt.infer_mode())),
-            }
-            VerusItem::BinaryOp(BinaryOpItem::SpecArith(spec_arith_item)) => match spec_arith_item {
-                SpecArithItem::Add => BinaryOp::Arith(ArithOp::Add, None),
-                SpecArithItem::Sub => BinaryOp::Arith(ArithOp::Sub, None),
-                SpecArithItem::Mul => BinaryOp::Arith(ArithOp::Mul, None),
-                SpecArithItem::EuclideanDiv => BinaryOp::Arith(ArithOp::EuclideanDiv, None),
-                SpecArithItem::EuclideanMod => BinaryOp::Arith(ArithOp::EuclideanMod, None),
+                ArithItem::BuiltinAdd => {
+                    BinaryOp::Arith(ArithOp::Add, Some(bctx.ctxt.infer_mode()))
+                }
+                ArithItem::BuiltinSub => {
+                    BinaryOp::Arith(ArithOp::Sub, Some(bctx.ctxt.infer_mode()))
+                }
+                ArithItem::BuiltinMul => {
+                    BinaryOp::Arith(ArithOp::Mul, Some(bctx.ctxt.infer_mode()))
+                }
+            },
+            VerusItem::BinaryOp(BinaryOpItem::SpecArith(spec_arith_item)) => {
+                match spec_arith_item {
+                    SpecArithItem::Add => BinaryOp::Arith(ArithOp::Add, None),
+                    SpecArithItem::Sub => BinaryOp::Arith(ArithOp::Sub, None),
+                    SpecArithItem::Mul => BinaryOp::Arith(ArithOp::Mul, None),
+                    SpecArithItem::EuclideanDiv => BinaryOp::Arith(ArithOp::EuclideanDiv, None),
+                    SpecArithItem::EuclideanMod => BinaryOp::Arith(ArithOp::EuclideanMod, None),
+                }
             }
             VerusItem::BinaryOp(BinaryOpItem::SpecBitwise(spec_bitwise)) => match spec_bitwise {
-                verus_items::SpecBitwiseItem::BitAnd => BinaryOp::Bitwise(BitwiseOp::BitAnd, Mode::Spec),
-                verus_items::SpecBitwiseItem::BitOr => BinaryOp::Bitwise(BitwiseOp::BitOr, Mode::Spec),
+                verus_items::SpecBitwiseItem::BitAnd => {
+                    BinaryOp::Bitwise(BitwiseOp::BitAnd, Mode::Spec)
+                }
+                verus_items::SpecBitwiseItem::BitOr => {
+                    BinaryOp::Bitwise(BitwiseOp::BitOr, Mode::Spec)
+                }
                 verus_items::SpecBitwiseItem::BitXor => {
                     if matches!(*vir_args[0].typ, TypX::Bool) {
                         BinaryOp::Xor
                     } else {
                         BinaryOp::Bitwise(BitwiseOp::BitXor, Mode::Spec)
                     }
-                },
+                }
                 verus_items::SpecBitwiseItem::Shl => BinaryOp::Bitwise(BitwiseOp::Shl, Mode::Spec),
                 verus_items::SpecBitwiseItem::Shr => BinaryOp::Bitwise(BitwiseOp::Shr, Mode::Spec),
-            }
+            },
             VerusItem::CompilableOpr(CompilableOprItem::Implies) => BinaryOp::Implies,
             _ => unreachable!("internal error"),
         };
         let e = mk_expr(ExprX::Binary(vop, lhs, rhs))?;
-        if matches!(verus_item, Some(
-            VerusItem::BinaryOp(BinaryOpItem::Arith(_) | BinaryOpItem::SpecArith(_))
-        )) {
+        if matches!(
+            verus_item,
+            Some(VerusItem::BinaryOp(BinaryOpItem::Arith(_) | BinaryOpItem::SpecArith(_)))
+        ) {
             Ok(mk_ty_clip(&expr_typ()?, &e, true))
         } else {
             Ok(e)
@@ -989,18 +1083,17 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                     "chained inequalities for non-integer types",
                     &args
                 );
-                let exprx =
-                    ExprX::Multi(MultiOp::Chained(Arc::new(vec![])), Arc::new(vec![vir_args[0].clone()]));
+                let exprx = ExprX::Multi(
+                    MultiOp::Chained(Arc::new(vec![])),
+                    Arc::new(vec![vir_args[0].clone()]),
+                );
                 Ok(bctx.spanned_typed_new(expr.span, &Arc::new(TypX::Bool), exprx))
             }
             ChainedItem::Cmp => {
                 unsupported_err_unless!(len == 1, expr.span, "spec_chained_cmp", args);
                 Ok(vir_args[0].clone())
             }
-            ChainedItem::Le |
-            ChainedItem::Lt |
-            ChainedItem::Ge |
-            ChainedItem::Gt => {
+            ChainedItem::Le | ChainedItem::Lt | ChainedItem::Ge | ChainedItem::Gt => {
                 unsupported_err_unless!(len == 2, expr.span, "chained inequality", &args);
                 unsupported_err_unless!(
                     matches!(&vir_args[0].x, ExprX::Multi(MultiOp::Chained(_), _)),
@@ -1034,15 +1127,17 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             }
         }
     } else if let Some(
-        VerusItem::CompilableOpr(CompilableOprItem::GhostNew) |
-        VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(
-            SpecGhostTrackedItem::GhostView |
-            SpecGhostTrackedItem::GhostBorrow |
-            SpecGhostTrackedItem::TrackedView
-        ))
-    ) = verus_item {
+        VerusItem::CompilableOpr(CompilableOprItem::GhostNew)
+        | VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(
+            SpecGhostTrackedItem::GhostView
+            | SpecGhostTrackedItem::GhostBorrow
+            | SpecGhostTrackedItem::TrackedView,
+        )),
+    ) = verus_item
+    {
         assert!(vir_args.len() == 1);
-        let is_ghost_new = verus_item == Some(&VerusItem::CompilableOpr(CompilableOprItem::GhostNew));
+        let is_ghost_new =
+            verus_item == Some(&VerusItem::CompilableOpr(CompilableOprItem::GhostNew));
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Spec,
             from_mode: Mode::Spec,
@@ -1050,8 +1145,7 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if matches!(verus_item,
-        Some(VerusItem::CompilableOpr(CompilableOprItem::GhostExec))) {
+    } else if matches!(verus_item, Some(VerusItem::CompilableOpr(CompilableOprItem::GhostExec))) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Exec,
@@ -1060,8 +1154,7 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if matches!(verus_item,
-        Some(VerusItem::CompilableOpr(CompilableOprItem::TrackedNew))) {
+    } else if matches!(verus_item, Some(VerusItem::CompilableOpr(CompilableOprItem::TrackedNew))) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Proof,
@@ -1070,10 +1163,12 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if matches!(verus_item,
+    } else if matches!(
+        verus_item,
         Some(VerusItem::CompilableOpr(
             CompilableOprItem::TrackedExec | CompilableOprItem::TrackedExecBorrow
-        ))) {
+        ))
+    ) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Exec,
@@ -1082,10 +1177,12 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if matches!(verus_item,
+    } else if matches!(
+        verus_item,
         Some(VerusItem::CompilableOpr(
             CompilableOprItem::TrackedGet | CompilableOprItem::TrackedBorrow
-        ))) {
+        ))
+    ) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Proof,
@@ -1094,8 +1191,12 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             kind: ModeCoercion::Other,
         };
         mk_expr(ExprX::Unary(op, vir_args[0].clone()))
-    } else if matches!(verus_item,
-        Some(VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(SpecGhostTrackedItem::GhostBorrowMut)))) {
+    } else if matches!(
+        verus_item,
+        Some(VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(
+            SpecGhostTrackedItem::GhostBorrowMut
+        )))
+    ) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Proof,
@@ -1105,8 +1206,10 @@ pub(crate) fn fn_call_to_vir<'tcx>(
         };
         let typ = typ_of_node(bctx, expr.span, &expr.hir_id, true)?;
         Ok(bctx.spanned_typed_new(expr.span, &typ, ExprX::Unary(op, vir_args[0].clone())))
-    } else if matches!(verus_item,
-        Some(VerusItem::CompilableOpr(CompilableOprItem::TrackedBorrowMut))) {
+    } else if matches!(
+        verus_item,
+        Some(VerusItem::CompilableOpr(CompilableOprItem::TrackedBorrowMut))
+    ) {
         assert!(vir_args.len() == 1);
         let op = UnaryOp::CoerceMode {
             op_mode: Mode::Proof,
@@ -1127,7 +1230,8 @@ pub(crate) fn fn_call_to_vir<'tcx>(
                 if let Some(RustItem::Fn) = verus_items::get_rust_item(tcx, trait_ref_def_id) {
                     for s in t.trait_ref.substs {
                         if let GenericArgKind::Type(ty) = s.unpack() {
-                            if let TypX::TypParam(x) = &*mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?
+                            if let TypX::TypParam(x) =
+                                &*mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?
                             {
                                 fn_params.push(x.clone());
                             }
@@ -1143,4 +1247,3 @@ pub(crate) fn fn_call_to_vir<'tcx>(
         Ok(bctx.spanned_typed_new(expr.span, &expr_typ()?, ExprX::Call(target, Arc::new(vir_args))))
     }
 }
-

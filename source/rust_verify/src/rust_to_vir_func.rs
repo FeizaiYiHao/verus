@@ -8,7 +8,7 @@ use crate::rust_to_vir_base::{
 };
 use crate::rust_to_vir_expr::{expr_to_vir, pat_to_mut_var, ExprModifier};
 use crate::util::{err_span, unsupported_err_span};
-use crate::verus_items::{VerusItem, BuiltinTypeItem};
+use crate::verus_items::{BuiltinTypeItem, VerusItem};
 use crate::{unsupported_err, unsupported_err_unless};
 use rustc_ast::Attribute;
 use rustc_hir::{
@@ -156,7 +156,13 @@ fn check_new_strlit<'tcx>(ctx: &Context<'tcx>, sig: &'tcx FnSig<'tcx>) -> Result
         _ => return err_span(span, format!("")),
     };
 
-    if !matches!(ctx.verus_items.id_to_name.get(&id), Some(&crate::verus_items::VerusItem::Pervasive(crate::verus_items::PervasiveItem::StrSlice, _))) {
+    if !matches!(
+        ctx.verus_items.id_to_name.get(&id),
+        Some(&crate::verus_items::VerusItem::Pervasive(
+            crate::verus_items::PervasiveItem::StrSlice,
+            _
+        ))
+    ) {
         return err_span(span, format!("expected a StrSlice"));
     }
     Ok(())
@@ -212,7 +218,8 @@ pub(crate) fn handle_external_fn<'tcx>(
     };
 
     let body = find_body(ctxt, body_id);
-    let (external_id, kind) = get_external_def_id(ctxt.tcx, &ctxt.verus_items, id, body_id, body, sig)?;
+    let (external_id, kind) =
+        get_external_def_id(ctxt.tcx, &ctxt.verus_items, id, body_id, body, sig)?;
     let external_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, external_id);
 
     if external_path.krate == Some(Arc::new("builtin".to_string())) {
@@ -300,9 +307,10 @@ pub(crate) fn check_item_fn<'tcx>(
     let this_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id);
 
     let is_verus_spec = this_path.segments.last().expect("segment.last").starts_with(VERUS_SPEC);
-    let is_new_strlit =
-        ctxt.verus_items.id_to_name.get(&id) ==
-        Some(&crate::verus_items::VerusItem::CompilableOpr(crate::verus_items::CompilableOprItem::NewStrLit));
+    let is_new_strlit = ctxt.verus_items.id_to_name.get(&id)
+        == Some(&crate::verus_items::VerusItem::CompilableOpr(
+            crate::verus_items::CompilableOprItem::NewStrLit,
+        ));
 
     let vattrs = get_verifier_attrs(attrs)?;
     let mode = get_mode(Mode::Exec, attrs);
@@ -439,8 +447,13 @@ pub(crate) fn check_item_fn<'tcx>(
             );
         }
 
-        let typ =
-            mid_ty_to_vir(ctxt.tcx, &ctxt.verus_items, span, is_ref_mut.map(|(t, _)| t).unwrap_or(input), false)?;
+        let typ = mid_ty_to_vir(
+            ctxt.tcx,
+            &ctxt.verus_items,
+            span,
+            is_ref_mut.map(|(t, _)| t).unwrap_or(input),
+            false,
+        )?;
 
         // is_mut: means a parameter is like `x: &mut X` or `x: Tracked<&mut X>`
         let is_mut = is_ref_mut.is_some();
@@ -675,7 +688,10 @@ fn is_mut_ty<'tcx>(
         TyKind::Adt(AdtDef(adt_def_data), args) => {
             let did = adt_def_data.did;
             let verus_item = ctxt.verus_items.id_to_name.get(&did);
-            if let Some(VerusItem::BuiltinType(bt@(BuiltinTypeItem::Ghost | BuiltinTypeItem::Tracked))) = verus_item {
+            if let Some(VerusItem::BuiltinType(
+                bt @ (BuiltinTypeItem::Ghost | BuiltinTypeItem::Tracked),
+            )) = verus_item
+            {
                 assert_eq!(args.len(), 1);
                 if let subst::GenericArgKind::Type(t) = args[0].unpack() {
                     if let Some((inner, None)) = is_mut_ty(ctxt, t) {
@@ -935,8 +951,13 @@ pub(crate) fn check_foreign_item_fn<'tcx>(
     for (param, input) in idents.iter().zip(inputs.iter()) {
         let name = Arc::new(foreign_param_to_var(param));
         let is_mut = is_mut_ty(ctxt, *input);
-        let typ =
-            mid_ty_to_vir(ctxt.tcx, &ctxt.verus_items, param.span, is_mut.map(|(t, _)| t).unwrap_or(input), false)?;
+        let typ = mid_ty_to_vir(
+            ctxt.tcx,
+            &ctxt.verus_items,
+            param.span,
+            is_mut.map(|(t, _)| t).unwrap_or(input),
+            false,
+        )?;
         // REVIEW: the parameters don't have attributes, so we use the overall mode
         let vir_param = ctxt.spanned_new(
             param.span,

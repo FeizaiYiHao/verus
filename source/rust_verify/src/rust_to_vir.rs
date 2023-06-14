@@ -16,7 +16,7 @@ use crate::rust_to_vir_base::{
 };
 use crate::rust_to_vir_func::{check_foreign_item_fn, check_item_fn, CheckItemFnEither};
 use crate::util::{err_span, unsupported_err_span};
-use crate::verus_items::{VerusItem, BuiltinTypeItem, MarkerItem, RustItem, self};
+use crate::verus_items::{self, MarkerItem, RustItem, VerusItem};
 use crate::{err_unless, unsupported_err, unsupported_err_unless};
 
 use rustc_ast::IsAuto;
@@ -30,7 +30,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use vir::ast::Typ;
 use vir::ast::{Fun, FunX, FunctionKind, GenericBoundX, Krate, KrateX, Mode, Path, VirErr};
-use vir::ast_util::path_as_friendly_rust_name;
 
 fn check_item<'tcx>(
     ctxt: &Context<'tcx>,
@@ -213,11 +212,12 @@ fn check_item<'tcx>(
                     );
                     true
                 } else if let Some(
-                    RustItem::StructuralEq |
-                    RustItem::StructuralPartialEq |
-                    RustItem::PartialEq |
-                    RustItem::Eq
-                ) = verus_items::get_rust_item(ctxt.tcx, path.res.def_id()) {
+                    RustItem::StructuralEq
+                    | RustItem::StructuralPartialEq
+                    | RustItem::PartialEq
+                    | RustItem::Eq,
+                ) = verus_items::get_rust_item(ctxt.tcx, path.res.def_id())
+                {
                     // TODO SOUNDNESS additional checks of the implementation
                     true
                 } else {
@@ -255,7 +255,13 @@ fn check_item<'tcx>(
                 // So to get the type args, we strip off the first element.
                 let mut types: Vec<Typ> = Vec::new();
                 for ty in trait_ref.0.substs.types().skip(1) {
-                    types.push(mid_ty_to_vir(ctxt.tcx, &ctxt.verus_items, impll.generics.span, &ty, false)?);
+                    types.push(mid_ty_to_vir(
+                        ctxt.tcx,
+                        &ctxt.verus_items,
+                        impll.generics.span,
+                        &ty,
+                        false,
+                    )?);
                 }
                 let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, path.res.def_id());
                 Some((path, Arc::new(types)))
@@ -421,8 +427,14 @@ fn check_item<'tcx>(
                 }
                 unsupported_err!(item.span, "trait generic bounds");
             }
-            let generics_bnds =
-                check_generics_bounds(ctxt.tcx, &ctxt.verus_items, trait_generics, false, trait_def_id, None)?;
+            let generics_bnds = check_generics_bounds(
+                ctxt.tcx,
+                &ctxt.verus_items,
+                trait_generics,
+                false,
+                trait_def_id,
+                None,
+            )?;
             let trait_path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, trait_def_id);
             let mut methods: Vec<vir::ast::Function> = Vec::new();
             let mut method_names: Vec<Fun> = Vec::new();
@@ -575,7 +587,8 @@ pub(crate) fn crate_to_vir<'tcx>(ctxt: &Context<'tcx>) -> Result<Krate, VirErr> 
                         item_to_module.extend(visitor.ids.iter().map(move |ii| (*ii, None)))
                     } else {
                         // Shallowly visit just the top-level items (don't visit nested modules)
-                        let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, owner_id.to_def_id());
+                        let path =
+                            def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, owner_id.to_def_id());
                         vir.module_ids.push(path.clone());
                         let path = Some(path);
                         item_to_module
@@ -583,7 +596,8 @@ pub(crate) fn crate_to_vir<'tcx>(ctxt: &Context<'tcx>) -> Result<Krate, VirErr> 
                     };
                 }
                 OwnerNode::Crate(mod_) => {
-                    let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, owner_id.to_def_id());
+                    let path =
+                        def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, owner_id.to_def_id());
                     vir.module_ids.push(path.clone());
                     item_to_module
                         .extend(mod_.item_ids.iter().map(move |ii| (*ii, Some(path.clone()))))

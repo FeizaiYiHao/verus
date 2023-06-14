@@ -1,18 +1,21 @@
 use crate::attributes::{
     get_custom_err_annotations, get_ghost_block_opt, get_trigger, get_var_mode, get_verifier_attrs,
-    parse_attrs, Attr, GetVariantField, GhostBlockAttr,
+    parse_attrs, Attr, GhostBlockAttr,
 };
 use crate::context::{BodyCtxt, Context};
 use crate::erase::{CompilableOperator, ResolvedCall};
+use crate::rust_intrinsics_to_vir::int_intrinsic_constant_to_vir;
 use crate::rust_to_vir_base::{
-    def_id_to_vir_path, get_range,
-    is_smt_arith, is_smt_equality, is_type_std_rc_or_arc_or_ref, local_to_var, mid_ty_simplify,
-    mid_ty_to_vir, mid_ty_to_vir_datatype, mid_ty_to_vir_ghost, mk_range, typ_of_node,
-    typ_of_node_expect_mut_ref, def_id_to_vir_path_option,
+    def_id_to_vir_path, def_id_to_vir_path_option, get_range, is_smt_arith, is_smt_equality,
+    is_type_std_rc_or_arc_or_ref, local_to_var, mid_ty_simplify, mid_ty_to_vir,
+    mid_ty_to_vir_datatype, mid_ty_to_vir_ghost, mk_range, typ_of_node, typ_of_node_expect_mut_ref,
 };
 use crate::util::{err_span, slice_vec_map_result, unsupported_err_span, vec_map, vec_map_result};
-use crate::verus_items::{VerusItem, SpecItem, QuantItem, DirectiveItem, ExprItem, CompilableOprItem, self, RustItem, BinaryOpItem, EqualityItem, SpecOrdItem, ArithItem, SpecArithItem, ChainedItem, AssertItem, UnaryOpItem, SpecLiteralItem, SpecGhostTrackedItem, OpenInvariantBlockItem, BuiltinFunctionItem};
-use crate::{unsupported_err, unsupported_err_unless, fn_call_to_vir::fn_call_to_vir};
+use crate::verus_items::{
+    self, BuiltinFunctionItem, CompilableOprItem, ExprItem, OpenInvariantBlockItem, RustItem,
+    SpecGhostTrackedItem, UnaryOpItem, VerusItem,
+};
+use crate::{fn_call_to_vir::fn_call_to_vir, unsupported_err, unsupported_err_unless};
 use air::ast::{Binder, BinderX};
 use air::ast_util::str_ident;
 use rustc_ast::{Attribute, BorrowKind, ByRef, LitKind, Mutability};
@@ -21,23 +24,19 @@ use rustc_hir::{
     BinOpKind, BindingAnnotation, Block, Closure, Destination, Expr, ExprKind, Guard, HirId, Let,
     Local, LoopSource, Node, Pat, PatKind, QPath, Stmt, StmtKind, UnOp,
 };
-use crate::rust_intrinsics_to_vir::int_intrinsic_constant_to_vir;
 use rustc_middle::ty::subst::GenericArgKind;
 use rustc_middle::ty::DefIdTree;
-use rustc_middle::ty::{AdtDef, Clause, EarlyBinder, PredicateKind, TyCtxt, TyKind, VariantDef};
+use rustc_middle::ty::{AdtDef, TyCtxt, TyKind, VariantDef};
 use rustc_span::def_id::DefId;
 use rustc_span::source_map::Spanned;
 use rustc_span::Span;
 use std::sync::Arc;
 use vir::ast::{
-    ArithOp, ArmX, AssertQueryMode, AutospecUsage, BinaryOp, BitwiseOp, BuiltinSpecFun, CallTarget,
-    ComputeMode, Constant, ExprX, FieldOpr, FunX, HeaderExpr, HeaderExprX, Ident, InequalityOp,
-    IntRange, IntegerTypeBoundKind, InvAtomicity, Mode, ModeCoercion, MultiOp, PatternX, Quant,
-    SpannedTyped, StmtX, Stmts, Typ, TypX, UnaryOp, UnaryOpr, VarAt, VirErr,
+    ArithOp, ArmX, AutospecUsage, BinaryOp, BitwiseOp, BuiltinSpecFun, CallTarget, Constant, ExprX,
+    FieldOpr, FunX, HeaderExpr, HeaderExprX, InequalityOp, IntRange, InvAtomicity, Mode, PatternX,
+    Quant, SpannedTyped, StmtX, Stmts, Typ, TypX, UnaryOp, UnaryOpr, VirErr,
 };
-use vir::ast_util::{
-    const_int_from_string, ident_binder, path_as_friendly_rust_name, types_equal, undecorate_typ,
-};
+use vir::ast_util::{ident_binder, types_equal, undecorate_typ};
 use vir::def::positional_field_ident;
 
 pub(crate) fn pat_to_mut_var<'tcx>(pat: &Pat) -> Result<(bool, String), VirErr> {
@@ -126,7 +125,13 @@ fn closure_ret_typ<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &Expr<'tcx>) -> Result<Typ
         TyKind::Closure(_def, substs) => {
             let sig = substs.as_closure().sig();
             let t = sig.output().skip_binder();
-            mid_ty_to_vir(bctx.ctxt.tcx, &bctx.ctxt.verus_items, expr.span, &t, false /* allow_mut_ref */)
+            mid_ty_to_vir(
+                bctx.ctxt.tcx,
+                &bctx.ctxt.verus_items,
+                expr.span,
+                &t,
+                false, /* allow_mut_ref */
+            )
         }
         _ => panic!("closure_param_types expected Closure type"),
     }
@@ -297,7 +302,10 @@ pub(crate) fn extract_choose<'tcx>(
                 ExprX::Choose { params, cond, body },
             ))
         }
-        _ => { dbg!(&expr); err_span(expr.span, "argument to choose must be a closure") },
+        _ => {
+            dbg!(&expr);
+            err_span(expr.span, "argument to choose must be a closure")
+        }
     }
 }
 
@@ -437,7 +445,10 @@ pub(crate) fn record_fun(
     erasure_info.resolved_calls.push((hir_id, span.data(), resolved_call));
 }
 
-pub(crate) fn get_fn_path<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &Expr<'tcx>) -> Result<vir::ast::Fun, VirErr> {
+pub(crate) fn get_fn_path<'tcx>(
+    bctx: &BodyCtxt<'tcx>,
+    expr: &Expr<'tcx>,
+) -> Result<vir::ast::Fun, VirErr> {
     match &expr.kind {
         ExprKind::Path(qpath) => {
             let id = bctx.types.qpath_res(qpath, expr.hir_id).def_id();
@@ -653,7 +664,13 @@ pub(crate) fn pattern_to_vir_inner<'tcx>(
                     let actual_idx = i + pos_to_insert_wildcards;
                     let field_def = &variant_def.fields[actual_idx];
                     let typ = field_def.ty(bctx.ctxt.tcx, substs);
-                    let vir_typ = mid_ty_to_vir(bctx.ctxt.tcx, &bctx.ctxt.verus_items, pat.span, &typ, false)?;
+                    let vir_typ = mid_ty_to_vir(
+                        bctx.ctxt.tcx,
+                        &bctx.ctxt.verus_items,
+                        pat.span,
+                        &typ,
+                        false,
+                    )?;
                     let pattern =
                         bctx.spanned_typed_new(pat.span, &vir_typ, PatternX::Wildcard(true));
                     wildcard_binders
@@ -835,10 +852,12 @@ pub(crate) fn invariant_block_open<'a>(
         }) if dot_dot_pos.as_opt_usize().is_none() => {
             let verus_item = verus_items.id_to_name.get(fun_id);
             let atomicity = match verus_item {
-                Some(VerusItem::OpenInvariantBlock(OpenInvariantBlockItem::OpenAtomicInvariantBegin)) =>
-                    InvAtomicity::Atomic,
-                Some(VerusItem::OpenInvariantBlock(OpenInvariantBlockItem::OpenLocalInvariantBegin)) =>
-                    InvAtomicity::NonAtomic,
+                Some(VerusItem::OpenInvariantBlock(
+                    OpenInvariantBlockItem::OpenAtomicInvariantBegin,
+                )) => InvAtomicity::Atomic,
+                Some(VerusItem::OpenInvariantBlock(
+                    OpenInvariantBlockItem::OpenLocalInvariantBegin,
+                )) => InvAtomicity::NonAtomic,
                 _ => {
                     return None;
                 }
@@ -934,7 +953,9 @@ fn invariant_block_to_vir<'tcx>(
 
     if let Some((hir_id1, hir_id2, fun_id)) = invariant_block_close(close_stmt) {
         let verus_item = bctx.ctxt.verus_items.id_to_name.get(&fun_id);
-        if verus_item != Some(&VerusItem::OpenInvariantBlock(OpenInvariantBlockItem::OpenInvariantEnd)) {
+        if verus_item
+            != Some(&VerusItem::OpenInvariantBlock(OpenInvariantBlockItem::OpenInvariantEnd))
+        {
             return malformed_inv_block_err(expr);
         }
 
@@ -1019,7 +1040,9 @@ pub(crate) fn call_self_path(
         QPath::LangItem(_, _, _) => None,
         QPath::TypeRelative(ty, _) => match &ty.kind {
             rustc_hir::TyKind::Path(qpath) => match types.qpath_res(&qpath, ty.hir_id) {
-                rustc_hir::def::Res::Def(_, def_id) => def_id_to_vir_path_option(tcx, verus_items, def_id),
+                rustc_hir::def::Res::Def(_, def_id) => {
+                    def_id_to_vir_path_option(tcx, verus_items, def_id)
+                }
                 _ => None,
             },
             _ => {
@@ -1077,8 +1100,8 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     let def = bctx.types.qpath_res(&qpath, expr.hir_id);
                     match def {
                         rustc_hir::def::Res::Def(_, def_id) => {
-                            bctx.ctxt.verus_items.id_to_name.get(&def_id) ==
-                                Some(&VerusItem::UnaryOp(UnaryOpItem::SpecCastInteger))
+                            bctx.ctxt.verus_items.id_to_name.get(&def_id)
+                                == Some(&VerusItem::UnaryOp(UnaryOpItem::SpecCastInteger))
                         }
                         _ => false,
                     }
@@ -1133,7 +1156,8 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                 )),
                 ExprKind::Path(qpath) => {
                     let res = bctx.types.qpath_res(&qpath, fun.hir_id);
-                    let self_path = call_self_path(bctx.ctxt.tcx, &bctx.ctxt.verus_items, &bctx.types, qpath);
+                    let self_path =
+                        call_self_path(bctx.ctxt.tcx, &bctx.ctxt.verus_items, &bctx.types, qpath);
                     match res {
                         // A datatype constructor
                         rustc_hir::def::Res::Def(DefKind::Ctor(_, _), _)
@@ -1405,7 +1429,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     Ok(mk_ty_clip(&expr_typ()?, &e, true))
                 }
                 BinOpKind::Div | BinOpKind::Rem => {
-                    match mk_range(tcx, &bctx.ctxt.verus_items, &tc.node_type(expr.hir_id)) {
+                    match mk_range(&bctx.ctxt.verus_items, &tc.node_type(expr.hir_id)) {
                         IntRange::Int | IntRange::Nat | IntRange::U(_) | IntRange::USize => {
                             // Euclidean division
                             Ok(mk_ty_clip(&expr_typ()?, &e, true))
@@ -1825,10 +1849,11 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     }
 
                     let verus_item = bctx.ctxt.verus_items.id_to_name.get(&fn_def_id);
-                    if let Some(VerusItem::BuiltinFunction(re@(
-                        BuiltinFunctionItem::FnWithSpecificationRequires |
-                        BuiltinFunctionItem::FnWithSpecificationEnsures
-                    ))) = verus_item {
+                    if let Some(VerusItem::BuiltinFunction(
+                        re @ (BuiltinFunctionItem::FnWithSpecificationRequires
+                        | BuiltinFunctionItem::FnWithSpecificationEnsures),
+                    )) = verus_item
+                    {
                         {
                             let mut erasure_info = bctx.ctxt.erasure_info.borrow_mut();
                             erasure_info.resolved_calls.push((
@@ -1856,7 +1881,13 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                         for typ_arg in bctx.types.node_substs(expr.hir_id) {
                             match typ_arg.unpack() {
                                 GenericArgKind::Type(ty) => {
-                                    typ_args.push(mid_ty_to_vir(tcx, &bctx.ctxt.verus_items, expr.span, &ty, false)?);
+                                    typ_args.push(mid_ty_to_vir(
+                                        tcx,
+                                        &bctx.ctxt.verus_items,
+                                        expr.span,
+                                        &ty,
+                                        false,
+                                    )?);
                                 }
                                 GenericArgKind::Lifetime(_) => {}
                                 _ => unsupported_err!(
@@ -1992,10 +2023,13 @@ fn unwrap_parameter_to_vir<'tcx>(
         let ident_x = crate::rust_to_vir_base::qpath_to_ident(bctx.ctxt.tcx, path_x);
         let ident_y = crate::rust_to_vir_base::qpath_to_ident(bctx.ctxt.tcx, path_y);
         let mode = match verus_item {
-            Some(VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(SpecGhostTrackedItem::GhostView))) => 
-                Some((Mode::Spec, ResolvedCall::Spec)),
-            Some(VerusItem::CompilableOpr(CompilableOprItem::TrackedGet)) =>
-                Some((Mode::Proof, ResolvedCall::CompilableOperator(CompilableOperator::TrackedGet))),
+            Some(VerusItem::UnaryOp(UnaryOpItem::SpecGhostTracked(
+                SpecGhostTrackedItem::GhostView,
+            ))) => Some((Mode::Spec, ResolvedCall::Spec)),
+            Some(VerusItem::CompilableOpr(CompilableOprItem::TrackedGet)) => Some((
+                Mode::Proof,
+                ResolvedCall::CompilableOperator(CompilableOperator::TrackedGet),
+            )),
             _ => None,
         };
         Some((expr_x.hir_id, expr_y.hir_id, expr_get.hir_id, ident_x, ident_y, mode))

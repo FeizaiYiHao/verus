@@ -1,7 +1,7 @@
 use air::ast::Ident;
 use regex::Regex;
-use rustc_middle::ty::{TyCtxt, TyKind, DefIdTree};
-use rustc_span::{def_id::DefId, Symbol};
+use rustc_middle::ty::{DefIdTree, TyCtxt, TyKind};
+use rustc_span::def_id::DefId;
 use std::{collections::HashMap, sync::Arc};
 
 enum TyToStableStringPartialResult {
@@ -19,7 +19,10 @@ impl TyToStableStringPartialResult {
 }
 
 // The names returned by this are intended exclusively for matching in `get_rust_item`
-fn ty_to_stable_string_partial<'tcx>(tcx: TyCtxt<'tcx>, ty: &rustc_middle::ty::Ty<'_>) -> Option<TyToStableStringPartialResult> {
+fn ty_to_stable_string_partial<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    ty: &rustc_middle::ty::Ty<'_>,
+) -> Option<TyToStableStringPartialResult> {
     Some(TyToStableStringPartialResult::Segment(match ty.kind() {
         TyKind::Bool => format!("bool"),
         TyKind::Char => format!("char"),
@@ -43,11 +46,24 @@ fn ty_to_stable_string_partial<'tcx>(tcx: TyCtxt<'tcx>, ty: &rustc_middle::ty::T
             ty_to_stable_string_partial(tcx, ty)?.into_inner(),
         ),
         TyKind::Never => format!("!"),
-        TyKind::Tuple(ref tys) => format!("({})", tys.iter().map(|ty| ty_to_stable_string_partial(tcx, &ty).map(|x| x.into_inner())).collect::<Option<Vec<_>>>()?.join(",")),
+        TyKind::Tuple(ref tys) => format!(
+            "({})",
+            tys.iter()
+                .map(|ty| ty_to_stable_string_partial(tcx, &ty).map(|x| x.into_inner()))
+                .collect::<Option<Vec<_>>>()?
+                .join(",")
+        ),
         TyKind::Param(ref param_ty) => format!("{}", param_ty.name.as_str()),
-        TyKind::Adt(def, _substs) => return Some(TyToStableStringPartialResult::Path(def_id_to_stable_rust_path(tcx, def.did())?)),
+        TyKind::Adt(def, _substs) => {
+            return Some(TyToStableStringPartialResult::Path(def_id_to_stable_rust_path(
+                tcx,
+                def.did(),
+            )?));
+        }
         TyKind::Str => format!("str"),
-        TyKind::Array(ty, sz) => format!("[{}; {}]", ty_to_stable_string_partial(tcx, &ty)?.into_inner(), sz),
+        TyKind::Array(ty, sz) => {
+            format!("[{}; {}]", ty_to_stable_string_partial(tcx, &ty)?.into_inner(), sz)
+        }
         TyKind::Slice(ty) => format!("[{}]", ty_to_stable_string_partial(tcx, &ty)?.into_inner()),
         _ => return None,
     }))
@@ -65,9 +81,7 @@ pub(crate) fn def_id_to_stable_rust_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId)
             DefPathData::ValueNs(symbol) | DefPathData::TypeNs(symbol) => {
                 segments.push(symbol.to_string())
             }
-            DefPathData::Ctor => {
-                segments.push(vir::def::RUST_DEF_CTOR.to_string())
-            }
+            DefPathData::Ctor => segments.push(vir::def::RUST_DEF_CTOR.to_string()),
             DefPathData::Impl => {
                 if one_impl_block_in_path {
                     return None;
@@ -92,7 +106,6 @@ pub(crate) fn def_id_to_stable_rust_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId)
     }
     Some(segments.join("::"))
 }
-
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
 pub(crate) enum SpecItem {
@@ -239,7 +252,7 @@ pub(crate) enum AssertItem {
 pub(crate) enum SpecLiteralItem {
     Integer,
     Int,
-    Nat
+    Nat,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
@@ -470,8 +483,11 @@ pub(crate) struct VerusItems {
     pub(crate) name_to_id: HashMap<VerusItem, DefId>,
 }
 
-pub(crate) fn from_diagnostic_items(diagnostic_items: &rustc_hir::diagnostic_items::DiagnosticItems) -> VerusItems {
-    let verus_item_map: HashMap<&str, VerusItem> = verus_items_map().iter().map(|(k, v)| (*k, v.clone())).collect();
+pub(crate) fn from_diagnostic_items(
+    diagnostic_items: &rustc_hir::diagnostic_items::DiagnosticItems,
+) -> VerusItems {
+    let verus_item_map: HashMap<&str, VerusItem> =
+        verus_items_map().iter().map(|(k, v)| (*k, v.clone())).collect();
     let diagnostic_name_to_id = &diagnostic_items.name_to_id;
     let mut id_to_name: HashMap<DefId, VerusItem> = HashMap::new();
     let mut name_to_id: HashMap<VerusItem, DefId> = HashMap::new();

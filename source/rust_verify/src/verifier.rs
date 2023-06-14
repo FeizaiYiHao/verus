@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use vir::ast::{Fun, Function, Ident, InferMode, Krate, Mode, VirErr, Visibility};
-use vir::ast_util::{fun_as_friendly_rust_name, friendly_fun_name_crate_relative, is_visible_to};
+use vir::ast_util::{friendly_fun_name_crate_relative, fun_as_friendly_rust_name, is_visible_to};
 use vir::def::{CommandsWithContext, CommandsWithContextX, SnapPos};
 use vir::func_to_air::SstMap;
 use vir::prelude::PreludeConfig;
@@ -743,7 +743,8 @@ impl Verifier {
                 continue;
             }
             let commands = vir::func_to_air::func_name_to_air(ctx, &reporter, &function)?;
-            let comment = "Function-Decl ".to_string() + &fun_as_friendly_rust_name(&function.x.name);
+            let comment =
+                "Function-Decl ".to_string() + &fun_as_friendly_rust_name(&function.x.name);
             self.run_commands(&reporter, &mut air_context, &commands, &comment);
             function_decl_commands.push((commands.clone(), comment.clone()));
         }
@@ -1475,8 +1476,8 @@ impl verus_rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
                     return;
                 }
             };
-            let verus_items = Arc::new(crate::verus_items::from_diagnostic_items(
-                &tcx.all_diagnostic_items(())));
+            let verus_items =
+                Arc::new(crate::verus_items::from_diagnostic_items(&tcx.all_diagnostic_items(())));
             let spans = SpanContextX::new(
                 tcx,
                 compiler.session().local_stable_crate_id(),

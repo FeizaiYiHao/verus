@@ -4,8 +4,9 @@ use crate::ast::{
     SpannedTyped, Typ, TypX, Typs, UnaryOp, UnaryOpr, VarAt, VirErr, Visibility,
 };
 use crate::ast_util::{
-    allowed_bitvector_type, bitwidth_from_int_range, bitwidth_from_type, error, fun_as_friendly_rust_name,
-    get_field, get_variant, is_integer_type, msg_error, undecorate_typ, IntegerTypeBitwidth,
+    allowed_bitvector_type, bitwidth_from_int_range, bitwidth_from_type, error,
+    fun_as_friendly_rust_name, get_field, get_variant, is_integer_type, msg_error, undecorate_typ,
+    IntegerTypeBitwidth,
 };
 use crate::context::Ctx;
 use crate::def::{

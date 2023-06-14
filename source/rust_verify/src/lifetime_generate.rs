@@ -323,7 +323,11 @@ fn erase_ty<'tcx>(ctxt: &Context<'tcx>, state: &mut State, ty: &Ty<'tcx>) -> Typ
             state.reach_datatype(ctxt, did);
             let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, did);
             let is_box = Some(did) == ctxt.tcx.lang_items().owned_box() && args.len() == 2;
-            let def_name = vir::ast_util::path_as_friendly_rust_name(&def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, did));
+            let def_name = vir::ast_util::path_as_friendly_rust_name(&def_id_to_vir_path(
+                ctxt.tcx,
+                &ctxt.verus_items,
+                did,
+            ));
             let is_smart_ptr = def_name == "alloc::rc::Rc" || def_name == "alloc::sync::Arc";
             let mut typ_args: Vec<Typ> = Vec::new();
             for arg in args.iter() {
@@ -915,8 +919,12 @@ fn erase_expr<'tcx>(
                 _ => false,
             };
             let (self_path, fn_def_id) = if let ExprKind::Path(qpath) = &e0.kind {
-                let self_path =
-                    crate::rust_to_vir_expr::call_self_path(ctxt.tcx, &ctxt.verus_items, ctxt.types(), qpath);
+                let self_path = crate::rust_to_vir_expr::call_self_path(
+                    ctxt.tcx,
+                    &ctxt.verus_items,
+                    ctxt.types(),
+                    qpath,
+                );
                 let def = ctxt.types().qpath_res(&qpath, e0.hir_id);
                 if let Res::Def(_, fn_def_id) = def {
                     (self_path, Some(fn_def_id))
@@ -1777,7 +1785,11 @@ fn erase_mir_datatype<'tcx>(ctxt: &Context<'tcx>, state: &mut State, id: DefId) 
     if is_box {
         return;
     }
-    let def_name = vir::ast_util::path_as_friendly_rust_name(&def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id));
+    let def_name = vir::ast_util::path_as_friendly_rust_name(&def_id_to_vir_path(
+        ctxt.tcx,
+        &ctxt.verus_items,
+        id,
+    ));
     let is_smart_ptr = def_name == "alloc::rc::Rc" || def_name == "alloc::sync::Arc";
     if is_smart_ptr {
         return;
@@ -1947,7 +1959,12 @@ pub(crate) fn gen_check_tracked_lifetimes<'tcx>(
                             } else {
                                 let body = ctxt.tcx.hir().body(*body_id);
                                 let (def_id, _) = crate::rust_to_vir_func::get_external_def_id(
-                                    ctxt.tcx, &ctxt.verus_items, id, body_id, body, sig,
+                                    ctxt.tcx,
+                                    &ctxt.verus_items,
+                                    id,
+                                    body_id,
+                                    body,
+                                    sig,
                                 )
                                 .unwrap();
 

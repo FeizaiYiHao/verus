@@ -6,7 +6,7 @@ use crate::rust_to_vir_base::{
 };
 use crate::unsupported_err_unless;
 use crate::util::{err_span, unsupported_err_span};
-use crate::verus_items::{VerusItem, PervasiveItem};
+use crate::verus_items::{PervasiveItem, VerusItem};
 use air::ast_util::str_ident;
 use rustc_ast::Attribute;
 use rustc_hir::{EnumDef, Generics, ItemId, VariantData};
@@ -118,9 +118,10 @@ pub fn check_item_struct<'tcx>(
     assert!(adt_def.is_struct());
     let vattrs = get_verifier_attrs(attrs)?;
 
-    let is_strslice_struct = matches!(ctxt
-        .verus_items.id_to_name.get(&id.owner_id.to_def_id()),
-        Some(&VerusItem::Pervasive(PervasiveItem::StrSlice, _)));
+    let is_strslice_struct = matches!(
+        ctxt.verus_items.id_to_name.get(&id.owner_id.to_def_id()),
+        Some(&VerusItem::Pervasive(PervasiveItem::StrSlice, _))
+    );
 
     if is_strslice_struct {
         if vattrs.external_type_specification {

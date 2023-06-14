@@ -1,16 +1,13 @@
 use crate::attributes::get_verifier_attrs;
 use crate::context::{BodyCtxt, Context};
-use crate::file_loader::PervasiveFileLoader;
 use crate::util::{err_span, unsupported_err_span};
-use crate::verus_items::{VerusItem, self, BuiltinTypeItem, RustItem, PervasiveItem};
+use crate::verus_items::{self, BuiltinTypeItem, RustItem, VerusItem};
 use crate::{unsupported_err, unsupported_err_unless};
-use rustc_ast::ptr::P;
 use rustc_ast::{ByRef, Mutability};
 use rustc_hir::definitions::DefPath;
 use rustc_hir::{GenericParam, GenericParamKind, Generics, HirId, QPath, Ty};
 use rustc_infer::infer::TyCtxtInferExt;
-use rustc_middle::ty::print::{FmtPrinter, PrettyPrinter, Printer};
-use rustc_middle::ty::{GenericParamDefKind, DefIdTree};
+use rustc_middle::ty::GenericParamDefKind;
 use rustc_middle::ty::Visibility;
 use rustc_middle::ty::{AdtDef, TyCtxt, TyKind};
 use rustc_middle::ty::{BoundConstness, Clause, ImplPolarity, PredicateKind, TraitPredicate};
@@ -19,7 +16,6 @@ use rustc_span::symbol::{kw, Ident};
 use rustc_span::Span;
 use rustc_trait_selection::infer::InferCtxtExt;
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::sync::Arc;
 use vir::ast::{GenericBoundX, IntRange, Path, PathX, Typ, TypBounds, TypX, Typs, VirErr};
 use vir::ast_util::{types_equal, undecorate_typ};
@@ -89,7 +85,12 @@ pub(crate) fn fn_item_hir_id_to_self_def_id<'tcx>(
 
 // Register an alternative "friendly" paths for printing better error messages
 // or for the command-line --verify-function arguments.
-fn register_friendly_path_as_rust_name<'tcx>(tcx: TyCtxt<'tcx>, verus_items: &crate::verus_items::VerusItems, def_id: DefId, path: &Path) {
+fn register_friendly_path_as_rust_name<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    verus_items: &crate::verus_items::VerusItems,
+    def_id: DefId,
+    path: &Path,
+) {
     let hir_id = if let Some(local_id) = def_id.as_local() {
         tcx.hir().local_def_id_to_hir_id(local_id)
     } else {
@@ -122,7 +123,14 @@ fn register_friendly_path_as_rust_name<'tcx>(tcx: TyCtxt<'tcx>, verus_items: &cr
                 // but converted into VIR datatypes.
 
                 let self_ty = tcx.type_of(owner_id.to_def_id());
-                let vir_ty = mid_ty_to_vir_ghost(tcx, verus_items, impll.self_ty.span, &self_ty, true, false);
+                let vir_ty = mid_ty_to_vir_ghost(
+                    tcx,
+                    verus_items,
+                    impll.self_ty.span,
+                    &self_ty,
+                    true,
+                    false,
+                );
                 let vir_ty = if let Ok(t) = vir_ty {
                     t
                 } else {
@@ -151,7 +159,11 @@ fn def_to_path_ident<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> vir::ast::Ident 
     }
 }
 
-pub(crate) fn def_id_to_vir_path_option<'tcx>(tcx: TyCtxt<'tcx>, verus_items: &crate::verus_items::VerusItems, def_id: DefId) -> Option<Path> {
+pub(crate) fn def_id_to_vir_path_option<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    verus_items: &crate::verus_items::VerusItems,
+    def_id: DefId,
+) -> Option<Path> {
     let verus_item = verus_items.id_to_name.get(&def_id);
     if let Some(VerusItem::Pervasive(_, Some(fn_name))) = verus_item {
         // interpreter.rs and def.rs refer directly to some impl methods,
@@ -167,8 +179,13 @@ pub(crate) fn def_id_to_vir_path_option<'tcx>(tcx: TyCtxt<'tcx>, verus_items: &c
     path
 }
 
-pub(crate) fn def_id_to_vir_path<'tcx>(tcx: TyCtxt<'tcx>, verus_items: &crate::verus_items::VerusItems, def_id: DefId) -> Path {
-    def_id_to_vir_path_option(tcx, verus_items, def_id).expect(&format!("unhandled name {:?}", def_id))
+pub(crate) fn def_id_to_vir_path<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    verus_items: &crate::verus_items::VerusItems,
+    def_id: DefId,
+) -> Path {
+    def_id_to_vir_path_option(tcx, verus_items, def_id)
+        .expect(&format!("unhandled name {:?}", def_id))
 }
 
 pub(crate) fn def_id_to_datatype<'tcx, 'hir>(
@@ -242,7 +259,10 @@ pub(crate) fn get_range(typ: &Typ) -> IntRange {
     }
 }
 
-pub(crate) fn mk_range<'tcx>(tcx: TyCtxt<'tcx>, verus_items: &crate::verus_items::VerusItems, ty: &rustc_middle::ty::Ty<'tcx>) -> IntRange {
+pub(crate) fn mk_range<'tcx>(
+    verus_items: &crate::verus_items::VerusItems,
+    ty: &rustc_middle::ty::Ty<'tcx>,
+) -> IntRange {
     match ty.kind() {
         TyKind::Adt(AdtDef(adt_def_data), _) => {
             let did = adt_def_data.did;
@@ -282,14 +302,16 @@ pub(crate) fn mid_ty_simplify<'tcx>(
         }
         TyKind::Adt(AdtDef(adt_def_data), args) => {
             let did = adt_def_data.did;
-            let is_ghost_or_tracked = matches!(verus_items.id_to_name.get(&did),
-                Some(VerusItem::BuiltinType(BuiltinTypeItem::Ghost | BuiltinTypeItem::Tracked)));
+            let is_ghost_or_tracked = matches!(
+                verus_items.id_to_name.get(&did),
+                Some(VerusItem::BuiltinType(BuiltinTypeItem::Ghost | BuiltinTypeItem::Tracked))
+            );
             let rust_item = verus_items::get_rust_item(tcx, did);
             let is_box = rust_item == Some(verus_items::RustItem::Box);
-            let is_smart_ptr = (
-                matches!(rust_item, Some(verus_items::RustItem::Rc | verus_items::RustItem::Arc))
-                || is_ghost_or_tracked) &&
-                args.len() == 1;
+            let is_smart_ptr =
+                (matches!(rust_item, Some(verus_items::RustItem::Rc | verus_items::RustItem::Arc))
+                    || is_ghost_or_tracked)
+                    && args.len() == 1;
             if is_box || is_smart_ptr {
                 if let rustc_middle::ty::subst::GenericArgKind::Type(t) = args[0].unpack() {
                     mid_ty_simplify(tcx, verus_items, &t, false)
@@ -316,13 +338,15 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
     use vir::ast::TypDecoration;
     let t = match ty.kind() {
         TyKind::Bool => (Arc::new(TypX::Bool), false),
-        TyKind::Uint(_) | TyKind::Int(_) => (Arc::new(TypX::Int(mk_range(tcx, verus_items, ty))), false),
+        TyKind::Uint(_) | TyKind::Int(_) => (Arc::new(TypX::Int(mk_range(verus_items, ty))), false),
         TyKind::Ref(_, tys, rustc_ast::Mutability::Not) => {
-            let (t0, ghost) = mid_ty_to_vir_ghost(tcx, verus_items, span, tys, as_datatype, allow_mut_ref)?;
+            let (t0, ghost) =
+                mid_ty_to_vir_ghost(tcx, verus_items, span, tys, as_datatype, allow_mut_ref)?;
             (Arc::new(TypX::Decorate(TypDecoration::Ref, t0.clone())), ghost)
         }
         TyKind::Ref(_, tys, rustc_ast::Mutability::Mut) if allow_mut_ref => {
-            let (t0, ghost) = mid_ty_to_vir_ghost(tcx, verus_items, span, tys, as_datatype, allow_mut_ref)?;
+            let (t0, ghost) =
+                mid_ty_to_vir_ghost(tcx, verus_items, span, tys, as_datatype, allow_mut_ref)?;
             (Arc::new(TypX::Decorate(TypDecoration::MutRef, t0.clone())), ghost)
         }
         TyKind::Param(param) if param.name == kw::SelfUpper => {
@@ -339,12 +363,15 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
         TyKind::Tuple(_) => {
             let mut typs: Vec<Typ> = Vec::new();
             for t in ty.tuple_fields().iter() {
-                typs.push(mid_ty_to_vir_ghost(tcx, verus_items, span, &t, as_datatype, allow_mut_ref)?.0);
+                typs.push(
+                    mid_ty_to_vir_ghost(tcx, verus_items, span, &t, as_datatype, allow_mut_ref)?.0,
+                );
             }
             (Arc::new(TypX::Tuple(Arc::new(typs))), false)
         }
         TyKind::Slice(ty) => {
-            let typ = mid_ty_to_vir_ghost(tcx, verus_items, span, ty, as_datatype, allow_mut_ref)?.0;
+            let typ =
+                mid_ty_to_vir_ghost(tcx, verus_items, span, ty, as_datatype, allow_mut_ref)?.0;
             let typs = Arc::new(vec![typ]);
             (Arc::new(TypX::Datatype(vir::def::slice_type(), typs)), false)
         }
@@ -352,7 +379,11 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
             let did = adt_def_data.did;
             let is_strslice = matches!(
                 verus_items.id_to_name.get(&did),
-                    Some(&crate::verus_items::VerusItem::Pervasive(crate::verus_items::PervasiveItem::StrSlice, _)));
+                Some(&crate::verus_items::VerusItem::Pervasive(
+                    crate::verus_items::PervasiveItem::StrSlice,
+                    _
+                ))
+            );
             if is_strslice && !as_datatype {
                 return Ok((Arc::new(TypX::StrSlice), false));
             }
@@ -391,18 +422,23 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
                     let decorate = |d: TypDecoration, ghost: bool| {
                         Ok((Arc::new(TypX::Decorate(d, t0.clone())), ghost))
                     };
-                    ;
                     let verus_item = verus_items.id_to_name.get(&did);
                     let rust_item = verus_items::get_rust_item(tcx, did);
                     match (verus_item, rust_item) {
-                        (Some(VerusItem::BuiltinType(BuiltinTypeItem::Ghost)), _) => return decorate(TypDecoration::Ghost, true),
-                        (Some(VerusItem::BuiltinType(BuiltinTypeItem::Tracked)), _) => return decorate(TypDecoration::Tracked, true),
-                        (_, Some(RustItem::Rc)) => { return decorate(TypDecoration::Rc, *ghost) },
-                        (_, Some(RustItem::Arc)) => { return decorate(TypDecoration::Arc, *ghost) },
+                        (Some(VerusItem::BuiltinType(BuiltinTypeItem::Ghost)), _) => {
+                            return decorate(TypDecoration::Ghost, true);
+                        }
+                        (Some(VerusItem::BuiltinType(BuiltinTypeItem::Tracked)), _) => {
+                            return decorate(TypDecoration::Tracked, true);
+                        }
+                        (_, Some(RustItem::Rc)) => return decorate(TypDecoration::Rc, *ghost),
+                        (_, Some(RustItem::Arc)) => return decorate(TypDecoration::Arc, *ghost),
                         _ => {}
                     }
                 }
-                if let Some(VerusItem::BuiltinType(BuiltinTypeItem::FnSpec))= verus_items.id_to_name.get(&did) {
+                if let Some(VerusItem::BuiltinType(BuiltinTypeItem::FnSpec)) =
+                    verus_items.id_to_name.get(&did)
+                {
                     assert!(typ_args.len() == 2);
                     let typ_arg_tuple = typ_args[0].0.clone();
                     let ret_typ = typ_args[1].0.clone();
@@ -423,7 +459,9 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
             let sig = substs.as_closure().sig();
             let mut args: Vec<Typ> = Vec::new();
             for t in sig.inputs().skip_binder().iter() {
-                args.push(mid_ty_to_vir_ghost(tcx, verus_items, span, t, as_datatype, allow_mut_ref)?.0);
+                args.push(
+                    mid_ty_to_vir_ghost(tcx, verus_items, span, t, as_datatype, allow_mut_ref)?.0,
+                );
             }
             assert!(args.len() == 1);
             let args = match &*args[0] {
@@ -518,7 +556,6 @@ pub(crate) fn is_type_std_rc_or_arc_or_ref<'tcx>(
     match ty.kind() {
         TyKind::Adt(AdtDef(adt_def_data), _args) => {
             let did = adt_def_data.did;
-            use verus_items::RustItem;
             if let Some(RustItem::Rc | RustItem::Arc) = verus_items::get_rust_item(tcx, did) {
                 return true;
             }
@@ -551,7 +588,13 @@ pub(crate) fn typ_of_node<'tcx>(
     id: &HirId,
     allow_mut_ref: bool,
 ) -> Result<Typ, VirErr> {
-    mid_ty_to_vir(bctx.ctxt.tcx, &bctx.ctxt.verus_items, span, &bctx.types.node_type(*id), allow_mut_ref)
+    mid_ty_to_vir(
+        bctx.ctxt.tcx,
+        &bctx.ctxt.verus_items,
+        span,
+        &bctx.types.node_type(*id),
+        allow_mut_ref,
+    )
 }
 
 pub(crate) fn typ_of_node_expect_mut_ref<'tcx>(
@@ -571,7 +614,10 @@ pub(crate) fn implements_structural<'tcx>(
     ctxt: &Context<'tcx>,
     ty: rustc_middle::ty::Ty<'tcx>,
 ) -> bool {
-    let structural_def_id = ctxt.verus_items.name_to_id.get(&VerusItem::Marker(crate::verus_items::MarkerItem::Structural))
+    let structural_def_id = ctxt
+        .verus_items
+        .name_to_id
+        .get(&VerusItem::Marker(crate::verus_items::MarkerItem::Structural))
         .expect("structural trait is not defined");
 
     use crate::rustc_middle::ty::TypeVisitable;
@@ -784,7 +830,8 @@ pub(crate) fn check_generics_bounds<'tcx>(
                     continue;
                 }
 
-                let generic_bound = check_generic_bound(tcx, verus_items, trait_def_id, &trait_params)?;
+                let generic_bound =
+                    check_generic_bound(tcx, verus_items, trait_def_id, &trait_params)?;
 
                 match lhs.kind() {
                     TyKind::Param(param) => {

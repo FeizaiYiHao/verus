@@ -9,7 +9,7 @@ use crate::ast::{
     ArithOp, BinaryOp, BitwiseOp, ComputeMode, Constant, Fun, FunX, Idents, InequalityOp, IntRange,
     IntegerTypeBoundKind, PathX, SpannedTyped, Typ, TypX, UnaryOp, VirErr,
 };
-use crate::ast_util::{error, undecorate_typ, path_as_vstd_name};
+use crate::ast_util::{error, path_as_vstd_name, undecorate_typ};
 use crate::func_to_air::{SstInfo, SstMap};
 use crate::prelude::ArchWordBits;
 use crate::sst::{Bnd, BndX, CallFun, Exp, ExpX, Exps, Trigs, UniqueIdent};
