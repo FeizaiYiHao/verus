@@ -197,14 +197,6 @@ pub(crate) fn def_id_to_datatype<'tcx, 'hir>(
     TypX::Datatype(def_id_to_vir_path(tcx, verus_items, def_id), typ_args)
 }
 
-// TODO: proper handling of def_ids
-// use https://doc.rust-lang.org/stable/nightly-rustc/rustc_middle/ty/context/struct.TyCtxt.html#method.lang_items ?
-pub(crate) fn hack_get_def_name<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> String {
-    let debug_name = tcx.def_path_debug_str(def_id);
-    let last_colon = debug_name.rfind(':').unwrap();
-    debug_name[last_colon + 1..].to_string()
-}
-
 pub(crate) fn foreign_param_to_var<'tcx>(ident: &Ident) -> String {
     ident.to_string()
 }
@@ -387,7 +379,6 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
             if is_strslice && !as_datatype {
                 return Ok((Arc::new(TypX::StrSlice), false));
             }
-            // TODO use lang items instead of string comparisons
             let verus_item = verus_items.id_to_name.get(&did);
             if let Some(VerusItem::BuiltinType(BuiltinTypeItem::Int)) = verus_item {
                 (Arc::new(TypX::Int(IntRange::Int)), false)

@@ -1,8 +1,7 @@
 use crate::attributes::{get_mode, get_verifier_attrs, VerifierAttrs};
 use crate::context::Context;
 use crate::rust_to_vir_base::{
-    check_generics_bounds, def_id_to_vir_path, hack_get_def_name, mid_ty_to_vir, mk_visibility,
-    mk_visibility_from_vis,
+    check_generics_bounds, def_id_to_vir_path, mid_ty_to_vir, mk_visibility, mk_visibility_from_vis,
 };
 use crate::unsupported_err_unless;
 use crate::util::{err_span, unsupported_err_span};
@@ -155,8 +154,8 @@ pub fn check_item_struct<'tcx>(
         def_id,
         Some(&vattrs),
     )?);
-    let name = hack_get_def_name(ctxt.tcx, def_id);
     let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, def_id);
+    let name = path.segments.last().expect("unexpected struct path");
 
     let variant_name = Arc::new(name.clone());
     let (variant, transparency) = if vattrs.external_body {
@@ -440,8 +439,8 @@ pub(crate) fn check_item_external<'tcx>(
     )?);
     let mode = Mode::Exec;
 
-    let name = hack_get_def_name(ctxt.tcx, external_def_id);
     let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, external_def_id);
+    let name = path.segments.last().expect("unexpected struct path");
 
     if path.krate == Some(Arc::new("builtin".to_string())) {
         return err_span(span, "cannot apply `external_type_specification` to Verus builtin types");

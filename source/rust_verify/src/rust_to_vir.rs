@@ -12,7 +12,7 @@ use crate::def::{get_variant_fn_name, is_variant_fn_name};
 use crate::rust_to_vir_adts::{check_item_enum, check_item_struct};
 use crate::rust_to_vir_base::{
     check_generic_bound, check_generics_bounds, def_id_to_vir_path, fn_item_hir_id_to_self_def_id,
-    hack_get_def_name, mid_ty_to_vir, mk_visibility, typ_path_and_ident_to_vir_path,
+    mid_ty_to_vir, mk_visibility, typ_path_and_ident_to_vir_path,
 };
 use crate::rust_to_vir_func::{check_foreign_item_fn, check_item_fn, CheckItemFnEither};
 use crate::util::{err_span, unsupported_err_span};
@@ -383,8 +383,12 @@ fn check_item<'tcx>(
         }
         ItemKind::Const(_ty, body_id) => {
             let def_id = body_id.hir_id.owner.to_def_id();
-            if hack_get_def_name(ctxt.tcx, body_id.hir_id.owner.to_def_id())
-                .starts_with("_DERIVE_builtin_Structural_FOR_")
+            let path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, def_id);
+            if path
+                .segments
+                .iter()
+                .find(|s| s.starts_with("_DERIVE_builtin_Structural_FOR_"))
+                .is_some()
             {
                 ctxt.erasure_info
                     .borrow_mut()
