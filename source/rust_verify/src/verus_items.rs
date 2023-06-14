@@ -4,26 +4,12 @@ use rustc_middle::ty::{DefIdTree, TyCtxt, TyKind};
 use rustc_span::def_id::DefId;
 use std::{collections::HashMap, sync::Arc};
 
-enum TyToStableStringPartialResult {
-    Segment(String),
-    Path(String),
-}
-
-impl TyToStableStringPartialResult {
-    fn into_inner(self) -> String {
-        match self {
-            TyToStableStringPartialResult::Segment(str) => str,
-            TyToStableStringPartialResult::Path(str) => str,
-        }
-    }
-}
-
 // The names returned by this are intended exclusively for matching in `get_rust_item`
 fn ty_to_stable_string_partial<'tcx>(
     tcx: TyCtxt<'tcx>,
     ty: &rustc_middle::ty::Ty<'_>,
-) -> Option<TyToStableStringPartialResult> {
-    Some(TyToStableStringPartialResult::Segment(match ty.kind() {
+) -> Option<String> {
+    Some(match ty.kind() {
         TyKind::Bool => format!("bool"),
         TyKind::Char => format!("char"),
         TyKind::Int(t) => format!("{}", t.name_str()),
@@ -35,7 +21,7 @@ fn ty_to_stable_string_partial<'tcx>(
                 rustc_ast::Mutability::Mut => "mut",
                 rustc_ast::Mutability::Not => "const",
             },
-            ty_to_stable_string_partial(tcx, &tm.ty)?.into_inner(),
+            ty_to_stable_string_partial(tcx, &tm.ty)?,
         ),
         TyKind::Ref(_r, ty, mutbl) => format!(
             "&{} {}",
@@ -43,30 +29,27 @@ fn ty_to_stable_string_partial<'tcx>(
                 rustc_ast::Mutability::Mut => "mut",
                 rustc_ast::Mutability::Not => "const",
             },
-            ty_to_stable_string_partial(tcx, ty)?.into_inner(),
+            ty_to_stable_string_partial(tcx, ty)?,
         ),
         TyKind::Never => format!("!"),
         TyKind::Tuple(ref tys) => format!(
             "({})",
             tys.iter()
-                .map(|ty| ty_to_stable_string_partial(tcx, &ty).map(|x| x.into_inner()))
+                .map(|ty| ty_to_stable_string_partial(tcx, &ty))
                 .collect::<Option<Vec<_>>>()?
                 .join(",")
         ),
         TyKind::Param(ref param_ty) => format!("{}", param_ty.name.as_str()),
         TyKind::Adt(def, _substs) => {
-            return Some(TyToStableStringPartialResult::Path(def_id_to_stable_rust_path(
-                tcx,
-                def.did(),
-            )?));
+            return Some(def_id_to_stable_rust_path(tcx, def.did())?);
         }
         TyKind::Str => format!("str"),
         TyKind::Array(ty, sz) => {
-            format!("[{}; {}]", ty_to_stable_string_partial(tcx, &ty)?.into_inner(), sz)
+            format!("[{}; {}]", ty_to_stable_string_partial(tcx, &ty)?, sz)
         }
-        TyKind::Slice(ty) => format!("[{}]", ty_to_stable_string_partial(tcx, &ty)?.into_inner()),
+        TyKind::Slice(ty) => format!("[{}]", ty_to_stable_string_partial(tcx, &ty)?),
         _ => return None,
-    }))
+    })
 }
 
 pub(crate) fn def_id_to_stable_rust_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Option<String> {
@@ -88,15 +71,9 @@ pub(crate) fn def_id_to_stable_rust_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId)
                 }
                 one_impl_block_in_path = true;
                 let self_ty = tcx.type_of(tcx.parent(def_id));
-                match ty_to_stable_string_partial(tcx, &self_ty)? {
-                    TyToStableStringPartialResult::Path(path) => {
-                        segments.clear();
-                        segments.push(path);
-                    }
-                    TyToStableStringPartialResult::Segment(segment) => {
-                        segments.push(segment);
-                    }
-                }
+                let path = ty_to_stable_string_partial(tcx, &self_ty)?;
+                segments.clear();
+                segments.push(path);
             }
             DefPathData::ForeignMod => {
                 // this segment can be ignored
@@ -601,36 +578,38 @@ pub(crate) fn get_rust_item<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Option<Ru
     }
 
     if let Some(rust_path) = rust_path {
-        let num_re = Regex::new(r"^core::num::([A-Za-z0-9_]+)::(MIN|MAX|BITS)").unwrap();
+        let num_re = Regex::new(r"^([A-Za-z0-9_]+)::(MIN|MAX|BITS)").unwrap();
         if let Some(captures) = num_re.captures(rust_path) {
             let ty_name = captures.get(1).expect("invalid int intrinsic regex");
             let const_name = captures.get(2).expect("invalid int intrinsic regex");
             use RustIntType::*;
             let ty = match ty_name.as_str() {
-                "u8" => U8,
-                "u16" => U16,
-                "u32" => U32,
-                "u64" => U64,
-                "u128" => U128,
-                "usize" => USize,
+                "u8" => Some(U8),
+                "u16" => Some(U16),
+                "u32" => Some(U32),
+                "u64" => Some(U64),
+                "u128" => Some(U128),
+                "usize" => Some(USize),
 
-                "i8" => I8,
-                "i16" => I16,
-                "i32" => I32,
-                "i64" => I64,
-                "i128" => I128,
-                "isize" => ISize,
+                "i8" => Some(I8),
+                "i16" => Some(I16),
+                "i32" => Some(I32),
+                "i64" => Some(I64),
+                "i128" => Some(I128),
+                "isize" => Some(ISize),
 
-                _ => panic!("unexpected int intrinsic"),
+                _ => None,
             };
-            let const_ = match const_name.as_str() {
-                "MIN" => RustIntConst::Min,
-                "MAX" => RustIntConst::Max,
-                "BITS" => RustIntConst::Bits,
+            return ty.map(|ty| {
+                let const_ = match const_name.as_str() {
+                    "MIN" => RustIntConst::Min,
+                    "MAX" => RustIntConst::Max,
+                    "BITS" => RustIntConst::Bits,
 
-                _ => panic!("unexpected int const"),
-            };
-            return Some(RustItem::IntIntrinsic(RustIntIntrinsicItem(ty, const_)));
+                    _ => panic!("unexpected int const"),
+                };
+                RustItem::IntIntrinsic(RustIntIntrinsicItem(ty, const_))
+            });
         }
     }
 
