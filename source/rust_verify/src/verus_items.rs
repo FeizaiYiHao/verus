@@ -1,4 +1,5 @@
 use air::ast::Ident;
+use regex::Regex;
 use rustc_middle::ty::{TyCtxt, TyKind, DefIdTree};
 use rustc_span::{def_id::DefId, Symbol};
 use std::{collections::HashMap, sync::Arc};
@@ -488,6 +489,32 @@ pub(crate) fn from_diagnostic_items(diagnostic_items: &rustc_hir::diagnostic_ite
     VerusItems { id_to_name, name_to_id }
 }
 
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub(crate) enum RustIntType {
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    USize,
+
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    ISize,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub(crate) enum RustIntConst {
+    Min,
+    Max,
+    Bits,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub(crate) struct RustIntIntrinsicItem(pub(crate) RustIntType, pub(crate) RustIntConst);
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub(crate) enum RustItem {
@@ -504,6 +531,7 @@ pub(crate) enum RustItem {
     ArcNew,
     RcNew,
     Clone,
+    IntIntrinsic(RustIntIntrinsicItem),
 }
 
 pub(crate) fn get_rust_item<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Option<RustItem> {
@@ -554,6 +582,40 @@ pub(crate) fn get_rust_item<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Option<Ru
 
     if rust_path == Some("core::clone::Clone::clone") {
         return Some(RustItem::Clone);
+    }
+
+    if let Some(rust_path) = rust_path {
+        let num_re = Regex::new(r"^core::num::([A-Za-z0-9_]+)::(MIN|MAX|BITS)").unwrap();
+        if let Some(captures) = num_re.captures(rust_path) {
+            let ty_name = captures.get(1).expect("invalid int intrinsic regex");
+            let const_name = captures.get(2).expect("invalid int intrinsic regex");
+            use RustIntType::*;
+            let ty = match ty_name.as_str() {
+                "u8" => U8,
+                "u16" => U16,
+                "u32" => U32,
+                "u64" => U64,
+                "u128" => U128,
+                "usize" => USize,
+
+                "i8" => I8,
+                "i16" => I16,
+                "i32" => I32,
+                "i64" => I64,
+                "i128" => I128,
+                "isize" => ISize,
+
+                _ => panic!("unexpected int intrinsic"),
+            };
+            let const_ = match const_name.as_str() {
+                "MIN" => RustIntConst::Min,
+                "MAX" => RustIntConst::Max,
+                "BITS" => RustIntConst::Bits,
+
+                _ => panic!("unexpected int const"),
+            };
+            return Some(RustItem::IntIntrinsic(RustIntIntrinsicItem(ty, const_)));
+        }
     }
 
     None

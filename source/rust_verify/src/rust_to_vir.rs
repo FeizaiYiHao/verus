@@ -172,8 +172,6 @@ fn check_item<'tcx>(
 
             if let Some(TraitRef { path, hir_ref_id: _ }) = impll.of_trait {
                 let verus_item = ctxt.verus_items.id_to_name.get(&path.res.def_id());
-                // TODO TODO TODO
-                let path_name = path_as_friendly_rust_name(&def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, path.res.def_id()));
                 let ignore = if let Some(VerusItem::Marker(MarkerItem::Structural)) = verus_item {
                     let ty = {
                         // TODO extract to rust_to_vir_base, or use

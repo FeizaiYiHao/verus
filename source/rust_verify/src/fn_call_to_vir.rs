@@ -703,7 +703,7 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             let triggers = Arc::new(trigs);
             return mk_expr(ExprX::WithTriggers { triggers, body });
         }
-        Some(VerusItem::OpenInvariantBlock(_) | VerusItem::Pervasive(_) | VerusItem::Marker(_) | VerusItem::BuiltinType(_) | VerusItem::BuiltinFunction(_)) => {
+        Some(VerusItem::OpenInvariantBlock(_) | VerusItem::Pervasive(_, _) | VerusItem::Marker(_) | VerusItem::BuiltinType(_) | VerusItem::BuiltinFunction(_)) => {
         }
         None => (),
     }

@@ -1443,10 +1443,8 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     expr_tuple_datatype_ctor_to_vir(bctx, expr, &res, &[], expr.span, modifier)
                 }
                 Res::Def(DefKind::AssocConst, id) => {
-                    /// TODO TODO TODO verus-items
-                    let f_name = bctx.ctxt.tcx.def_path_str(id);
                     if let Some(vir_expr) =
-                        int_intrinsic_constant_to_vir(&bctx.ctxt, expr.span, &expr_typ()?, &f_name)
+                        int_intrinsic_constant_to_vir(&bctx.ctxt, expr.span, &expr_typ()?, id)
                     {
                         let mut erasure_info = bctx.ctxt.erasure_info.borrow_mut();
                         erasure_info.resolved_calls.push((
