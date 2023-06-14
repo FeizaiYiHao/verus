@@ -10,9 +10,9 @@ use crate::rust_to_vir_base::{
     is_type_std_rc_or_arc_or_ref, local_to_var, mid_ty_simplify, mid_ty_to_vir,
     mid_ty_to_vir_datatype, mid_ty_to_vir_ghost, mk_range, typ_of_node, typ_of_node_expect_mut_ref,
 };
-use crate::util::{err_span, slice_vec_map_result, unsupported_err_span, vec_map, vec_map_result};
+use crate::util::{err_span, slice_vec_map_result, unsupported_err_span, vec_map_result};
 use crate::verus_items::{
-    self, BuiltinFunctionItem, CompilableOprItem, ExprItem, OpenInvariantBlockItem, RustItem,
+    self, BuiltinFunctionItem, CompilableOprItem, OpenInvariantBlockItem, RustItem,
     SpecGhostTrackedItem, UnaryOpItem, VerusItem,
 };
 use crate::{fn_call_to_vir::fn_call_to_vir, unsupported_err, unsupported_err_unless};
@@ -33,8 +33,8 @@ use rustc_span::Span;
 use std::sync::Arc;
 use vir::ast::{
     ArithOp, ArmX, AutospecUsage, BinaryOp, BitwiseOp, BuiltinSpecFun, CallTarget, Constant, ExprX,
-    FieldOpr, FunX, HeaderExpr, HeaderExprX, InequalityOp, IntRange, InvAtomicity, Mode, PatternX,
-    Quant, SpannedTyped, StmtX, Stmts, Typ, TypX, UnaryOp, UnaryOpr, VirErr,
+    FieldOpr, FunX, HeaderExprX, InequalityOp, IntRange, InvAtomicity, Mode, PatternX,
+    SpannedTyped, StmtX, Stmts, Typ, TypX, UnaryOp, UnaryOpr, VirErr,
 };
 use vir::ast_util::{ident_binder, types_equal, undecorate_typ};
 use vir::def::positional_field_ident;
@@ -82,18 +82,10 @@ pub(crate) fn extract_tuple<'tcx>(expr: &'tcx Expr<'tcx>) -> Vec<&'tcx Expr<'tcx
     }
 }
 
-fn get_ensures_arg<'tcx>(
+pub(crate) fn closure_param_typs<'tcx>(
     bctx: &BodyCtxt<'tcx>,
     expr: &Expr<'tcx>,
-) -> Result<vir::ast::Expr, VirErr> {
-    if matches!(bctx.types.node_type(expr.hir_id).kind(), TyKind::Bool) {
-        expr_to_vir(bctx, expr, ExprModifier::REGULAR)
-    } else {
-        err_span(expr.span, "ensures needs a bool expression")
-    }
-}
-
-fn closure_param_typs<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &Expr<'tcx>) -> Result<Vec<Typ>, VirErr> {
+) -> Result<Vec<Typ>, VirErr> {
     let node_type = bctx.types.node_type(expr.hir_id);
     match node_type.kind() {
         TyKind::Closure(_def, substs) => {
@@ -135,207 +127,6 @@ fn closure_ret_typ<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &Expr<'tcx>) -> Result<Typ
         }
         _ => panic!("closure_param_types expected Closure type"),
     }
-}
-
-pub(crate) fn extract_ensures<'tcx>(
-    bctx: &BodyCtxt<'tcx>,
-    expr: &'tcx Expr<'tcx>,
-) -> Result<HeaderExpr, VirErr> {
-    let expr = skip_closure_coercion(bctx, expr);
-    let tcx = bctx.ctxt.tcx;
-    match &expr.kind {
-        ExprKind::Closure(closure) => {
-            let typs: Vec<Typ> = closure_param_typs(bctx, expr)?;
-            let body = tcx.hir().body(closure.body);
-            let mut xs: Vec<String> = Vec::new();
-            for param in body.params.iter() {
-                xs.push(pat_to_var(param.pat)?);
-            }
-            let expr = &body.value;
-            let args = vec_map_result(&extract_array(expr), |e| get_ensures_arg(bctx, e))?;
-            if typs.len() == 1 && xs.len() == 1 {
-                let id_typ = Some((Arc::new(xs[0].clone()), typs[0].clone()));
-                Ok(Arc::new(HeaderExprX::Ensures(id_typ, Arc::new(args))))
-            } else {
-                err_span(expr.span, "expected 1 parameter in closure")
-            }
-        }
-        _ => {
-            let args = vec_map_result(&extract_array(expr), |e| get_ensures_arg(bctx, e))?;
-            Ok(Arc::new(HeaderExprX::Ensures(None, Arc::new(args))))
-        }
-    }
-}
-
-pub(crate) fn extract_quant<'tcx>(
-    bctx: &BodyCtxt<'tcx>,
-    span: Span,
-    quant: Quant,
-    expr: &'tcx Expr<'tcx>,
-) -> Result<vir::ast::Expr, VirErr> {
-    let expr = skip_closure_coercion(bctx, expr);
-    let tcx = bctx.ctxt.tcx;
-    match &expr.kind {
-        ExprKind::Closure(closure) => {
-            let body = tcx.hir().body(closure.body);
-            let typs = closure_param_typs(bctx, expr)?;
-            assert!(typs.len() == body.params.len());
-            let mut binders: Vec<Binder<Typ>> = Vec::new();
-            for (x, t) in body.params.iter().zip(typs) {
-                binders.push(Arc::new(BinderX { name: Arc::new(pat_to_var(x.pat)?), a: t }));
-            }
-            let expr = &body.value;
-            let mut vir_expr = expr_to_vir(bctx, expr, ExprModifier::REGULAR)?;
-            let header = vir::headers::read_header(&mut vir_expr)?;
-            if header.require.len() + header.ensure.len() > 0 {
-                return err_span(expr.span, "forall/ensures cannot have requires/ensures");
-            }
-            let typ = Arc::new(TypX::Bool);
-            if !matches!(bctx.types.node_type(expr.hir_id).kind(), TyKind::Bool) {
-                return err_span(expr.span, "forall/ensures needs a bool expression");
-            }
-            Ok(bctx.spanned_typed_new(span, &typ, ExprX::Quant(quant, Arc::new(binders), vir_expr)))
-        }
-        _ => err_span(expr.span, "argument to forall/exists must be a closure"),
-    }
-}
-
-pub(crate) fn extract_assert_forall_by<'tcx>(
-    bctx: &BodyCtxt<'tcx>,
-    span: Span,
-    expr: &'tcx Expr<'tcx>,
-) -> Result<vir::ast::Expr, VirErr> {
-    let expr = skip_closure_coercion(bctx, expr);
-    let tcx = bctx.ctxt.tcx;
-    match &expr.kind {
-        ExprKind::Closure(closure) => {
-            let body = tcx.hir().body(closure.body);
-            let typs = closure_param_typs(bctx, expr)?;
-            assert!(body.params.len() == typs.len());
-            let mut binders: Vec<Binder<Typ>> = Vec::new();
-            for (x, t) in body.params.iter().zip(typs) {
-                binders.push(Arc::new(BinderX { name: Arc::new(pat_to_var(x.pat)?), a: t }));
-            }
-            let expr = &body.value;
-            let mut vir_expr = expr_to_vir(bctx, expr, ExprModifier::REGULAR)?;
-            let header = vir::headers::read_header(&mut vir_expr)?;
-            if header.require.len() > 1 {
-                return err_span(expr.span, "assert_forall_by can have at most one requires");
-            }
-            if header.ensure.len() != 1 {
-                return err_span(expr.span, "assert_forall_by must have exactly one ensures");
-            }
-            if header.ensure_id_typ.is_some() {
-                return err_span(expr.span, "ensures clause must be a bool");
-            }
-            let typ = Arc::new(TypX::Tuple(Arc::new(vec![])));
-            let vars = Arc::new(binders);
-            let require = if header.require.len() == 1 {
-                header.require[0].clone()
-            } else {
-                bctx.spanned_typed_new(
-                    span,
-                    &Arc::new(TypX::Bool),
-                    ExprX::Const(Constant::Bool(true)),
-                )
-            };
-            let ensure = header.ensure[0].clone();
-            let forallx = ExprX::Forall { vars, require, ensure, proof: vir_expr };
-            Ok(bctx.spanned_typed_new(span, &typ, forallx))
-        }
-        _ => err_span(expr.span, "argument to forall/exists must be a closure"),
-    }
-}
-
-pub(crate) fn extract_choose<'tcx>(
-    bctx: &BodyCtxt<'tcx>,
-    span: Span,
-    expr: &'tcx Expr<'tcx>,
-    tuple: bool,
-    expr_typ: Typ,
-) -> Result<vir::ast::Expr, VirErr> {
-    let expr = skip_closure_coercion(bctx, expr);
-    let tcx = bctx.ctxt.tcx;
-    match &expr.kind {
-        ExprKind::Closure(closure) => {
-            let closure_body = tcx.hir().body(closure.body);
-            let mut params: Vec<Binder<Typ>> = Vec::new();
-            let mut vars: Vec<vir::ast::Expr> = Vec::new();
-            let typs = closure_param_typs(bctx, expr)?;
-            assert!(closure_body.params.len() == typs.len());
-            for (x, typ) in closure_body.params.iter().zip(typs) {
-                let name = Arc::new(pat_to_var(x.pat)?);
-                let vir_expr = bctx.spanned_typed_new(x.span, &typ, ExprX::Var(name.clone()));
-                let mut erasure_info = bctx.ctxt.erasure_info.borrow_mut();
-                erasure_info.hir_vir_ids.push((x.pat.hir_id, vir_expr.span.id));
-                vars.push(vir_expr);
-                params.push(Arc::new(BinderX { name, a: typ }));
-            }
-            let typs = vec_map(&params, |p| p.a.clone());
-            let cond_expr = &closure_body.value;
-            let cond = expr_to_vir(bctx, cond_expr, ExprModifier::REGULAR)?;
-            let body = if tuple {
-                let typ = Arc::new(TypX::Tuple(Arc::new(typs)));
-                if !vir::ast_util::types_equal(&typ, &expr_typ) {
-                    return err_span(
-                        expr.span,
-                        format!(
-                            "expected choose_tuple to have type {:?}, found type {:?}",
-                            typ, expr_typ
-                        ),
-                    );
-                }
-                bctx.spanned_typed_new(span, &typ, ExprX::Tuple(Arc::new(vars)))
-            } else {
-                if params.len() != 1 {
-                    return err_span(
-                        expr.span,
-                        "choose expects exactly one parameter (use choose_tuple for multiple parameters)",
-                    );
-                }
-                vars[0].clone()
-            };
-            let params = Arc::new(params);
-            Ok(bctx.spanned_typed_new(
-                span,
-                &body.clone().typ,
-                ExprX::Choose { params, cond, body },
-            ))
-        }
-        _ => {
-            dbg!(&expr);
-            err_span(expr.span, "argument to choose must be a closure")
-        }
-    }
-}
-
-/// If `expr` is of the form `closure_to_spec_fn(e)` then return `e`.
-/// Otherwise, return `expr`.
-///
-/// This is needed because the syntax macro can often create expressions that look like:
-/// forall(closure_to_fn_spec(|x| { ... }))
-
-fn skip_closure_coercion<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &'tcx Expr<'tcx>) -> &'tcx Expr<'tcx> {
-    match &expr.kind {
-        ExprKind::Call(fun, args_slice) => match &fun.kind {
-            ExprKind::Path(qpath) => {
-                let def = bctx.types.qpath_res(&qpath, fun.hir_id);
-                match def {
-                    rustc_hir::def::Res::Def(_, def_id) => {
-                        let verus_item = bctx.ctxt.verus_items.id_to_name.get(&def_id);
-                        if verus_item == Some(&VerusItem::Expr(ExprItem::ClosureToFnSpec)) {
-                            return &args_slice[0];
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        },
-        _ => {}
-    }
-
-    expr
 }
 
 fn mk_clip<'tcx>(
