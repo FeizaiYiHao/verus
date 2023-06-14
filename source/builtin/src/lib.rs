@@ -277,13 +277,6 @@ pub fn assert_bit_vector(_: bool) {
     unimplemented!();
 }
 
-// TODO // Used internally by erase.rs
-// TODO #[rustc_diagnostic_item = "verus::builtin::internal_arbitrary"]
-// TODO #[verifier::spec]
-// TODO pub fn internal_arbitrary<A>(_: u64) -> A {
-// TODO     unimplemented!()
-// TODO }
-
 //
 // Ghost, Tracked
 //
