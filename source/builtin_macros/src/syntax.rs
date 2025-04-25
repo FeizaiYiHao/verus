@@ -1793,6 +1793,7 @@ impl Visitor {
                             decreases: None,
                             invariants: None,
                             unwind: None,
+                            with: None,
                         },
                         publish,
                         constness: None,
