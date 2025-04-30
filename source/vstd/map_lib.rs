@@ -9,7 +9,11 @@ use super::set_lib::*;
 
 verus! {
 
+<<<<<<< HEAD
 broadcast use {super::map::group_map_axioms, super::set::group_set_axioms};
+=======
+broadcast use super::map::group_map_axioms, super::set::group_set_lemmas;
+>>>>>>> 2666fd02 (rename group_set_axioms to _lemmas)
 
 impl<K, V> Map<K, V> {
     /// Is `true` if called by a "full" map, i.e., a map containing every element of type `A`.
