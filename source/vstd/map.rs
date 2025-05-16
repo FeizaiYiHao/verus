@@ -191,9 +191,11 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
         }
     }
 
-    // TODO(jonh): expose as broadcast lemmas
-    pub proof fn lemma_union_prefer_right(self, m2: Self)
+    // DONE(jonh): expose as broadcast lemmas
+    // okay, good, actually the problem was a missing trigger
+    pub broadcast proof fn lemma_union_prefer_right(self, m2: Self)
     ensures
+        #![trigger (self.union_prefer_right(m2))]
         self.union_prefer_right(m2).dom().to_infinite() == self.dom().union(m2.dom()),
         congruent(self.union_prefer_right(m2).dom(), self.dom().union(m2.dom())),
         forall |k| #![auto] self.union_prefer_right(m2).dom().contains(k) ==>
@@ -205,9 +207,9 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
         assert( self.union_prefer_right(m2).dom().to_infinite() == self.dom().union(m2.dom()) );
     }
 
-    // TODO(jonh) broadcast
-    pub proof fn lemma_remove_keys(self, keys: GSet<K, Finite>)
+    pub broadcast proof fn lemma_remove_keys(self, keys: GSet<K, Finite>)
     ensures
+        #![trigger(self.remove_keys(keys))]
         self.remove_keys(keys).dom().to_infinite() == self.dom().difference(keys),
         congruent(self.remove_keys(keys).dom(), self.dom().difference(keys)),
         forall |k| #![auto] self.remove_keys(keys).dom().contains(k) ==> self.remove_keys(keys)[k] == self[k]
@@ -252,6 +254,17 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
         GMap {
             mapping: |k| if self.contains_key(k) { Some(f(self[k])) } else { None }
         }
+    }
+
+    pub broadcast proof fn lemma_map_values_ensures<W>(self, f: spec_fn(V) -> W)
+    ensures
+        #![trigger(self.map_values(f))]
+        self.dom() == self.map_values(f).dom(),
+        forall |k| self.map_values(f).contains_key(k) ==> self.map_values(f)[k] == f(self[k]),
+    {
+        broadcast use super::set::group_set_lemmas;
+        broadcast use axiom_dom_ensures;
+        assert( self.dom() =~= self.map_values(f).dom() );  // trigger-it-yourself
     }
 
     pub proof fn lemma_map_values<W>(self, f: spec_fn(V) -> W)
@@ -358,16 +371,28 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
         unimplemented!();
     }
 
-    // TODO(jonh): broadcast
     /// Export publicly-meaningful definition of invert
-    pub proof fn lemma_invert_ensures(self)
+    pub broadcast proof fn lemma_invert_ensures(self)
     ensures
+        #![trigger(self.invert())]
         GMap::congruent(self.invert(), IMap::new(|v| self.contains_value(v), |v| choose|k: K| self.contains_pair(k, v))),
     {
         broadcast use super::set::group_set_lemmas;
         broadcast use axiom_dom_ensures;
     }
 }
+
+// TODO(jonh): discuss with verus : this didn't automate when expressed as a self lemma.
+//     pub broadcast proof fn lemma_union_prefer_right_noself<K, V, const Finite: bool>(m1: GMap<K,V, Finite>, m2: GMap<K,V, Finite>)
+//     ensures
+//         #![trigger (m1.union_prefer_right(m2))]
+//         m1.union_prefer_right(m2).dom().to_infinite() == m1.dom().union(m2.dom()),
+//         congruent(m1.union_prefer_right(m2).dom(), m1.dom().union(m2.dom())),
+//         forall |k| #![auto] m1.union_prefer_right(m2).dom().contains(k) ==>
+//             m1.union_prefer_right(m2)[k] == if m2.dom().contains(k) { m2[k] } else { m1[k] },
+//         {
+//             m1.lemma_union_prefer_right(m2);
+//         }
 
 // TODO(jonh): broadcast -- but only meaningful internally
 broadcast proof fn axiom_dom_ensures<K,V,const Finite: bool>(m: GMap<K,V,Finite>)
@@ -577,6 +602,11 @@ pub broadcast group group_map_axioms {
 //     axiom_dom_ensures,
     lemma_finite_new_ensures,
     lemma_infinite_new_ensures,
+    GMap::lemma_remove_keys,
+//     TODO(jonh): this gives "cyclic definition" error with no
+//     diagnositcs; todo update verus to get diagnostics fix
+//     GMap::lemma_invert_ensures, 
+    GMap::lemma_map_values_ensures,
     axiom_map_index_decreases_finite,
     axiom_map_index_decreases_infinite,
     axiom_map_empty,
@@ -587,6 +617,8 @@ pub broadcast group group_map_axioms {
     axiom_map_remove_different,
     axiom_map_ext_equal,
     axiom_map_ext_equal_deep,
+    GMap::lemma_union_prefer_right,
+//     lemma_union_prefer_right_noself,
 }
 
 // Macros

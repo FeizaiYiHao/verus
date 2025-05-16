@@ -142,12 +142,10 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
         decreases keys.len(),
     {
         broadcast use group_set_properties;
-        self.lemma_remove_keys(keys);   // TODO(jonh): make broadcast
 
         if keys.len() > 0 {
             let key = keys.choose();
             self.remove(key).lemma_remove_keys_len(keys.remove(key));   // recurse
-            self.remove(key).lemma_remove_keys(keys.remove(key));    // TODO(jonh): make broadcast
 
             let smap = self.remove(key);
             let skeys = keys.remove(key);
@@ -191,7 +189,7 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
         ensures
             self.invert().is_injective(),
     {
-        self.lemma_invert_ensures();
+        self.lemma_invert_ensures();    // TODO(jonh): remove once broadcast is fixed
         assert forall|x: V, y: V|
             x != y && self.invert().dom().contains(x) && self.invert().dom().contains(
                 y,
@@ -292,7 +290,7 @@ pub broadcast proof fn lemma_disjoint_union_size<K, V>(m1: Map<K, V>, m2: Map<K,
     m1.lemma_union_prefer_right(m2);
     let u = m1.union_prefer_right(m2);
     assert(u.dom() =~= m1.dom() + m2.dom());  //proves u.dom() is finite
-    u.lemma_remove_keys(m1.dom());
+//     u.lemma_remove_keys(m1.dom());
     assert(u.remove_keys(m1.dom()).dom() =~= m2.dom());
     assert(u.remove_keys(m1.dom()).dom().len() == u.dom().len() - m1.dom().len()) by {
         u.lemma_remove_keys_len(m1.dom());

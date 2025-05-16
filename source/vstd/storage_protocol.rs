@@ -209,6 +209,32 @@ impl<K, V, P: Protocol<K, V>> StorageResource<K, V, P> {
             out.loc() == self.loc(),
             out.value() == new_value,
     {
+        let p1 = self.value();
+        let b1 = base;
+        let p2 = new_value;
+        let b2 = Map::empty();
+        assert forall |q: P, t1: Map<K,V>|
+            #![all_triggers]
+            P::rel(P::op(p1, q), t1) implies exists|t2: Map<K, V>|
+                #![all_triggers]
+                P::rel(P::op(p2, q), t2) && t1.dom().disjoint(b1.dom()) && t2.dom().disjoint(b2.dom())
+                    && t1.union_prefer_right(b1) =~= t2.union_prefer_right(b2) by {
+            // from deposit
+            let t2 = choose |t2| #![all_triggers]
+            P::rel(P::op(p2, q), t2) && t1.dom().disjoint(b1.dom()) && t1.union_prefer_right(b1) =~= t2;
+            assert(
+                P::rel(P::op(p2, q), t2) && t1.dom().disjoint(b1.dom()) && t1.union_prefer_right(b1) =~= t2 );
+            assert( P::rel(P::op(p2, q), t2) && t1.dom().disjoint(b1.dom()) );
+            assert( t2.dom().disjoint(b2.dom()) );
+//             t2.lemma_union_prefer_right(b2);
+            assert( t2.union_prefer_right(b2) =~= t2 );
+            assert( t1.union_prefer_right(b1) =~= t2.union_prefer_right(b2) );
+
+            assert(
+                P::rel(P::op(p2, q), t2) && t1.dom().disjoint(b1.dom()) && t2.dom().disjoint(b2.dom())
+                    && t1.union_prefer_right(b1) =~= t2.union_prefer_right(b2) );
+        }
+        assert( exchanges(self.value(), base, new_value, Map::empty()) );
         Self::exchange(self, base, new_value, Map::empty()).0
     }
 
