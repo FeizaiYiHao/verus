@@ -252,7 +252,7 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
     /// Map a function `f` over the values in `self`.
     pub closed spec fn map_values<W>(self, f: spec_fn(V) -> W) -> GMap<K, W, Finite> {
         GMap {
-            mapping: |k| if self.contains_key(k) { Some(f(self[k])) } else { None }
+            mapping: |k| if self.dom().contains(k) { Some(f(self[k])) } else { None }
         }
     }
 
@@ -260,22 +260,11 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
     ensures
         #![trigger(self.map_values(f))]
         self.dom() == self.map_values(f).dom(),
-        forall |k| self.map_values(f).contains_key(k) ==> self.map_values(f)[k] == f(self[k]),
+        forall |k| self.map_values(f).dom().contains(k) ==> self.map_values(f)[k] == f(self[k]),
     {
         broadcast use super::set::group_set_lemmas;
         broadcast use axiom_dom_ensures;
         assert( self.dom() =~= self.map_values(f).dom() );  // trigger-it-yourself
-    }
-
-    pub proof fn lemma_map_values<W>(self, f: spec_fn(V) -> W)
-    ensures
-        self.map_values(f).dom() == self.dom(),
-        forall |k| #![auto] self.map_values(f).contains_key(k) ==> self.map_values(f)[k] == f(self[k]),
-    {
-        broadcast use super::set::group_set_lemmas;
-        broadcast use axiom_dom_ensures;
-        // trigger extn
-        assert( self.map_values(f).dom() == self.dom() );
     }
 
     /// Swaps map keys and values. Values are not required to be unique; no
