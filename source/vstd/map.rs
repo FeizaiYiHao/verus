@@ -48,7 +48,7 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
     {
         // TODO(jonh): change to GSet::congruent
         &&& congruent(m1.dom(), m2.dom())
-        &&& forall |k| m1.contains_key(k) ==> m1[k] == m2[k]
+        &&& forall |k| #[trigger] m1.contains_key(k) ==> m1[k] == m2[k]
     }
 }
 
@@ -260,7 +260,7 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
     ensures
         #![trigger(self.map_values(f))]
         self.dom() == self.map_values(f).dom(),
-        forall |k| self.map_values(f).dom().contains(k) ==> self.map_values(f)[k] == f(self[k]),
+        forall |k| #[trigger] self.map_values(f).dom().contains(k) ==> self.map_values(f)[k] == f(self[k]),
     {
         broadcast use super::set::group_set_lemmas;
         broadcast use axiom_dom_ensures;
@@ -404,9 +404,10 @@ impl<K, V> Map<K, V> {
 // warning: broadcast functions should have explicit #[trigger] or #![trigger ...]
 pub broadcast proof fn lemma_finite_new_ensures<K,V>(key_set: Set<K>, fv: spec_fn(K) -> V)
     ensures
+        #![trigger(Map::new(key_set, fv))]
     // well this trigger is obviously broken
-        forall |k| key_set.contains(k) <==> (#[trigger] Map::new(key_set, fv)).dom().contains(k),
-        forall |k| key_set.contains(k) ==> Map::new(key_set, fv)[k] == fv(k),
+        forall |k| #![auto] key_set.contains(k) <==> Map::new(key_set, fv).dom().contains(k),
+        forall |k| #![auto] key_set.contains(k) ==> Map::new(key_set, fv)[k] == fv(k),
 
 // ugh but when I try to write sensical triggers, I get myself into an error. Halp.
 // TODO(verus): trigger group 0 does not cover variable k
@@ -434,8 +435,9 @@ impl<K, V> IMap<K, V> {
 
 pub broadcast proof fn lemma_infinite_new_ensures<K,V>(fk: spec_fn(K) -> bool, fv: spec_fn(K) -> V)
     ensures
-        forall |k| fk(k) <==> (#[trigger] IMap::new(fk, fv)).dom().contains(k),
-        forall |k| fk(k) ==> IMap::new(fk, fv)[k] == fv(k),
+        #![trigger(IMap::new(fk, fv))]
+        forall |k| #![auto] fk(k) <==> (#[trigger] IMap::new(fk, fv)).dom().contains(k),
+        forall |k| #![auto] fk(k) ==> IMap::new(fk, fv)[k] == fv(k),
 {
     broadcast use super::set::group_set_lemmas;
     broadcast use axiom_dom_ensures;
