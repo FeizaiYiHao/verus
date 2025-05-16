@@ -916,19 +916,8 @@ impl<A> Seq<A> {
             self.to_set().len() <= self.len(),
         decreases self.len(),
     {
-// <<<<<<< HEAD
-//         broadcast use {super::set::group_set_axioms, seq_to_set_is_finite};
-//         broadcast use group_seq_properties;
-//         broadcast use super::set_lib::group_set_properties;
-// 
-//         if self.len() == 0 {
-//         } else {
-//             assert(self.drop_last().to_set().insert(self.last()) =~= self.to_set());
-//             self.drop_last().lemma_cardinality_of_set();
-//         }
-// =======
         // trivial from lemma_set_map_len
-        broadcast use super::set::group_set_axioms, seq_to_set_is_finite;
+        broadcast use {super::set::group_set_lemmas, seq_to_set_is_finite};
     }
 
     /// A sequence is of length 0 if and only if its conversion to
