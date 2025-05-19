@@ -11,7 +11,7 @@ verus! {
 
 broadcast use {super::map::group_map_axioms, super::set::group_set_lemmas};
 
-impl<K, V, const Finite: bool> GMap<K, V, Finite> {
+impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
     /// Is `true` if called by a "full" map, i.e., a map containing every element of type `A`.
     #[verifier::inline]
     pub open spec fn is_full(self) -> bool {
@@ -58,7 +58,7 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
     ///     assert(m.values() =~= set![10int, 11int]);
     /// }
     /// ```
-    pub open spec fn values(self) -> GSet<V, Finite> {
+    pub open spec fn values(self) -> GSet<V, FINITE> {
         self.dom().map(|k: K| self.index(k))
     }
 
@@ -127,7 +127,7 @@ impl<K, V, const Finite: bool> GMap<K, V, Finite> {
 
     /// Removing a set of n keys from a map that previously contained all n keys
     /// results in a domain of size n less than the original domain.
-    pub proof fn lemma_remove_keys_len(self, keys: GSet<K, Finite>)
+    pub proof fn lemma_remove_keys_len(self, keys: GSet<K, FINITE>)
         requires
             // TODO(jonh): why isn't this keys.subset_of(self.dom())?
             forall|k: K| #[trigger] keys.contains(k) ==> self.contains_key(k),
