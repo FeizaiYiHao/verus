@@ -143,40 +143,11 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
             let key = keys.choose();
             self.remove(key).lemma_remove_keys_len(keys.remove(key));   // recurse
 
-            let smap = self.remove(key);
-            let skeys = keys.remove(key);
-
-            assert forall |k|
-                self.remove_keys(keys).contains_key(k)
-                implies
-                smap.remove_keys(skeys).contains_key(k)
-            by {
-                if keys.contains(k) {
-                    assert( !self.remove_keys(keys).dom().to_infinite().contains(k) );
-                    assert( false );
-                }
-                assert( smap.dom().difference(skeys).contains(k) ); // trigger lemma_set_remove
-            }
-            assert forall |k|
-                smap.remove_keys(skeys).contains_key(k)
-                implies
-                self.remove_keys(keys).contains_key(k)
-            by {
-                assert( smap.dom().difference(skeys).contains(k) );
-                // trigger lemma_remove_keys ... except wait it's not broadcast!?
-                assert( self.remove_keys(keys).dom().to_infinite().contains(k) );
-            }
-            assert( self.remove_keys(keys).dom() == smap.remove_keys(skeys).dom() );    // trigger
+            // trigger extensionality
+            assert( self.remove_keys(keys).dom() == self.remove(key).remove_keys(keys.remove(key)).dom() );
         } else {
             // keys is empty, so remove_keys is a noop
-            congruent_len(self.remove_keys(keys).dom().to_infinite(), self.dom());
             congruent_len(self.remove_keys(keys).dom().to_infinite(), self.remove_keys(keys).dom());
-            // Not sure why I need to take two congruent hops here. I need one to trigger
-            // lemma_remove_keys. I guess I need the other to trigger congruent defn a la
-            // extensionality?
-//             congruent_len(self.remove_keys(keys).dom(), self.dom());
-
-//             assert( keys.len() == 0 );
         }
     }
 
