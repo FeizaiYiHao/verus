@@ -44,6 +44,25 @@ ensures #[trigger] m.dom().finite()
 }
 
 impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
+    // TODO(review): moved these definitions hear to avoid cycle error with map_lib
+    // Need it here to prove properties of trusted spec fns like invert
+
+    /// Returns true if the key `k` is in the domain of `self`.
+    #[verifier::inline]
+    pub open spec fn contains_key(self, k: K) -> bool {
+        self.dom().contains(k)
+    }
+
+    /// Returns true if the value `v` is in the range of `self`.
+    pub open spec fn contains_value(self, v: V) -> bool {
+        exists|i: K| #[trigger] self.dom().contains(i) && self[i] == v
+    }
+
+    /// Returns true if the key `k` is in the domain of `self`, and it maps to the value `v`.
+    pub open spec fn contains_pair(self, k: K, v: V) -> bool {
+        self.dom().contains(k) && self[k] == v
+    }
+
     pub open spec fn congruent<const FINITE2: bool>(m1: GMap<K, V, FINITE>, m2: GMap<K, V, FINITE2>) -> bool
     {
         // TODO(jonh): change to GSet::congruent
@@ -594,9 +613,7 @@ pub broadcast group group_map_axioms {
     lemma_finite_new_ensures,
     lemma_infinite_new_ensures,
     GMap::lemma_remove_keys,
-//     TODO(jonh): this gives "cyclic definition" error with no
-//     diagnositcs; todo update verus to get diagnostics fix
-//     GMap::lemma_invert_ensures, 
+    GMap::lemma_invert_ensures,
     GMap::lemma_map_values_ensures,
     axiom_map_index_decreases_finite,
     axiom_map_index_decreases_infinite,

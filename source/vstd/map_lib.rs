@@ -24,17 +24,6 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
         self.dom().is_empty()
     }
 
-    /// Returns true if the key `k` is in the domain of `self`.
-    #[verifier::inline]
-    pub open spec fn contains_key(self, k: K) -> bool {
-        self.dom().contains(k)
-    }
-
-    /// Returns true if the value `v` is in the range of `self`.
-    pub open spec fn contains_value(self, v: V) -> bool {
-        exists|i: K| #[trigger] self.dom().contains(i) && self[i] == v
-    }
-
     /// Returns `Some(v)` if the key `k` is in the domain of `self` and maps to `v`,
     /// and `None` if the key `k` is not in the domain of `self`.
     pub open spec fn index_opt(self, k: K) -> Option<V> {
@@ -60,11 +49,6 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
     /// ```
     pub open spec fn values(self) -> GSet<V, FINITE> {
         self.dom().map(|k: K| self.index(k))
-    }
-
-    /// Returns true if the key `k` is in the domain of `self`, and it maps to the value `v`.
-    pub open spec fn contains_pair(self, k: K, v: V) -> bool {
-        self.dom().contains(k) && self[k] == v
     }
 
     /// Returns true if `m1` is _contained in_ `m2`, i.e., the domain of `m1` is a subset
