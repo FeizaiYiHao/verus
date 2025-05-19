@@ -76,9 +76,9 @@ impl<A, const FINITE:bool> GSet<A, FINITE> {
 }
 
 impl<A, const FINITE: bool> GSet<A, FINITE> {
-    pub closed spec fn cast_finiteness<const NewFINITE: bool>(self) -> GSet<A, NewFINITE>
+    pub closed spec fn cast_finiteness<const NEWFINITE: bool>(self) -> GSet<A, NEWFINITE>
     {
-        if self.finite() || !NewFINITE {
+        if self.finite() || !NEWFINITE {
             GSet { set: self.set }
         } else {
             arbitrary()
