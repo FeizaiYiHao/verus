@@ -113,9 +113,7 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
     /// results in a domain of size n less than the original domain.
     pub proof fn lemma_remove_keys_len(self, keys: GSet<K, FINITE>)
         requires
-            // TODO(jonh): why isn't this keys.subset_of(self.dom())? Chris says DO IT. use <=
-            // symbol
-            forall|k: K| #[trigger] keys.contains(k) ==> self.contains_key(k),
+            keys <= self.dom(),
             keys.finite(),  // not clear why this is necessary
             self.dom().finite(),
         ensures

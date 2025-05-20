@@ -146,7 +146,7 @@ ensures s1.finite() <==> s2.finite(),
 {
 }
 
-// TODO(verus-discuss): discuss broadcasting. Not clear there's a broadcastable trigger here.
+// TODO(jonh): don't broadcast. It's for generic-over-finite library code. Document.
 // We could do s1.len && s2.len, but maybe that's too aggressive.
 // congruent(s1,s2) sort of demands the callsite type "assert(congruent(s1,s2))" anyway, so maybe
 // not useful.
@@ -1034,7 +1034,7 @@ pub broadcast proof fn lemma_set_ext_equal_deep<A, const FINITE: bool>(s1: GSet<
 {
 }
 
-// TODO(verus-discuss): jonh thinks it's weird that we have Set::mk_map instead of Map::from_set.
+// TODO(jonh): jonh thinks it's weird that we have Set::mk_map instead of Map::from_set. make it a discussion
 
 pub broadcast proof fn lemma_mk_map_domain<K, V>(s: ISet<K>, f: spec_fn(K) -> V)
     ensures
@@ -1070,7 +1070,8 @@ pub broadcast proof fn lemma_set_insert_finite<A, const FINITE: bool>(s: GSet<A,
         #[trigger] s.insert(a).finite(),
 {
     lemma_set_finite_from_type(s.to_finite().insert(a));
-    // TODO(verus): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
+    // TODO(jonh): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
+    // probably because I haven't broadcast used it!
     congruent_infiniteness(s.to_finite().insert(a), s.insert(a));
 }
 
@@ -1081,7 +1082,8 @@ pub broadcast proof fn lemma_set_remove_finite<A, const FINITE: bool>(s: GSet<A,
         #[trigger] s.remove(a).finite(),
 {
     lemma_set_finite_from_type(s.to_finite().remove(a));
-    // TODO(verus): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
+    // TODO(jonh): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
+    // probably because I haven't broadcast used it!
     congruent_infiniteness(s.to_finite().remove(a), s.remove(a));
 }
 
@@ -1276,7 +1278,8 @@ pub broadcast proof fn lemma_set_remove_len<A, const FINITE: bool>(s: GSet<A, FI
         }),
 {
     lemma_set_finite_from_type(s.to_finite().remove(a));
-    // TODO(verus): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
+    // TODO(jonh): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
+    // probably need to use it
     congruent_infiniteness(s.to_finite().remove(a), s.remove(a));
     lemma_set_insert_len(s.remove(a), a);
     if s.contains(a) {
@@ -1375,9 +1378,6 @@ pub broadcast group group_set_lemmas {
     lemma_set_filter_is_intersect,
 }
 
-// TODO(verus-discuss): should set![] construct a Set or a GSet with inferred type?
-//     Constructing a Set means it's not usable in ISet contexts without .to_infinite().
-//     Inferring the type means maybe weirder error messages mentioning the FINITE arg.
 // Macros
 #[doc(hidden)]
 #[macro_export]
