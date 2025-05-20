@@ -130,7 +130,7 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
             assert( self.remove_keys(keys).dom() == self.remove(key).remove_keys(keys.remove(key)).dom() );
         } else {
             // keys is empty, so remove_keys is a noop
-            congruent_len(self.remove_keys(keys).dom().to_infinite(), self.remove_keys(keys).dom());
+            self.remove_keys(keys).dom().to_infinite().congruent_len(self.remove_keys(keys).dom());
         }
     }
 
@@ -178,19 +178,14 @@ pub broadcast proof fn lemma_union_insert_left<K, V>(m1: Map<K, V>, m2: Map<K, V
     ensures
         #[trigger] m1.insert(k, v).union_prefer_right(m2) == m1.union_prefer_right(m2).insert(k, v),
 {
-    // TODO(jonh): these should be broadcast now; get rid of them
-    m1.lemma_union_prefer_right(m2);
-    m1.insert(k,v).lemma_union_prefer_right(m2);
-    assert(m1.insert(k, v).union_prefer_right(m2) =~= m1.union_prefer_right(m2).insert(k, v));
+    assert(m1.insert(k, v).union_prefer_right(m2) =~= m1.union_prefer_right(m2).insert(k, v));  // issue #1534
 }
 
 pub broadcast proof fn lemma_union_insert_right<K, V>(m1: Map<K, V>, m2: Map<K, V>, k: K, v: V)
     ensures
         #[trigger] m1.union_prefer_right(m2.insert(k, v)) == m1.union_prefer_right(m2).insert(k, v),
 {
-    m1.lemma_union_prefer_right(m2.insert(k,v));
-    m1.lemma_union_prefer_right(m2);
-    assert(m1.union_prefer_right(m2.insert(k, v)) =~= m1.union_prefer_right(m2).insert(k, v));
+    assert(m1.union_prefer_right(m2.insert(k, v)) =~= m1.union_prefer_right(m2).insert(k, v));  // issue #1534
 }
 
 pub broadcast proof fn lemma_union_remove_left<K, V>(m1: Map<K, V>, m2: Map<K, V>, k: K)
@@ -200,9 +195,7 @@ pub broadcast proof fn lemma_union_remove_left<K, V>(m1: Map<K, V>, m2: Map<K, V
     ensures
         #[trigger] m1.union_prefer_right(m2).remove(k) == m1.remove(k).union_prefer_right(m2),
 {
-    m1.lemma_union_prefer_right(m2);
-    m1.remove(k).lemma_union_prefer_right(m2);
-    assert(m1.remove(k).union_prefer_right(m2) =~= m1.union_prefer_right(m2).remove(k));
+    assert(m1.remove(k).union_prefer_right(m2) =~= m1.union_prefer_right(m2).remove(k));  // issue #1534
 }
 
 pub broadcast proof fn lemma_union_remove_right<K, V>(m1: Map<K, V>, m2: Map<K, V>, k: K)
@@ -212,17 +205,14 @@ pub broadcast proof fn lemma_union_remove_right<K, V>(m1: Map<K, V>, m2: Map<K, 
     ensures
         #[trigger] m1.union_prefer_right(m2).remove(k) == m1.union_prefer_right(m2.remove(k)),
 {
-    m1.lemma_union_prefer_right(m2);
-    m1.lemma_union_prefer_right(m2.remove(k));
-    assert(m1.union_prefer_right(m2.remove(k)) =~= m1.union_prefer_right(m2).remove(k));
+    assert(m1.union_prefer_right(m2.remove(k)) =~= m1.union_prefer_right(m2).remove(k));  // issue #1534
 }
 
 pub broadcast proof fn lemma_union_dom<K, V>(m1: Map<K, V>, m2: Map<K, V>)
     ensures
         #[trigger] m1.union_prefer_right(m2).dom() == m1.dom() + m2.dom(),
 {
-    m1.lemma_union_prefer_right(m2);
-    assert( m1.union_prefer_right(m2).dom() == m1.dom() + m2.dom() );
+    assert( m1.union_prefer_right(m2).dom() == m1.dom() + m2.dom() );  // issue #1534
 }
 
 /// The size of the union of two disjoint maps is equal to the sum of the sizes of the individual maps
@@ -234,7 +224,6 @@ pub broadcast proof fn lemma_disjoint_union_size<K, V>(m1: Map<K, V>, m2: Map<K,
     ensures
         #[trigger] m1.union_prefer_right(m2).dom().len() == m1.dom().len() + m2.dom().len(),
 {
-    m1.lemma_union_prefer_right(m2);
     let u = m1.union_prefer_right(m2);
     assert(u.dom() =~= m1.dom() + m2.dom());  //proves u.dom() is finite
     assert(u.remove_keys(m1.dom()).dom() =~= m2.dom());
@@ -280,7 +269,7 @@ pub broadcast proof fn lemma_map_new_domain<K, V>(key_set: Set<K>, fv: spec_fn(K
     ensures
     #[trigger] Map::<K, V>::new(key_set, fv).dom() == key_set,
 {
-    assert( Map::<K, V>::new(key_set, fv).dom() =~= key_set );  // TODO(verus): wheee. jonh cite issue
+    assert( Map::<K, V>::new(key_set, fv).dom() =~= key_set );  // issue #1534
 }
 
 // This verified lemma used to be an axiom in the Dafny prelude

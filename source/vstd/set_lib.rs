@@ -365,11 +365,11 @@ impl<A> Set<A> {
         let xi = x.to_infinite();
         let fi = ISet::<A>::new(f);
         
-        congruent_infiniteness(x, x.to_infinite());
+        x.congruent_infiniteness(x.to_infinite());
         lemma_len_intersect(xi, fi);
-        congruent_len(x, xi);
+        x.congruent_len(xi);
         assert( xi.intersect(fi) == xi.filter(f) ); // trigger lemma_set_filter_is_intersect
-        congruent_len(x.filter(f), xi.filter(f));
+        x.filter(f).congruent_len(xi.filter(f));
     }
 }
 
@@ -493,11 +493,11 @@ pub broadcast proof fn lemma_set_insert_finite_iff<A>(s: ISet<A>, a: A)
         if s.contains(a) {
             assert( s.insert(a) == s );
         } else {
-            congruent_infiniteness( s.insert(a).to_finite().remove(a), s );
+            s.insert(a).to_finite().remove(a).congruent_infiniteness(s);
         }
     }
     if s.finite() {
-        congruent_infiniteness( s.to_finite().insert(a), s.insert(a) );
+        s.to_finite().insert(a).congruent_infiniteness(s.insert(a));
     }
 
     // Original proof appeals to finite-preservation lemmas on infinite sets
@@ -577,7 +577,7 @@ pub proof fn lemma_len_union<A>(s1: Set<A>, s2: Set<A>)
     decreases s1.len(),
 {
     if s1.is_empty() {
-       congruent_len(s1.union(s2), s2);
+       s1.union(s2).congruent_len(s2);
     } else {
         let a = s1.choose();
         if s2.contains(a) {
@@ -838,7 +838,7 @@ pub broadcast proof fn lemma_set_disjoint_lens<A, const FINITE1: bool, const FIN
     if a.len() == 0 {
         lemma_set_empty_equivalency_len(a);
         assert(a.union(b) =~= b.to_infinite());
-        congruent_len(b, b.to_infinite());
+        b.congruent_len(b.to_infinite());
     } else {
         if a.disjoint(b) {
             let x = a.choose();
@@ -862,7 +862,7 @@ pub broadcast proof fn lemma_set_intersect_union_lens<A, const FINITE1: bool, co
     if a.len() == 0 {
         assert(a.union(b) =~= b.to_infinite());
         assert(a.intersect(b) =~= GSet::empty());
-        congruent_len(b, b.to_infinite());
+        b.congruent_len(b.to_infinite());
     } else {
         let x = a.choose();
         lemma_set_intersect_union_lens(a.remove(x), b);

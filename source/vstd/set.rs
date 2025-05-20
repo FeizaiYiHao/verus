@@ -128,62 +128,56 @@ impl<A> ISet<A> {
     }
 }
 
-// `congruent` is an analog of extensional equality that is meaningful across types with mismatched
-// (or unknown) <FINITE> arguments. If two sets are congruent, then they have the same finiteness
-// and the same len(). We anticipate that `congruent` reasoning will mostly be used in library
-// code, where we're trying to generalize over the FINITE argument, and hence it's not exposed to
-// users through group lemma automation. We expect most user code will stay within Set or ISet,
-// where extensionality is the more natural concept and syntax.
+impl<A, const FINITE: bool> GSet<A, FINITE> {
+    // `congruent` is an analog of extensional equality that is meaningful across types with mismatched
+    // (or unknown) <FINITE> arguments. If two sets are congruent, then they have the same finiteness
+    // and the same len(). We anticipate that `congruent` reasoning will mostly be used in library
+    // code, where we're trying to generalize over the FINITE argument, and hence it's not exposed to
+    // users through group lemma automation. We expect most user code will stay within Set or ISet,
+    // where extensionality is the more natural concept and syntax. Hence, the lemmas aren't
+    // broadcast.
 
-pub open spec fn congruent<A, const FINITE1: bool, const FINITE2: bool>(s1: GSet<A, FINITE1>, s2: GSet<A, FINITE2>) -> bool
-{
-    forall |a: A| s1.contains(a) <==> s2.contains(a)
-}
+    pub open spec fn congruent<const FINITE2: bool>(self: GSet<A, FINITE>, s2: GSet<A, FINITE2>) -> bool
+    {
+        forall |a: A| self.contains(a) <==> s2.contains(a)
+    }
 
-pub proof fn congruent_infiniteness<A, const FINITE1: bool, const FINITE2: bool>(s1: GSet<A, FINITE1>, s2: GSet<A, FINITE2>)
-requires congruent(s1, s2),
-ensures s1.finite() <==> s2.finite(),
-{
-}
+    pub proof fn congruent_infiniteness<const FINITE2: bool>(self: GSet<A, FINITE>, s2: GSet<A, FINITE2>)
+    requires self.congruent(s2),
+    ensures self.finite() <==> s2.finite(),
+    {
+    }
 
-// TODO(jonh): don't broadcast. It's for generic-over-finite library code. Document.
-// We could do s1.len && s2.len, but maybe that's too aggressive.
-// congruent(s1,s2) sort of demands the callsite type "assert(congruent(s1,s2))" anyway, so maybe
-// not useful.
-// Or maybe it's not important, since the congruent stuff is mostly only gonna be called inside set_lib anyway.
-// And maybe it's a bit perf-dangerous like triggering extensionality.
-pub proof fn congruent_len<A, const FINITE1: bool, const FINITE2: bool>(s1: GSet<A, FINITE1>, s2: GSet<A, FINITE2>)
-requires
-    congruent(s1, s2),
-    s1.finite(),
-ensures s1.len() == s2.len(),
-decreases s1.len(),
-{
-    broadcast use lemma_set_empty_len;
-    broadcast use lemma_set_len_empty;
-    broadcast use lemma_set_remove_len;
-    broadcast use lemma_set_choose_len;
-    broadcast use lemma_set_ext_equal;
-    broadcast use lemma_set_remove_finite;
-    if s1 == GSet::<A, FINITE1>::empty() {
-        assert( s1.len() == 0 );
-        assert( forall |x| !s2.contains(x) );
-        assert( s2 =~= GSet::<A, FINITE2>::empty() );    // trigger extn to get lemma_set_empty_len
-        assert( s2.len() == 0 );
-    } else {
-        let x = s1.choose();
-        assert( s1.finite() );
-        assert( s1.len() != 0 );
-        assert( s1.contains(x) );
-        assert( s1.remove(x).len() + 1 == s1.len() );
-        assert forall |a| s1.remove(x).contains(a) == s2.remove(x).contains(a) by {
-            if a != x {
-                assert( s1.remove(x).contains(a) == s1.contains(a) );
+    pub proof fn congruent_len<const FINITE2: bool>(self: GSet<A, FINITE>, s2: GSet<A, FINITE2>)
+    requires
+        self.congruent(s2),
+        self.finite(),
+    ensures self.len() == s2.len(),
+    decreases self.len(),
+    {
+        // TOOD(jonh): tidy up this proof
+        broadcast use {lemma_set_empty_len, lemma_set_len_empty, lemma_set_remove_len, lemma_set_choose_len, lemma_set_ext_equal, lemma_set_remove_finite};
+
+        if self == GSet::<A, FINITE>::empty() {
+            assert( self.len() == 0 );
+            assert( forall |x| !s2.contains(x) );
+            assert( s2 =~= GSet::<A, FINITE2>::empty() );    // trigger extn to get lemma_set_empty_len
+            assert( s2.len() == 0 );
+        } else {
+            let x = self.choose();
+            assert( self.finite() );
+            assert( self.len() != 0 );
+            assert( self.contains(x) );
+            assert( self.remove(x).len() + 1 == self.len() );
+            assert forall |a| self.remove(x).contains(a) == s2.remove(x).contains(a) by {
+                if a != x {
+                    assert( self.remove(x).contains(a) == self.contains(a) );
+                }
             }
+            assert( self.remove(x).congruent(s2.remove(x)) );
+            assert( self.remove(x).finite() );
+            self.remove(x).congruent_len(s2.remove(x));
         }
-        assert( congruent(s1.remove(x), s2.remove(x)) );
-        assert( s1.remove(x).finite() );
-        congruent_len(s1.remove(x), s2.remove(x));
     }
 }
 
@@ -551,13 +545,13 @@ pub mod fold {
         assert( s.finite() ) by {
             if s == GSet::<A, FINITE>::empty() {
                 let es = GSet::<A>::empty();
-                assert( congruent(es, s) );
-                congruent_infiniteness(es, s);
+                assert( es.congruent(s) );
+                es.congruent_infiniteness(s);
                 assert( s.finite() );
             } else {
                 let es = s.to_finite();
-                assert( congruent(s, es) );
-                assert( congruent(s.remove(a), es.remove(a)) );
+                assert( s.congruent(es) );
+                assert( s.remove(a).congruent(es.remove(a)) );
                 assert( s.remove(a).finite() );
                 assert( s.finite() );
             }
@@ -718,7 +712,7 @@ pub mod fold {
         let pred = |s: GSet<A, FINITE>, y, d| s.finite();
 
         let empty = GSet::<A, FINITE>::empty();
-        congruent_infiniteness(empty, empty.to_finite());
+        empty.congruent_infiniteness(empty.to_finite());
 
         lemma_fold_graph_induct::<A, FINITE, B>(z, f, s, y, d, pred);
     }
@@ -1072,7 +1066,7 @@ pub broadcast proof fn lemma_set_insert_finite<A, const FINITE: bool>(s: GSet<A,
     lemma_set_finite_from_type(s.to_finite().insert(a));
     // TODO(jonh): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
     // probably because I haven't broadcast used it!
-    congruent_infiniteness(s.to_finite().insert(a), s.insert(a));
+    s.to_finite().insert(a).congruent_infiniteness(s.insert(a));
 }
 
 pub broadcast proof fn lemma_set_remove_finite<A, const FINITE: bool>(s: GSet<A, FINITE>, a: A)
@@ -1084,7 +1078,7 @@ pub broadcast proof fn lemma_set_remove_finite<A, const FINITE: bool>(s: GSet<A,
     lemma_set_finite_from_type(s.to_finite().remove(a));
     // TODO(jonh): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
     // probably because I haven't broadcast used it!
-    congruent_infiniteness(s.to_finite().remove(a), s.remove(a));
+    s.to_finite().remove(a).congruent_infiniteness(s.remove(a));
 }
 
 /// The union of two finite sets is finite.
@@ -1280,7 +1274,7 @@ pub broadcast proof fn lemma_set_remove_len<A, const FINITE: bool>(s: GSet<A, FI
     lemma_set_finite_from_type(s.to_finite().remove(a));
     // TODO(jonh): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
     // probably need to use it
-    congruent_infiniteness(s.to_finite().remove(a), s.remove(a));
+    s.to_finite().remove(a).congruent_infiniteness(s.remove(a));
     lemma_set_insert_len(s.remove(a), a);
     if s.contains(a) {
         assert(s =~= s.remove(a).insert(a));
@@ -1326,7 +1320,7 @@ pub broadcast proof fn lemma_set_choose_len<A, const FINITE: bool>(s: GSet<A, FI
 // filter definition is closed now, so we expose its meaning through this lemma
 pub broadcast proof fn lemma_set_filter_is_intersect<A, const FINITE: bool>(s: GSet<A, FINITE>, f: spec_fn(A) -> bool)
 ensures
-    congruent(#[trigger] s.filter(f), s.intersect(ISet::new(f)))
+    (#[trigger] s.filter(f)).congruent(s.intersect(ISet::new(f)))
 {
 }
 

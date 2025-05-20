@@ -15,9 +15,10 @@ verus! {
 /// Alternatively, a map can be thought of as a set of `(K, V)` pairs where each key
 /// appears in at most entry.
 ///
-/// In general, a map might be infinite.
-/// To work specifically with finite maps, see the [`self.finite()`](Set::finite) predicate.
-/// TODO(jonh): update docs here when we have Map/IMap type split.
+/// Map allows only construction of maps with finite domain.
+/// The IMap type allows possibly-infinite domains.
+/// The [`self.finite()`](Set::finite) predicate can indicate (at verification time) whether a
+/// specific IMap has a finite domain.
 ///
 /// Maps can be constructed in a few different ways:
 ///  * [`Map::empty()`] constructs an empty map.
@@ -63,7 +64,7 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
     pub open spec fn congruent<const FINITE2: bool>(m1: GMap<K, V, FINITE>, m2: GMap<K, V, FINITE2>) -> bool
     {
         // TODO(jonh): change to GSet::congruent
-        &&& congruent(m1.dom(), m2.dom())
+        &&& m1.dom().congruent(m2.dom())
         &&& forall |k| #[trigger] m1.contains_key(k) ==> m1[k] == m2[k]
     }
 }
@@ -201,7 +202,7 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
     ensures
         #![trigger (self.union_prefer_right(m2))]
         self.union_prefer_right(m2).dom().to_infinite() == self.dom().union(m2.dom()),
-        congruent(self.union_prefer_right(m2).dom(), self.dom().union(m2.dom())),
+        self.union_prefer_right(m2).dom().congruent(self.dom().union(m2.dom())),
         forall |k| #![auto] self.union_prefer_right(m2).dom().contains(k) ==>
             self.union_prefer_right(m2)[k] == if m2.dom().contains(k) { m2[k] } else { self[k] },
     {
@@ -214,7 +215,7 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
     ensures
         #![trigger(self.remove_keys(keys))]
         self.remove_keys(keys).dom().to_infinite() == self.dom().difference(keys),
-        congruent(self.remove_keys(keys).dom(), self.dom().difference(keys)),
+        self.remove_keys(keys).dom().congruent(self.dom().difference(keys)),
         forall |k| #![auto] self.remove_keys(keys).dom().contains(k) ==> self.remove_keys(keys)[k] == self[k]
     {
         broadcast use super::set::group_set_lemmas;
@@ -379,7 +380,7 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
 }
 
 broadcast proof fn axiom_dom_ensures<K,V,const FINITE: bool>(m: GMap<K,V,FINITE>)
-ensures congruent(#[trigger] m.dom(), ISet::new(|k| (m.mapping)(k) is Some))
+ensures  (#[trigger] m.dom()).congruent(ISet::new(|k| (m.mapping)(k) is Some))
 {
     // This property relies on this module only allowing the construction of
     // finite mappings inside GMaps with FINITE=true.
