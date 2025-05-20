@@ -275,7 +275,6 @@ impl<Key, Value, Token> MapToken<Key, Value, Token>
 
     #[verifier::inline]
     pub open spec fn dom(self) -> Set<Key> {
-        // TODO(jonh): bridging the gap until Maps can be type-finite.
         self.map().dom()
     }
 
@@ -550,8 +549,8 @@ impl<Element, Token> MultisetToken<Element, Token>
             self.multiset() == old(self).multiset().insert(token.element()),
     {
         use_type_invariant(&*self);
-        let f = fresh(self.m.dom().to_finite());
-        fresh_is_fresh(self.m.dom().to_finite());
+        let f = fresh(self.m.dom());
+        fresh_is_fresh(self.m.dom());
         map_values_insert_not_in(
             Self::map_elems(self.m),
             f,
