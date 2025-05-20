@@ -99,9 +99,11 @@ impl<A, const FINITE: bool> GSet<A, FINITE> {
     }
 
     pub broadcast proof fn lemma_to_finite_contains(self)
+    requires
+        self.finite()
     ensures
         #![trigger(self.to_finite())]
-        self.finite() ==> forall |a| self.contains(a) <==> #[trigger] self.to_finite().contains(a)
+        forall |a| self.contains(a) <==> #[trigger] self.to_finite().contains(a)
     {
     }
 }

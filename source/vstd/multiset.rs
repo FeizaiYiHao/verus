@@ -15,6 +15,8 @@ use super::set::*;
 
 verus! {
 
+broadcast use group_set_lemmas;
+
 /// `Multiset<V>` is an abstract multiset type for specifications.
 ///
 /// `Multiset<V>` can be encoded as a (total) map from elements to natural numbers,
@@ -32,7 +34,6 @@ verus! {
 /// extensionality operator `=~=`.
 // We could in principle implement the Multiset via an inductive datatype
 // and so we can mark its type argument as accept_recursive_types.
-// TODO(jonh): update docs here, since Set<A, true> is indeed finite.
 // Note: Multiset is finite (in contrast to Set, Map, which are infinite) because it
 // isn't entirely obvious how to represent an infinite multiset in the case where
 // a single value (v: V) has an infinite multiplicity. It seems to require either:
@@ -41,6 +42,10 @@ verus! {
 // (1) would be complicated and it's not clear what the use would be; (2) has some
 // weird properties (e.g., you can't in general define a multiset `map` function
 // since it might map an infinite number of elements to the same one).
+// Also, note that if multiset were infinite, it couldn't accept_recursive_types.
+// TODO(verus): If someday we can mark finite-Map as accept_recursive_types, then
+// this file can be rewritten as just a wrapper around Map rather than the present.
+// pile of trusted axioms.
 #[verifier::external_body]
 #[verifier::ext_equal]
 #[verifier::accept_recursive_types(V)]
@@ -176,27 +181,22 @@ impl<V> Multiset<V> {
         forall|x: V| self.count(x) == 0 || other.count(x) == 0
     }
 
-    // TODO(jonh): roll more of these changes back. Why is there an idom if we're not improving
-    // multiset now?
-    pub open spec fn idom(self) -> ISet<V> {
-        ISet::new(|v: V| self.count(v) > 0)
-    }
-
     /// Returns the set of all elements that have a count greater than 0
     pub open spec fn dom(self) -> Set<V> {
         // This module assumes that all well-formed multisets have finite footprint,
         // so to_finite() here is reasonable.
-        self.idom().to_finite()
+        ISet::new(|v: V| self.count(v) > 0).to_finite()
     }
-}
 
-// TODO(jonh): we should probably remove all these axioms and give multisets a
-// finite-map based representation. But we can't do that until finite-Set
-// allows recursive types, since (finite) Multiset wants to.
-pub broadcast proof fn axiom_multiset_finite<V>(m: Multiset<V>)
-ensures #[trigger] m.idom().finite()
-{
-    admit();
+    // dom() won't mean anything unless we know our domain is finite, which is a soundness
+    // invariant that the present axiom-heavy representation promises to maintain.
+    pub broadcast proof fn dom_ensures(self)
+    ensures
+        #![trigger(self.dom())]
+        forall |v: V| #[trigger] self.dom().contains(v) <==> self.count(v) > 0
+    {
+        assert( ISet::new(|v: V| self.count(v) > 0).finite() ) by { admit(); }
+    }
 }
 
 // Specification of `empty`
@@ -389,7 +389,6 @@ pub broadcast proof fn axiom_multiset_always_finite<V>(m: Multiset<V>)
 }
 
 pub broadcast group group_multiset_axioms {
-    axiom_multiset_finite,
     axiom_multiset_empty,
     axiom_multiset_contained,
     axiom_multiset_new_not_contained,
