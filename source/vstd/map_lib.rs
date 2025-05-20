@@ -113,7 +113,8 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
     /// results in a domain of size n less than the original domain.
     pub proof fn lemma_remove_keys_len(self, keys: GSet<K, FINITE>)
         requires
-            // TODO(jonh): why isn't this keys.subset_of(self.dom())?
+            // TODO(jonh): why isn't this keys.subset_of(self.dom())? Chris says DO IT. use <=
+            // symbol
             forall|k: K| #[trigger] keys.contains(k) ==> self.contains_key(k),
             keys.finite(),  // not clear why this is necessary
             self.dom().finite(),
@@ -179,6 +180,7 @@ pub broadcast proof fn lemma_union_insert_left<K, V>(m1: Map<K, V>, m2: Map<K, V
     ensures
         #[trigger] m1.insert(k, v).union_prefer_right(m2) == m1.union_prefer_right(m2).insert(k, v),
 {
+    // TODO(jonh): these should be broadcast now; get rid of them
     m1.lemma_union_prefer_right(m2);
     m1.insert(k,v).lemma_union_prefer_right(m2);
     assert(m1.insert(k, v).union_prefer_right(m2) =~= m1.union_prefer_right(m2).insert(k, v));
@@ -220,9 +222,6 @@ pub broadcast proof fn lemma_union_remove_right<K, V>(m1: Map<K, V>, m2: Map<K, 
 pub broadcast proof fn lemma_union_dom<K, V>(m1: Map<K, V>, m2: Map<K, V>)
     ensures
         #[trigger] m1.union_prefer_right(m2).dom() == m1.dom() + m2.dom(),
-// TODO(jonh): confirm this typechecking error: verus didn't seem to catch the type error in this
-// line.
-//         #[trigger] m1.union_prefer_right(m2).dom() == m1.dom().union(m2.dom()),
 {
     m1.lemma_union_prefer_right(m2);
     assert( m1.union_prefer_right(m2).dom() == m1.dom() + m2.dom() );
@@ -283,7 +282,7 @@ pub broadcast proof fn lemma_map_new_domain<K, V>(key_set: Set<K>, fv: spec_fn(K
     ensures
     #[trigger] Map::<K, V>::new(key_set, fv).dom() == key_set,
 {
-    assert( Map::<K, V>::new(key_set, fv).dom() =~= key_set );  // TODO(verus): wheee
+    assert( Map::<K, V>::new(key_set, fv).dom() =~= key_set );  // TODO(verus): wheee. jonh cite issue
 }
 
 // This verified lemma used to be an axiom in the Dafny prelude

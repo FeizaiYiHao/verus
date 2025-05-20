@@ -281,7 +281,13 @@ impl<A> Set<A> {
 
     /// Converts a set into a multiset where each element from the set has
     /// multiplicity 1 and any other element has multiplicity 0.
-    // TODO(jonh): why should this be limited to finite sets? Are Multisets finite by type?
+    // Multiset is restricted to finite, so this method is only available on finite Set.
+    // (Honestly, it's weird to jonh that we have this method here; I'd rather see
+    //     Multiset::from_set(foo)
+    // than
+    //     foo.to_multiset()
+    // It makes more sense for Multiset to know how to construct itself from other types
+    // than for every other type to know how to make multisets, doesn't it?)
     pub open spec fn to_multiset(self) -> Multiset<A>
         decreases self.len(),
         when self.finite()
@@ -937,7 +943,6 @@ pub proof fn lemma_set_properties<A, const FINITE1: bool, const FINITE2: bool>()
 {
     broadcast use group_set_properties;
 
-    // TODO(verus): For some reason I now have to explicitly re-trigger extensionality expressions sitting in ensures
     assert( forall|a: GSet<A, FINITE1>, b: GSet<A, FINITE2>| #[trigger] a.union(b).union(b) == a.union(b) );
     assert( forall|a: GSet<A, FINITE1>, b: GSet<A, FINITE2>| #[trigger] a.union(b).union(a) == a.union(b) );
     assert( forall|a: GSet<A, FINITE1>, b: GSet<A, FINITE2>| #[trigger] (a.intersect(b)).intersect(b) == a.intersect(b) );

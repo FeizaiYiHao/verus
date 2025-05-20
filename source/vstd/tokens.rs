@@ -250,7 +250,7 @@ pub tracked struct MapToken<Key, Value, Token>
 {
     ghost _v: PhantomData<Value>,
     ghost inst: InstanceId,
-    tracked m: IMap<Key, Token>,
+    tracked m: Map<Key, Token>,
 }
 
 impl<Key, Value, Token> MapToken<Key, Value, Token>
@@ -266,15 +266,15 @@ impl<Key, Value, Token> MapToken<Key, Value, Token>
         self.inst
     }
 
-    pub closed spec fn map(self) -> IMap<Key, Value> {
-        IMap::new(
-            |k: Key| self.m.dom().contains(k),
+    pub closed spec fn map(self) -> Map<Key, Value> {
+        Map::new(
+            self.m.dom(),
             |k: Key| self.m[k].value(),
         )
     }
 
     #[verifier::inline]
-    pub open spec fn dom(self) -> ISet<Key> {
+    pub open spec fn dom(self) -> Set<Key> {
         // TODO(jonh): bridging the gap until Maps can be type-finite.
         self.map().dom()
     }
@@ -292,10 +292,10 @@ impl<Key, Value, Token> MapToken<Key, Value, Token>
     pub proof fn empty(instance_id: InstanceId) -> (tracked s: Self)
         ensures
             s.instance_id() == instance_id,
-            s.map() === IMap::empty(),
+            s.map() === Map::empty(),
     {
-        let tracked s = Self { inst: instance_id, m: IMap::tracked_empty(), _v: PhantomData };
-        assert(s.map() =~= IMap::empty());
+        let tracked s = Self { inst: instance_id, m: Map::tracked_empty(), _v: PhantomData };
+        assert(s.map() =~= Map::empty());
         return s;
     }
 
@@ -327,7 +327,7 @@ impl<Key, Value, Token> MapToken<Key, Value, Token>
         t
     }
 
-    pub proof fn into_map(tracked self) -> (tracked map: IMap<Key, Token>)
+    pub proof fn into_map(tracked self) -> (tracked map: Map<Key, Token>)
         ensures
             map.dom() == self.map().dom(),
             forall |key|
@@ -344,7 +344,7 @@ impl<Key, Value, Token> MapToken<Key, Value, Token>
         return m;
     }
 
-    pub proof fn from_map(instance_id: InstanceId, tracked map: IMap<Key, Token>) -> (tracked s: Self)
+    pub proof fn from_map(instance_id: InstanceId, tracked map: Map<Key, Token>) -> (tracked s: Self)
         requires
             forall |key| #[trigger] map.dom().contains(key) ==> map[key].instance_id() == instance_id,
             forall |key| #[trigger] map.dom().contains(key) ==> map[key].key() == key,
@@ -365,7 +365,7 @@ pub tracked struct SetToken<Element, Token>
     where Token: ElementToken<Element>
 {
     ghost inst: InstanceId,
-    tracked m: IMap<Element, Token>,
+    tracked m: Map<Element, Token>,
 }
 
 impl<Element, Token> SetToken<Element, Token>
@@ -381,12 +381,8 @@ impl<Element, Token> SetToken<Element, Token>
         self.inst
     }
 
-    pub closed spec fn set(self) -> ISet<Element> {
+    pub closed spec fn set(self) -> Set<Element> {
         self.m.dom()
-// TODO(jonh): ask why this fancy comprehension to rebuild the same set.
-//         ISet::new(
-//             |e: Element| self.m.dom().contains(e),
-//         )
     }
 
     #[verifier::inline]
@@ -397,10 +393,10 @@ impl<Element, Token> SetToken<Element, Token>
     pub proof fn empty(instance_id: InstanceId) -> (tracked s: Self)
         ensures
             s.instance_id() == instance_id,
-            s.set() === ISet::empty(),
+            s.set() === Set::empty(),
     {
-        let tracked s = Self { inst: instance_id, m: IMap::tracked_empty() };
-        assert(s.set() =~= ISet::empty());
+        let tracked s = Self { inst: instance_id, m: Map::tracked_empty() };
+        assert(s.set() =~= Set::empty());
         return s;
     }
 
@@ -431,7 +427,7 @@ impl<Element, Token> SetToken<Element, Token>
         t
     }
 
-    pub proof fn into_map(tracked self) -> (tracked map: IMap<Element, Token>)
+    pub proof fn into_map(tracked self) -> (tracked map: Map<Element, Token>)
         ensures
             map.dom() == self.set(),
             forall |key|
@@ -447,7 +443,7 @@ impl<Element, Token> SetToken<Element, Token>
         return m;
     }
 
-    pub proof fn from_map(instance_id: InstanceId, tracked map: IMap<Element, Token>) -> (tracked s: Self)
+    pub proof fn from_map(instance_id: InstanceId, tracked map: Map<Element, Token>) -> (tracked s: Self)
         requires
             forall |key| #[trigger] map.dom().contains(key) ==> map[key].instance_id() == instance_id,
             forall |key| #[trigger] map.dom().contains(key) ==> map[key].element() == key,

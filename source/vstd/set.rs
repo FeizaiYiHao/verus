@@ -98,10 +98,6 @@ impl<A, const FINITE: bool> GSet<A, FINITE> {
         self.cast_finiteness::<true>()
     }
 
-}
-
-// TOOD(verus folks): "broadcast functions should have explicit #[trigger]" -- but hey there is one
-impl<A, const FINITE: bool> GSet<A, FINITE> {
     pub broadcast proof fn lemma_to_finite_contains(self)
     ensures
         #![trigger(self.to_finite())]
@@ -110,19 +106,7 @@ impl<A, const FINITE: bool> GSet<A, FINITE> {
     }
 }
 
-// TODO(jonh): temporary name reachable from broadcast group
-pub broadcast proof fn lemma_to_finite_contains<A, const FINITE: bool>(s: GSet<A, FINITE>)
-ensures
-    #![trigger(s.to_finite())]
-    s.finite() ==> forall |a| s.contains(a) <==> #[trigger] s.to_finite().contains(a)
-{
-    s.lemma_to_finite_contains()
-}
-
 /// Creates a finite set of integers in the range [lo, hi).
-// TODO(jonh): discuss: I moved this from set_lib, which is a breaking change.
-// Should we make it a (deprecated?) pub import in set_lib as a transition facility?
-// Make this an associated method on Set.
 pub closed spec fn set_int_range(lo: int, hi: int) -> GSet<int> {
     Set { set: |i: int| lo <= i && i < hi }
 }
@@ -160,11 +144,12 @@ ensures s1.finite() <==> s2.finite(),
 {
 }
 
-// TODO(jonh): discuss broadcasting. Not clear there's a broadcastable trigger here.
+// TODO(verus-discuss): discuss broadcasting. Not clear there's a broadcastable trigger here.
 // We could do s1.len && s2.len, but maybe that's too aggressive.
 // congruent(s1,s2) sort of demands the callsite type "assert(congruent(s1,s2))" anyway, so maybe
 // not useful.
-// After discussion: the congruent stuff is mostly only gonna be called inside set_lib anyway.
+// Or maybe it's not important, since the congruent stuff is mostly only gonna be called inside set_lib anyway.
+// And maybe it's a bit perf-dangerous like triggering extensionality.
 pub proof fn congruent_len<A, const FINITE1: bool, const FINITE2: bool>(s1: GSet<A, FINITE1>, s2: GSet<A, FINITE2>)
 requires
     congruent(s1, s2),
@@ -241,7 +226,7 @@ impl<A, const FINITE:bool> GSet<A, FINITE> {
     decreases self.len()
     {
         broadcast use lemma_set_remove_len;
-        broadcast use lemma_set_choose_finite;
+        broadcast use lemma_set_choose_infinite;
         broadcast use lemma_set_choose_len;
         broadcast use lemma_set_empty_len;
         broadcast use lemma_set_len_empty;
@@ -404,8 +389,6 @@ impl<A> Set<A> {
     }
 }
 
-// TODO(jonh): proposal for discussion: spec_* functions preserve their type annotation, since
-// that's probably how they'll most often be used.
 impl<A> Set<A> {
     /// `+` operator, synonymous with `finite_union`
     #[verifier::inline]
@@ -483,7 +466,7 @@ pub mod fold {
     use super::*;
 
     pub(in super) broadcast group group_set_lemmas_early {
-        lemma_to_finite_contains,
+        GSet::lemma_to_finite_contains,
         lemma_set_finite_from_type,
         lemma_set_empty,
         lemma_set_new,
@@ -1049,7 +1032,7 @@ pub broadcast proof fn lemma_set_ext_equal_deep<A, const FINITE: bool>(s1: GSet<
 {
 }
 
-// TODO(jonh): discuss: why is mk_map a set method? Should be a map method! Tangly.
+// TODO(verus-discuss): jonh thinks it's weird that we have Set::mk_map instead of Map::from_set.
 
 pub broadcast proof fn lemma_mk_map_domain<K, V>(s: ISet<K>, f: spec_fn(K) -> V)
     ensures
@@ -1099,35 +1082,6 @@ pub broadcast proof fn lemma_set_remove_finite<A, const FINITE: bool>(s: GSet<A,
     // TODO(verus): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
     congruent_infiniteness(s.to_finite().remove(a), s.remove(a));
 }
-
-/// The result of removing an element `a` from a finite set `s` is also finite.
-/// TODO(jonh) delete
-// pub broadcast proof fn lemma_set_remove_finite<A>(s: GSet<A>, a: A)
-//     requires
-//         s.finite(),
-//     ensures
-//         #[trigger] s.remove(a).finite(),
-// {
-//     let (f, ub) = choose|f: spec_fn(A) -> nat, ub: nat| #[trigger]
-//         trigger_finite(f, ub) && surj_on(f, s) && (forall|a| s.contains(a) ==> f(a) < ub);
-//     assert forall|a1, a2|
-//         #![all_triggers]
-//         s.remove(a).contains(a1) && s.remove(a).contains(a2) && a1 != a2 implies f(a1) != f(a2) by {
-//         if a != a1 {
-//             assert(s.contains(a1));
-//         }
-//         if a != a2 {
-//             assert(s.contains(a2));
-//         }
-//     };
-//     assert(surj_on(f, s.remove(a)));
-//     assert forall|a2| s.remove(a).contains(a2) implies #[trigger] f(a2) < ub by {
-//         if a == a2 {
-//         } else {
-//             assert(s.contains(a2));
-//         }
-//     };
-// }
 
 /// The union of two finite sets is finite.
 pub broadcast proof fn lemma_set_union_finite<A, const FINITE1: bool, const FINITE2: bool>(s1: GSet<A, FINITE1>, s2: GSet<A, FINITE2>)
@@ -1179,8 +1133,9 @@ pub broadcast proof fn lemma_set_difference_finite<A, const FINITE1: bool, const
 }
 
 /// An infinite set `s` contains the element `s.choose()`.
-// TODO(verus): deprecate and rename choose_infinite!
-pub broadcast proof fn lemma_set_choose_finite<A, const FINITE: bool>(s: GSet<A, FINITE>)
+/// Note here 'infinite' means not-SMT-finite; the empty set is SMT-finite.
+/// ISet::empty() is type-infinite but not SMT-infinite.
+pub broadcast proof fn lemma_set_choose_infinite<A, const FINITE: bool>(s: GSet<A, FINITE>)
     requires
         !s.finite(),
     ensures
@@ -1190,9 +1145,6 @@ pub broadcast proof fn lemma_set_choose_finite<A, const FINITE: bool>(s: GSet<A,
     let ub = 0;
     let _ = trigger_finite(f, ub);
 }
-
-// TODO(jonh): Discuss: I renamed axiom_* to lemma_*, which is a breaking change.
-// Deprecate/smoother transition?
 
 // Note: we could add more axioms about len, but they would be incomplete.
 // The following, with lemma_set_ext_equal, are enough to build libraries about len.
@@ -1275,7 +1227,7 @@ requires
     lo <= hi,
 ensures
     #![trigger(set_int_range(lo, hi))]
-    forall |i: int| set_int_range(lo, hi).contains(i) <==> lo <= i && i < hi,
+    forall |i: int| #[trigger] set_int_range(lo, hi).contains(i) <==> lo <= i && i < hi,
     set_int_range(lo, hi).len() == hi - lo,
 decreases hi - lo,
 {
@@ -1379,7 +1331,7 @@ pub broadcast group group_set_lemmas {
 
     // ...should replace these lines (up to the blank), but it doesn't.
     // (verus #1616)
-    lemma_to_finite_contains,
+    GSet::lemma_to_finite_contains,
     lemma_set_finite_from_type,
     lemma_set_empty,
     lemma_set_new,
@@ -1411,7 +1363,7 @@ pub broadcast group group_set_lemmas {
     lemma_set_union_finite,
     lemma_set_intersect_finite,
     lemma_set_difference_finite,
-    lemma_set_choose_finite,
+    lemma_set_choose_infinite,
     lemma_set_empty_len,
     lemma_set_len_empty,
     lemma_set_insert_len,
@@ -1421,7 +1373,9 @@ pub broadcast group group_set_lemmas {
     lemma_set_filter_is_intersect,
 }
 
-// TODO(jonh): discuss: should set![] construct a Set or a GSet with inferred type?
+// TODO(verus-discuss): should set![] construct a Set or a GSet with inferred type?
+//     Constructing a Set means it's not usable in ISet contexts without .to_infinite().
+//     Inferring the type means maybe weirder error messages mentioning the FINITE arg.
 // Macros
 #[doc(hidden)]
 #[macro_export]

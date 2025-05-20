@@ -13,20 +13,20 @@ use super::set::{Set, set_int_range};
 
 verus! {
 
-broadcast use group_seq_axioms;
+broadcast use {super::set::group_set_lemmas, group_seq_axioms};
 
 impl<A> Seq<A> {
     /// Applies the function `f` to each element of the sequence, and returns
     /// the resulting sequence.
     /// The `int` parameter of `f` is the index of the element being mapped.
-    // TODO(verus): rename to map_entries, for consistency with Map::map
+    // TODO(verus-proposal): rename to map_entries, for consistency with Map::map
     pub open spec fn map<B>(self, f: spec_fn(int, A) -> B) -> Seq<B> {
         Seq::new(self.len(), |i: int| f(i, self[i]))
     }
 
     /// Applies the function `f` to each element of the sequence, and returns
     /// the resulting sequence.
-    // TODO(verus): rename to map, because this is what everybody wants.
+    // TODO(verus-proposal): rename to map, because this is what everybody wants.
     pub open spec fn map_values<B>(self, f: spec_fn(A) -> B) -> Seq<B> {
         Seq::new(self.len(), |i: int| f(self[i]))
     }
@@ -467,9 +467,13 @@ impl<A> Seq<A> {
         set_int_range(0, self.len() as int).map(|i| self.index(i))
     }
 
-    // TODO(jonh): how to elegantly broadcast this?
-    pub proof fn to_set_ensures(self)
-        ensures forall |i| 0 <= i < self.len() ==> #[trigger] self.to_set().contains(self[i])
+    pub broadcast proof fn to_set_ensures(self)
+        ensures
+        #![trigger(self.to_set())]
+        // to_set works for all indices
+        forall |i| 0 <= i < self.len() ==> #[trigger] self.to_set().contains(self[i]),
+        // to_set finds everything .contains finds
+        forall |a| #[trigger] self.to_set().contains(a) <==> self.contains(a),
     {
         crate::set::lemma_set_int_range_ensures(0, self.len() as int);
         assert forall |i| 0 <= i < self.len() implies #[trigger] self.to_set().contains(self[i]) by {
@@ -1572,27 +1576,11 @@ decreases seq.len(),
 {
     broadcast use super::set::group_set_lemmas;
 
-    if seq.len() == 0 {
-        assert( seq.to_set() == seq_to_set_rec(seq) );
-    } else {
-        seq_to_set_equal_rec(seq.drop_last());
-        // transfer map index witnesses to and fro between definitions
-        assert forall |e| seq.to_set().contains(e) implies seq_to_set_rec(seq).contains(e) by {
-            let i = choose |i| #![auto] set_int_range(0, seq.len() as int).contains(i) && seq.index(i) == e;
-            if i < seq.len() - 1 {
-                assert( set_int_range(0, seq.drop_last().len() as int).contains(i) );
-            }
-        }
-        assert forall |e| seq_to_set_rec(seq).contains(e) implies seq.to_set().contains(e) by {
-            let i = if seq_to_set_rec(seq.drop_last()).contains(e) {
-                choose |i| #![auto] set_int_range(0, seq.drop_last().len() as int).contains(i) && seq.drop_last().index(i) == e
-                } else {
-                    seq.len() - 1
-                };
-            assert( set_int_range(0, seq.len() as int).contains(i) && seq.index(i) == e );
-        }
-        assert( seq.to_set() == seq_to_set_rec(seq) );
+    seq.to_set_ensures();
+    assert(forall|n| seq.contains(n) <==> #[trigger] seq_to_set_rec(seq).contains(n)) by {
+        seq_to_set_rec_contains(seq);
     }
+    assert(seq.to_set() =~= seq_to_set_rec(seq));
 }
 
 /// The set obtained from a sequence is finite
@@ -2203,6 +2191,7 @@ pub broadcast group group_filter_ensures {
 }
 
 pub broadcast group group_seq_lib_default {
+    Seq::to_set_ensures,
     group_filter_ensures,
     Seq::add_empty_left,
     Seq::add_empty_right,
