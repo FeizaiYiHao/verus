@@ -361,15 +361,16 @@ impl<A> Set<A> {
             self.filter(f).len() <= self.len(),
         decreases self.len(),
     {
+        broadcast use {GSet::congruent_infiniteness, GSet::congruent_len};
+
         let x: Set<A> = self;
         let xi = x.to_infinite();
         let fi = ISet::<A>::new(f);
         
-        x.congruent_infiniteness(x.to_infinite());
+        assert( x.congruent(xi) );
         lemma_len_intersect(xi, fi);
-        x.congruent_len(xi);
         assert( xi.intersect(fi) == xi.filter(f) ); // trigger lemma_set_filter_is_intersect
-        x.filter(f).congruent_len(xi.filter(f));
+        assert( x.filter(f).congruent(xi.filter(f)) );
     }
 }
 
@@ -488,27 +489,16 @@ pub broadcast proof fn lemma_set_insert_finite_iff<A>(s: ISet<A>, a: A)
     ensures
         #[trigger] s.insert(a).finite() <==> s.finite(),
 {
+    broadcast use GSet::congruent_infiniteness;
+
     // apppeal to finite-typed versions
     if s.insert(a).finite() {
         if s.contains(a) {
             assert( s.insert(a) == s );
         } else {
-            s.insert(a).to_finite().remove(a).congruent_infiniteness(s);
+            assert( s.congruent(s.insert(a).to_finite().remove(a)) );
         }
     }
-    if s.finite() {
-        s.to_finite().insert(a).congruent_infiniteness(s.insert(a));
-    }
-
-    // Original proof appeals to finite-preservation lemmas on infinite sets
-//     if s.insert(a).finite() {
-//         if s.contains(a) {
-//             assert(s == s.insert(a));
-//         } else {
-//             assert(s == s.insert(a).remove(a));
-//         }
-//     }
-//     assert(s.insert(a).finite() ==> s.finite());
 }
 
 /// The result of removing an element `a` into a set `s` is finite iff `s` is finite.

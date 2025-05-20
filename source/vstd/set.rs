@@ -135,24 +135,25 @@ impl<A, const FINITE: bool> GSet<A, FINITE> {
     // code, where we're trying to generalize over the FINITE argument, and hence it's not exposed to
     // users through group lemma automation. We expect most user code will stay within Set or ISet,
     // where extensionality is the more natural concept and syntax. Hence, the lemmas aren't
-    // broadcast.
+    // part of the exported broadcast group.
 
     pub open spec fn congruent<const FINITE2: bool>(self: GSet<A, FINITE>, s2: GSet<A, FINITE2>) -> bool
     {
         forall |a: A| self.contains(a) <==> s2.contains(a)
     }
 
-    pub proof fn congruent_infiniteness<const FINITE2: bool>(self: GSet<A, FINITE>, s2: GSet<A, FINITE2>)
-    requires self.congruent(s2),
+    pub broadcast proof fn congruent_infiniteness<const FINITE2: bool>(self: GSet<A, FINITE>, s2: GSet<A, FINITE2>)
+    requires #[trigger] self.congruent(s2),
     ensures self.finite() <==> s2.finite(),
     {
     }
 
-    pub proof fn congruent_len<const FINITE2: bool>(self: GSet<A, FINITE>, s2: GSet<A, FINITE2>)
+    pub broadcast proof fn congruent_len<const FINITE2: bool>(self: GSet<A, FINITE>, s2: GSet<A, FINITE2>)
     requires
-        self.congruent(s2),
+        #[trigger] self.congruent(s2),
         self.finite(),
-    ensures self.len() == s2.len(),
+    ensures
+        self.len() == s2.len(),
     decreases self.len(),
     {
         // TOOD(jonh): tidy up this proof
@@ -537,28 +538,11 @@ pub mod fold {
         ensures
             fold_graph(z, f, s.insert(a), f(y, a), d + 1),
     {
-        broadcast use group_set_lemmas_early;
+        broadcast use {group_set_lemmas_early, GSet::congruent_infiniteness};
 
         reveal(fold_graph);
         let _ = trigger_fold_graph(y, a);
-        assert(s == s.insert(a).remove(a));
-        assert( s.finite() ) by {
-            if s == GSet::<A, FINITE>::empty() {
-                let es = GSet::<A>::empty();
-                assert( es.congruent(s) );
-                es.congruent_infiniteness(s);
-                assert( s.finite() );
-            } else {
-                let es = s.to_finite();
-                assert( s.congruent(es) );
-                assert( s.remove(a).congruent(es.remove(a)) );
-                assert( s.remove(a).finite() );
-                assert( s.finite() );
-            }
-        }
-        assert( s.remove(a).finite() ); // trigger?
-        assert( s.insert(a).finite() );
-        assert( s.insert(a).remove(a).finite() );
+        assert(s == s.insert(a).remove(a)); // trigger
     }
 
     // Elimination rules
@@ -707,13 +691,9 @@ pub mod fold {
         ensures
             s.finite(),
     {
-        broadcast use group_set_lemmas_early;
+        broadcast use {group_set_lemmas_early, GSet::congruent_infiniteness};
 
         let pred = |s: GSet<A, FINITE>, y, d| s.finite();
-
-        let empty = GSet::<A, FINITE>::empty();
-        empty.congruent_infiniteness(empty.to_finite());
-
         lemma_fold_graph_induct::<A, FINITE, B>(z, f, s, y, d, pred);
     }
 
@@ -1064,8 +1044,6 @@ pub broadcast proof fn lemma_set_insert_finite<A, const FINITE: bool>(s: GSet<A,
         #[trigger] s.insert(a).finite(),
 {
     lemma_set_finite_from_type(s.to_finite().insert(a));
-    // TODO(jonh): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
-    // probably because I haven't broadcast used it!
     s.to_finite().insert(a).congruent_infiniteness(s.insert(a));
 }
 
@@ -1076,8 +1054,6 @@ pub broadcast proof fn lemma_set_remove_finite<A, const FINITE: bool>(s: GSet<A,
         #[trigger] s.remove(a).finite(),
 {
     lemma_set_finite_from_type(s.to_finite().remove(a));
-    // TODO(jonh): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
-    // probably because I haven't broadcast used it!
     s.to_finite().remove(a).congruent_infiniteness(s.remove(a));
 }
 
@@ -1272,8 +1248,6 @@ pub broadcast proof fn lemma_set_remove_len<A, const FINITE: bool>(s: GSet<A, FI
         }),
 {
     lemma_set_finite_from_type(s.to_finite().remove(a));
-    // TODO(jonh): why is lemma above not getting broadcast-used by .finite() requires of congruent_infiniteness?
-    // probably need to use it
     s.to_finite().remove(a).congruent_infiniteness(s.remove(a));
     lemma_set_insert_len(s.remove(a), a);
     if s.contains(a) {
