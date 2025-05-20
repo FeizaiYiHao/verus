@@ -415,29 +415,7 @@ pub broadcast proof fn lemma_update_same<V>(m: Multiset<V>, v: V, mult: nat)
     ensures
         #[trigger] m.update(v, mult).count(v) == mult,
 {
-    broadcast use {group_set_lemmas, group_map_axioms, group_multiset_axioms};
-
-    let map = Map::new(
-        m.dom().insert(v),
-        |key: V|
-            if key == v {
-                mult
-            } else {
-                m.count(key)
-            },
-    );
-
-    assume( map.dom().finite() );
-    assert( m.dom().finite() );
-    assume(false);  // jonh defers better multiset
-//     assert( m.dom() == ISet::new(|v: V| m.count(v) > 0) );
-    assert( ISet::new(|v: V| m.count(v) > 0).finite() );
-
-    assert(map.dom().to_finite() =~= m.dom().insert(v));
-    assert( m.update(v, mult).count(v) == mult );
-    broadcast use group_set_lemmas, group_map_axioms, group_multiset_axioms;
-    broadcast use axiom_multiset_contained;
-    assert( m.dom().insert(v).contains(v) );    // trigger lemma_set_insert_contains
+    broadcast use {group_set_lemmas, group_map_axioms, group_multiset_axioms, Multiset::dom_ensures};
 }
 
 /// The multiset resulting from updating a value `v1` in a multiset `m` to multiplicity `mult` will
@@ -449,7 +427,7 @@ pub broadcast proof fn lemma_update_different<V>(m: Multiset<V>, v1: V, mult: na
         #[trigger] m.update(v1, mult).count(v2) == m.count(v2),
 {
     broadcast use {group_set_lemmas, group_map_axioms, group_multiset_axioms};
-    broadcast use axiom_multiset_contained;
+    broadcast use {axiom_multiset_contained, Multiset::dom_ensures};
 }
 
 // Lemmas about `insert`
@@ -516,7 +494,7 @@ pub broadcast proof fn lemma_intersection_count<V>(a: Multiset<V>, b: Multiset<V
         #[trigger] a.intersection_with(b).count(x) == min(a.count(x) as int, b.count(x) as int),
 {
     broadcast use {group_set_lemmas, group_map_axioms, group_multiset_axioms};
-    broadcast use group_multiset_axioms;
+    broadcast use {group_multiset_axioms, Multiset::dom_ensures};
 
     let m = Map::<V, nat>::new(
         a.dom(),
@@ -585,7 +563,7 @@ pub broadcast proof fn lemma_difference_count<V>(a: Multiset<V>, b: Multiset<V>,
     ensures
         #[trigger] a.difference_with(b).count(x) == clip(a.count(x) - b.count(x)),
 {
-    broadcast use {group_set_lemmas, group_map_axioms, group_multiset_axioms};
+    broadcast use {group_set_lemmas, group_map_axioms, group_multiset_axioms, Multiset::dom_ensures};
 
     let map = Map::<V, nat>::new(a.dom(), |v: V| clip(a.count(v) - b.count(v)));
     assert( map.dom() =~= a.dom() );
