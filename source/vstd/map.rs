@@ -565,9 +565,6 @@ pub broadcast proof fn axiom_map_ext_equal_deep<K, V, const FINITE: bool>(m1: GM
 }
 
 pub broadcast group group_map_axioms {
-//     TODO(verus): discuss shouldn't be able to broadcast this since its ensures
-//     talks about .mapping field? jonh: file an issue
-//     axiom_dom_ensures,
     lemma_finite_new_ensures,
     lemma_infinite_new_ensures,
     GMap::lemma_remove_keys,

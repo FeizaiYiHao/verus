@@ -32,6 +32,7 @@ broadcast use group_set_lemmas;
 ///
 /// To prove that two multisets are equal, it is usually easiest to use the
 /// extensionality operator `=~=`.
+///
 // We could in principle implement the Multiset via an inductive datatype
 // and so we can mark its type argument as accept_recursive_types.
 // Note: Multiset is finite (in contrast to Set, Map, which are infinite) because it
@@ -43,9 +44,11 @@ broadcast use group_set_lemmas;
 // weird properties (e.g., you can't in general define a multiset `map` function
 // since it might map an infinite number of elements to the same one).
 // Also, note that if multiset were infinite, it couldn't accept_recursive_types.
-// TODO(verus): If someday we can mark finite-Map as accept_recursive_types, then
-// this file can be rewritten as just a wrapper around Map rather than the present.
-// pile of trusted axioms.
+//
+// Perhaps someday Verus will be able to mark finite-Map as accept_recursive_types, then this file
+// can be rewritten as just a wrapper around Map rather than the present pile of trusted axioms.
+// See https://github.com/verus-lang/verus/discussions/1663
+//
 #[verifier::external_body]
 #[verifier::ext_equal]
 #[verifier::accept_recursive_types(V)]
@@ -154,8 +157,9 @@ impl<V> Multiset<V> {
     /// Returns a multiset containing the lower count of a given element
     /// between the two sets. In other words, returns a multiset with only
     /// the elements that "overlap".
-    // TODO(jonh): is there some well-formedness representation concern that zero-count elements
-    // shall not appear in the map domain?
+    //
+    // Possible soundness issue with non-normalized representations of zero values;
+    // see https://github.com/verus-lang/verus/issues/1664
     pub open spec fn intersection_with(self, other: Self) -> Self {
         let m = Map::<V, nat>::new(
             self.dom(),
