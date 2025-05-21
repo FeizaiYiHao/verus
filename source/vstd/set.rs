@@ -1008,8 +1008,6 @@ pub broadcast proof fn lemma_set_ext_equal_deep<A, const FINITE: bool>(s1: GSet<
 {
 }
 
-// TODO(jonh): jonh thinks it's weird that we have Set::mk_map instead of Map::from_set. make it a discussion
-
 pub broadcast proof fn lemma_mk_map_domain<K, V>(s: ISet<K>, f: spec_fn(K) -> V)
     ensures
         #[trigger] s.mk_map(f).dom() == s,
