@@ -63,7 +63,6 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
 
     pub open spec fn congruent<const FINITE2: bool>(m1: GMap<K, V, FINITE>, m2: GMap<K, V, FINITE2>) -> bool
     {
-        // TODO(jonh): change to GSet::congruent
         &&& m1.dom().congruent(m2.dom())
         &&& forall |k| #[trigger] m1.contains_key(k) ==> m1[k] == m2[k]
     }
@@ -235,12 +234,14 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
         assert( self.restrict(keys).dom().to_infinite() == self.dom().intersect(keys) );
     }
 
+    // Preserves finite soundness because key_set is finite by its type.
+    pub closed spec fn new_from_set(key_set: GSet<K, FINITE>, fv: spec_fn(K) -> V) -> GMap<K, V, FINITE> {
+        GMap { mapping: |k| if key_set.contains(k) { Some(fv(k)) } else { None } }
+    }
+
     /// Map a function `f` over all (k, v) pairs in `self`.
-    // TODO(jonh): build out of set-domain constructor
-    pub closed spec fn map_entries<W>(self, f: spec_fn(K, V) -> W) -> GMap<K, W, FINITE> {
-        GMap {
-            mapping: |k| if self.contains_key(k) { Some(f(k, self[k])) } else { None }
-        }
+    pub open spec fn map_entries<W>(self, f: spec_fn(K, V) -> W) -> GMap<K, W, FINITE> {
+        GMap::new_from_set(self.dom(), |k| f(k, self[k]))
     }
 
     pub broadcast proof fn lemma_map_entries<W>(self, f: spec_fn(K, V) -> W)
@@ -256,11 +257,8 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
     }
 
     /// Map a function `f` over the values in `self`.
-    // TODO(jonh): define in terms of map_entries?
-    pub closed spec fn map_values<W>(self, f: spec_fn(V) -> W) -> GMap<K, W, FINITE> {
-        GMap {
-            mapping: |k| if self.dom().contains(k) { Some(f(self[k])) } else { None }
-        }
+    pub open spec fn map_values<W>(self, f: spec_fn(V) -> W) -> GMap<K, W, FINITE> {
+        GMap::new_from_set(self.dom(), |k| f(self[k]))
     }
 
     pub broadcast proof fn lemma_map_values_ensures<W>(self, f: spec_fn(V) -> W)
@@ -276,11 +274,8 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
 
     /// Swaps map keys and values. Values are not required to be unique; no
     /// promises on which key is chosen on the intersection.
-    // TODO(jonh): this is unsound. Generic over finiteness!
-    pub closed spec fn invert(self) -> Map<V, K> {
-        GMap {
-            mapping: |v| if self.contains_value(v) { Some(choose|k: K| self.contains_pair(k, v)) } else { None }
-        }
+    pub open spec fn invert(self) -> GMap<V, K, FINITE> {
+        GMap::new_from_set(self.dom().map(|k| self[k]), |v| choose|k: K| self.contains_pair(k, v))
     }
 
     #[verifier::external_body]
@@ -385,14 +380,6 @@ ensures  (#[trigger] m.dom()).congruent(ISet::new(|k| (m.mapping)(k) is Some))
     // This property relies on this module only allowing the construction of
     // finite mappings inside GMaps with FINITE=true.
     admit();
-}
-
-// TODO(jonh): Use this to de-trust map_entries and map_values.
-impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
-    // Preserves finite soundness because key_set is finite by its type.
-    pub closed spec fn new_from_set(key_set: GSet<K, FINITE>, fv: spec_fn(K) -> V) -> GMap<K, V, FINITE> {
-        GMap { mapping: |k| if key_set.contains(k) { Some(fv(k)) } else { None } }
-    }
 }
 
 impl<K, V> Map<K, V> {
