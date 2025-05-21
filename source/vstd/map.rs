@@ -148,6 +148,11 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
     ///    map![1 => 10, 2 => 11].union_prefer_right(map![1 => 20, 3 => 13])
     ///    =~= map![1 => 20, 2 => 11, 3 => 13]);
     /// ```
+    // Someday it might be nice to generalize union_prefer_right (and tracked_union_prefer_right)
+    // to accept arbitrary FINITEnesses, and then provide specialized versions that preserve
+    // FINITE=true when both args are FINITE=true, as is done with GSet::union.
+    // We'll worry about this someday when some user level code actually cares to jump over the
+    // divide.
     pub closed spec fn union_prefer_right(self, m2: Self) -> Self {
         Self{
             mapping: |k: K| if self.dom().contains(k) || m2.dom().contains(k) {
@@ -352,9 +357,6 @@ impl<K, V, const FINITE: bool> GMap<K, V, FINITE> {
         unimplemented!();
     }
 
-    // TODO(jonh): introduce union and finite_union? This one requires right to match in
-    // finiteness, so it's not a general union like we have in the set library.
-    // Decision: don't worry about it.
     #[verifier::external_body]
     pub proof fn tracked_union_prefer_right(tracked &mut self, right: Self)
         ensures
