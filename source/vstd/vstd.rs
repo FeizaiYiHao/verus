@@ -62,6 +62,8 @@ pub mod string;
 #[cfg(feature = "std")]
 pub mod thread;
 pub mod view;
+#[cfg(feature = "std")]
+pub mod async_future;
 
 pub mod relations;
 #[cfg(verus_keep_ghost)]

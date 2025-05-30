@@ -11,6 +11,7 @@ use syn_verus::parse_quote_spanned;
 use syn_verus::punctuated::Punctuated;
 use syn_verus::spanned::Spanned;
 use syn_verus::token;
+use syn_verus::token::RArrow;
 use syn_verus::token::{Brace, Bracket, Paren, Semi};
 use syn_verus::visit_mut::{
     visit_block_mut, visit_expr_loop_mut, visit_expr_mut, visit_expr_while_mut, visit_field_mut,
@@ -21,6 +22,8 @@ use syn_verus::visit_mut::{
 use syn_verus::BroadcastUse;
 use syn_verus::ExprBlock;
 use syn_verus::ExprForLoop;
+use syn_verus::PathSegment;
+use syn_verus::View;
 use syn_verus::{
     braced, bracketed, parenthesized, parse_macro_input, AssumeSpecification, Attribute, BareFnArg,
     BinOp, Block, DataMode, Decreases, Ensures, Expr, ExprBinary, ExprCall, ExprLit, ExprLoop,
@@ -33,6 +36,10 @@ use syn_verus::{
     SignatureInvariants, SignatureSpec, SignatureSpecAttr, SignatureUnwind, Stmt, Token, TraitItem,
     TraitItemFn, Type, TypeFnProof, TypeFnSpec, TypePath, UnOp, Visibility,
 };
+use syn_verus::GenericArgument;
+use syn_verus::PathArguments;
+use syn_verus::AngleBracketedGenericArguments;
+use crate::syntax::Item::Fn;
 
 const VERUS_SPEC: &str = "VERUS_SPEC__";
 
@@ -710,6 +717,551 @@ impl Visitor {
             spec_stmts
         }
     }
+
+    fn rewrite_async_item_fn(&mut self, fun: &mut ItemFn){
+        fun.sig.asyncness = None;
+        let mut new_name = fun.sig.ident.to_string().clone();
+        new_name.push_str("verus_inner");
+        fun.sig.ident = Ident::new(&new_name, fun.sig.ident.span());
+    }
+
+    fn rewrite_await_expr(&mut self, expr: &mut Expr){
+         match &expr{
+            Expr::Await(expr_await) => {
+                *expr = Expr::MethodCall(
+                    syn_verus::ExprMethodCall { 
+                        attrs: expr_await.attrs.clone(), 
+                        receiver: Box::new(
+                            *expr_await.base.clone()
+                        ), 
+                        dot_token: token::Dot { spans: [expr_await.dot_token.span()] }, 
+                        method: Ident::new("verus_impl_await", expr_await.await_token.span() ), 
+                        turbofish: None, 
+                        paren_token: token::Paren { span: into_spans(expr_await.await_token.span())}, 
+                        args: Punctuated::new() }
+                )
+            },
+            // Expr::Array(expr_array) => todo!(),
+            // Expr::Assign(expr_assign) => todo!(),
+            // Expr::Async(expr_async) => todo!(),
+            // Expr::Binary(expr_binary) => todo!(),
+            // Expr::Block(expr_block) => todo!(),
+            // Expr::Break(expr_break) => todo!(),
+            // Expr::Call(expr_call) => todo!(),
+            // Expr::Cast(expr_cast) => todo!(),
+            // Expr::Closure(expr_closure) => todo!(),
+            // Expr::Const(expr_const) => todo!(),
+            // Expr::Continue(expr_continue) => todo!(),
+            // Expr::Field(expr_field) => todo!(),
+            // Expr::ForLoop(expr_for_loop) => todo!(),
+            // Expr::Group(expr_group) => todo!(),
+            // Expr::If(expr_if) => todo!(),
+            // Expr::Index(expr_index) => todo!(),
+            // Expr::Infer(expr_infer) => todo!(),
+            // Expr::Let(expr_let) => todo!(),
+            // Expr::Lit(expr_lit) => todo!(),
+            // Expr::Loop(expr_loop) => todo!(),
+            // Expr::Macro(expr_macro) => todo!(),
+            // Expr::Match(expr_match) => todo!(),
+            // Expr::MethodCall(expr_method_call) => todo!(),
+            // Expr::Paren(expr_paren) => todo!(),
+            // Expr::Path(expr_path) => todo!(),
+            // Expr::Range(expr_range) => todo!(),
+            // Expr::RawAddr(expr_raw_addr) => todo!(),
+            // Expr::Reference(expr_reference) => todo!(),
+            // Expr::Repeat(expr_repeat) => todo!(),
+            // Expr::Return(expr_return) => todo!(),
+            // Expr::Struct(expr_struct) => todo!(),
+            // Expr::Try(expr_try) => todo!(),
+            // Expr::TryBlock(expr_try_block) => todo!(),
+            // Expr::Tuple(expr_tuple) => todo!(),
+            // Expr::Unary(expr_unary) => todo!(),
+            // Expr::Unsafe(expr_unsafe) => todo!(),
+            // Expr::Verbatim(token_stream) => todo!(),
+            // Expr::While(expr_while) => todo!(),
+            // Expr::Yield(expr_yield) => todo!(),
+            // Expr::Assume(assume) => todo!(),
+            // Expr::Assert(assert) => todo!(),
+            // Expr::AssertForall(assert_forall) => todo!(),
+            // Expr::RevealHide(reveal_hide) => todo!(),
+            // Expr::View(view) => todo!(),
+            // Expr::BigAnd(big_and) => todo!(),
+            // Expr::BigOr(big_or) => todo!(),
+            // Expr::Is(expr_is) => todo!(),
+            // Expr::IsNot(expr_is_not) => todo!(),
+            // Expr::Has(expr_has) => todo!(),
+            // Expr::HasNot(expr_has_not) => todo!(),
+            // Expr::Matches(expr_matches) => todo!(),
+            // Expr::GetField(expr_get_field) => todo!(),
+            _ => {},
+        }
+    }
+
+    fn rewrite_await_stmt(&mut self, stmt: &mut Stmt){
+        match stmt{
+            Stmt::Expr(expr, semi) => {
+               self.rewrite_await_expr(expr);
+            },
+            Stmt::Local(local) => {
+                match &mut local.init{
+                    Some(init) => {
+                        self.rewrite_await_expr(&mut init.expr);
+                    },
+                    None => {},
+                }
+            },
+            Stmt::Macro(stmt_macro) => {},
+            Stmt::Item(item) => {},
+        }
+    }
+
+    fn rewrite_async_ensure_exprs(&mut self, expr: &mut Expr, ret_var_name:&String){
+        match expr{
+            Expr::Path(expr_path) => {
+                        if expr_path.path.get_ident().is_some() && expr_path.path.get_ident().unwrap().to_string() == *ret_var_name{
+                            *expr = Expr::View(View{
+                                attrs: Vec::new(),
+                                expr: Box::new(Expr::Path(syn_verus::ExprPath{
+                                    attrs: expr_path.attrs.clone(),
+                                    qself: expr_path.qself.clone(),
+                                    path: syn_verus::Path { leading_colon: expr_path.path.leading_colon.clone(), segments: {
+                                        let mut segs = Punctuated::new();
+                                        segs.push(syn_verus::PathSegment{ ident: Ident::new("verus_async_gen_ret", expr_path.path.segments[0].span()), arguments: PathArguments::None });
+                                        segs
+                                    }},
+                                })),
+                                at_token: token::At { spans: [expr.span()] },
+                            });
+                        }else if expr_path.path.get_ident().is_none(){
+                            todo!("Path is not a ident in ensures {:#?}", expr)
+                        }
+                    },
+            Expr::Binary(expr_binary) => {
+                self.rewrite_async_ensure_exprs(&mut expr_binary.left, ret_var_name);
+                self.rewrite_async_ensure_exprs(&mut expr_binary.right, ret_var_name);
+            },
+            Expr::Block(expr_block) => {
+                for stmt in expr_block.block.stmts.iter_mut(){
+                    match stmt{
+                        Stmt::Local(local) => todo!(),
+                        Stmt::Item(item) => todo!(),
+                        Stmt::Expr(expr, semi) => {
+                            self.rewrite_async_ensure_exprs(expr, ret_var_name);
+                        },
+                        Stmt::Macro(stmt_macro) => todo!(),
+                    }
+                }
+            },
+            // Expr::Array(expr_array) => todo!(),
+            // Expr::Assign(expr_assign) => todo!(),
+            // Expr::Async(expr_async) => todo!(),
+            // Expr::Await(expr_await) => todo!(),
+            // Expr::Break(expr_break) => todo!(),
+            // Expr::Call(expr_call) => todo!(),
+            // Expr::Cast(expr_cast) => todo!(),
+            // Expr::Closure(expr_closure) => todo!(),
+            // Expr::Const(expr_const) => todo!(),
+            // Expr::Continue(expr_continue) => todo!(),
+            // Expr::Field(expr_field) => todo!(),
+            // Expr::ForLoop(expr_for_loop) => todo!(),
+            // Expr::Group(expr_group) => todo!(),
+            // Expr::If(expr_if) => todo!(),
+            // Expr::Index(expr_index) => todo!(),
+            // Expr::Infer(expr_infer) => todo!(),
+            // Expr::Let(expr_let) => todo!(),
+            // Expr::Lit(expr_lit) => todo!(),
+            // Expr::Loop(expr_loop) => todo!(),
+            // Expr::Macro(expr_macro) => todo!(),
+            // Expr::Match(expr_match) => todo!(),
+            // Expr::MethodCall(expr_method_call) => todo!(),
+            // Expr::Paren(expr_paren) => todo!(),
+            // Expr::Range(expr_range) => todo!(),
+            // Expr::RawAddr(expr_raw_addr) => todo!(),
+            // Expr::Reference(expr_reference) => todo!(),
+            // Expr::Repeat(expr_repeat) => todo!(),
+            // Expr::Return(expr_return) => todo!(),
+            // Expr::Struct(expr_struct) => todo!(),
+            // Expr::Try(expr_try) => todo!(),
+            // Expr::TryBlock(expr_try_block) => todo!(),
+            // Expr::Tuple(expr_tuple) => todo!(),
+            // Expr::Unary(expr_unary) => todo!(),
+            // Expr::Unsafe(expr_unsafe) => todo!(),
+            // Expr::Verbatim(token_stream) => todo!(),
+            // Expr::While(expr_while) => todo!(),
+            // Expr::Yield(expr_yield) => todo!(),
+            // Expr::Assume(assume) => todo!(),
+            // Expr::Assert(assert) => todo!(),
+            // Expr::AssertForall(assert_forall) => todo!(),
+            // Expr::RevealHide(reveal_hide) => todo!(),
+            // Expr::View(view) => todo!(),
+            // Expr::BigAnd(big_and) => todo!(),
+            // Expr::BigOr(big_or) => todo!(),
+            // Expr::Is(expr_is) => todo!(),
+            // Expr::IsNot(expr_is_not) => todo!(),
+            // Expr::Has(expr_has) => todo!(),
+            // Expr::HasNot(expr_has_not) => todo!(),
+            // Expr::Matches(expr_matches) => todo!(),
+            // Expr::GetField(expr_get_field) => todo!(),
+            _ => {
+                // todo!("{:#?}", expr)
+            }
+            }
+    }
+
+    fn gen_async_item_fn_wrapper(&mut self, fun:&ItemFn) -> ItemFn{
+        let mut ret = ItemFn{
+            attrs: Vec::new(),
+            vis: fun.vis.clone(),
+            sig: fun.sig.clone(),
+            block: Box::new(Block { 
+                    brace_token: fun.block.brace_token.clone(), stmts: {
+                        let mut stmts = Vec::new();
+                        stmts
+                    } 
+                }
+            ),
+            semi_token: None,
+        };
+        ret.sig.asyncness = None;
+
+        let mut ret_ty = None;
+        let mut ret_var_name = None;
+
+
+        match &fun.sig.output{
+            ReturnType::Default => {
+                ret.sig.output = ReturnType::Type(
+                    RArrow::default(), 
+                    None, 
+                    Some(Box::new((
+                        Paren { span: into_spans(fun.span()) }, 
+                        Pat::Ident(
+                            PatIdent{
+                                attrs: Vec::new(),
+                                by_ref: None,
+                                mutability: None,
+                                ident: Ident::new(
+                                    "verus_async_gen_ret",fun.span(),
+                                ),
+                                subpat: None,
+                            }
+                        ), 
+                    token::Colon { spans: [fun.span()] }))),
+                    Box::new(
+                        Type::Path(
+                            TypePath{
+                                qself: None,
+                                path: Path{
+                                    leading_colon: None,
+                                    segments: {
+                                        let mut segs = Punctuated::new();
+                                        segs.push(
+                                            PathSegment{
+                                                ident: Ident::new("AsyncFuture",fun.span()), 
+                                                arguments: PathArguments::AngleBracketed(AngleBracketedGenericArguments {
+                                                colon2_token: Some(token::PathSep { spans: [fun.span(), fun.span()] }),
+                                                lt_token: Token![<](fun.span()),
+                                                args: {
+                                                    let mut args = Punctuated::<GenericArgument, token::Comma>::new();
+                                                    args.push(GenericArgument::Type(
+                                                        Type::Tuple(syn_verus::TypeTuple { paren_token: Paren { span: into_spans(fun.span()) }, elems: Punctuated::new()  })
+                                                    ));
+                                                    args
+                                                },
+                                                gt_token: Token![>](fun.span()),
+                                            }),
+                                            }
+                                        );
+                                        segs
+                                    },    
+                                },
+                            }
+                        )
+                    ),
+                );
+                ret_ty = Some(Box::new(Type::Tuple(syn_verus::TypeTuple { paren_token: Paren { span: into_spans(fun.span()) }, elems: Punctuated::new()  })));
+            },
+            ReturnType::Type(rarrow, tracked, Some(pat_box), ty) => {
+                ret_ty = Some(Box::new(*ty.clone()));
+                match &pat_box.1{
+                    Pat::Ident(pat_ident) => {
+                        ret_var_name = Some(pat_ident.ident.to_string());
+                    },
+                    _ => {},
+                }
+                ret.sig.output = ReturnType::Type(rarrow.clone(), tracked.clone(), Some(Box::new(
+                    (token::Paren {span :into_spans(fun.span())}, Pat::Ident(PatIdent{
+                        attrs: Vec::new(),
+                        by_ref: None,
+                        mutability: None,
+                        ident: Ident::new("verus_async_gen_ret", fun.span()),
+                        subpat: None,
+                    }), token::Colon {spans : [fun.span()]}))), Box::new(
+                    Type::Path(
+                        TypePath{
+                            qself: None,
+                            path: Path{
+                                leading_colon: None,
+                                segments: {
+                                    let mut segs = Punctuated::new();
+                                    segs.push(
+                                        PathSegment{
+                                            ident: Ident::new("AsyncFuture",fun.span()), 
+                                            arguments: PathArguments::AngleBracketed(AngleBracketedGenericArguments {
+                                            colon2_token: Some(token::PathSep { spans: [fun.span(), fun.span()] }),
+                                            lt_token: Token![<](fun.span()),
+                                            args: {
+                                                let mut args = Punctuated::<GenericArgument, token::Comma>::new();
+                                                args.push(GenericArgument::Type(
+                                                    *ty.clone()
+                                                ));
+                                                args
+                                            },
+                                            gt_token: Token![>](fun.span()),
+                                        }),
+                                        }
+                                    );
+                                    segs
+                                },    
+                            },
+                        }
+                    )
+                ));
+            },
+            ReturnType::Type(rarrow, tracked, None, ty) => {
+                ret_ty = Some(Box::new(*ty.clone()));
+                ret.sig.output = ReturnType::Type(rarrow.clone(), tracked.clone(), Some(Box::new(
+                    (token::Paren {span :into_spans(fun.span())}, Pat::Ident(PatIdent{
+                        attrs: Vec::new(),
+                        by_ref: None,
+                        mutability: None,
+                        ident: Ident::new("verus_async_gen_ret", fun.span()),
+                        subpat: None,
+                    }),
+                    token::Colon {spans : [fun.span()]}
+                )
+                )), Box::new(
+                    Type::Path(
+                        TypePath{
+                            qself: None,
+                            path: Path{
+                                leading_colon: None,
+                                segments: {
+                                    let mut segs = Punctuated::new();
+                                    segs.push(
+                                        PathSegment{
+                                            ident: Ident::new("AsyncFuture",fun.span()), 
+                                            arguments: PathArguments::AngleBracketed(AngleBracketedGenericArguments {
+                                            colon2_token: Some(token::PathSep { spans: [fun.span(), fun.span()] }),
+                                            lt_token: Token![<](fun.span()),
+                                            args: {
+                                                let mut args = Punctuated::<GenericArgument, token::Comma>::new();
+                                                args.push(GenericArgument::Type(
+                                                    *ty.clone()
+                                                ));
+                                                args
+                                            },
+                                            gt_token: Token![>](fun.span()),
+                                        }),
+                                        }
+                                    );
+                                    segs
+                                },    
+                            },
+                        }
+                    )
+                ));
+            },
+        }
+
+        ret.block.stmts.push(
+            Stmt::Expr(Expr::Call(
+                ExprCall{
+                    attrs: Vec::new(),
+                    func: Box::new(Expr::Path(
+                        syn_verus::ExprPath{
+                            attrs: Vec::new(),
+                            qself: None,
+                            path: Path{
+                                leading_colon: None,
+                                segments: {
+                                    let mut segs = Punctuated::new();
+                                    segs.push(PathSegment{
+                                        ident: Ident::new("AsyncFuture",fun.span()),
+                                        arguments: PathArguments::AngleBracketed(
+                                            AngleBracketedGenericArguments{
+                                                colon2_token: Some(token::PathSep { spans: [fun.span(), fun.span()] }),
+                                                lt_token: Token![<](fun.span()),
+                                                args: {
+                                                    let mut args = Punctuated::new();
+                                                    args.push(GenericArgument::Type(
+                                                        *ret_ty.unwrap()
+                                                    ));
+                                                    args
+                                                },
+                                                gt_token: Token![>](fun.span()),
+                                            }
+                                        ),
+                                    });
+                                    segs.push(PathSegment{
+                                        ident: Ident::new("verus_impl_from",fun.span()),
+                                        arguments: PathArguments::None,
+                                    });
+                                    segs
+                                }
+                            },
+                        }
+                    )
+                    ),
+                    paren_token: Paren { span: into_spans(fun.span()) },
+                    args: {
+                        let mut args = Punctuated::new();
+                        args.push(Expr::Block(ExprBlock{
+                            attrs: Vec::new(),
+                            label: None,
+                            block: Block{
+                                brace_token: token::Brace{ span: into_spans(fun.span()) },
+                                stmts: vec![
+                                    Stmt::Expr(Expr::Call(
+                                       ExprCall{
+                                            attrs: Vec::new(),
+                                            func: Box::new(
+                                                Expr::Path(
+                                                    syn_verus::ExprPath{
+                                                        attrs: Vec::new(),
+                                                        qself: None,
+                                                        path: Path{
+                                                            leading_colon: None,
+                                                            segments: {
+                                                                let mut segs = Punctuated::new();
+                                                                let mut s = fun.sig.ident.to_string();
+                                                                s.push_str("verus_inner");
+                                                                segs.push(PathSegment{
+                                                                    ident: Ident::new(&s,fun.span()),
+                                                                    arguments: PathArguments::None,
+                                                                });
+                    
+                                                                segs
+                                                            },
+                                                        },
+                                                    }
+                                                )
+                                            ),
+                                            paren_token: token::Paren {span: into_spans(fun.span())},
+                                            args: {
+                                                let mut args = Punctuated::new();
+                                                for expr_i in fun.sig.inputs.iter(){
+                                                    match &expr_i.kind {
+                                                        FnArgKind::Receiver(receiver) => {},
+                                                        FnArgKind::Typed(pat_type) => {
+                                                            match &*pat_type.pat{
+                                                                Pat::Ident(pat_ident) => {
+                                                                    args.push(Expr::Path(
+                                                                        syn_verus::ExprPath{
+                                                                            attrs: Vec::new(),
+                                                                            qself: None,
+                                                                            path: Path{
+                                                                                leading_colon: None,
+                                                                                segments: {
+                                                                                    let mut segs = Punctuated::new();
+                                                                                    segs.push(
+                                                                                        PathSegment{
+                                                                                            ident: pat_ident.ident.clone(),
+                                                                                            arguments: PathArguments::None,
+                                                                                        }
+                                                                                    );
+                                                                                    segs
+                                                                                }
+                                                                            },
+                                                                        
+                                                                        }
+                                                                    ));
+                                                                },
+                                                                _ => {},
+                                                            }
+                                                        },
+                                                    }
+                                                }
+                                                args
+                                            }
+                                       }
+                                    ), None)
+                                ],
+                            },
+                        }));
+                        args
+                    },
+                }
+            ), None)
+        );
+
+
+
+        if let Some(ensures) = &mut ret.sig.spec.ensures{
+            let mut new_ensures = Ensures{
+                attrs: ensures.attrs.clone(),
+                token: ensures.token.clone(),
+                exprs: syn_verus::Specification{
+                    exprs: Punctuated::new()
+                },
+            };
+            for expr_i in ensures.exprs.exprs.iter_mut(){
+
+                if let Some(ref ret_var_name) = ret_var_name{
+                    self.rewrite_async_ensure_exprs(expr_i, ret_var_name);
+                }
+
+                new_ensures.exprs.exprs.push(
+                    Expr::Binary(ExprBinary{
+                        attrs: Vec::new(),
+                        left: Box::new(
+                            Expr::MethodCall(syn_verus::ExprMethodCall{
+                                attrs: Vec::new(),
+                                receiver: Box::new(
+                                    Expr::Path(syn_verus::ExprPath{
+                                        attrs: Vec::new(),
+                                        qself: None,
+                                        path: Path{
+                                            leading_colon: None,
+                                            segments: {
+                                                let mut segs =  Punctuated::new();
+                                                segs.push(PathSegment{
+                                                    ident: Ident::new("verus_async_gen_ret",expr_i.span()),
+                                                    arguments: PathArguments::None,
+                                                });
+                                                segs
+                                            },
+                                        }
+                                    })
+                                ),
+                                dot_token: token::Dot{spans: [expr_i.span()] },
+                                method: Ident::new("awaited",expr_i.span()),
+                                turbofish: None,
+                                paren_token: token::Paren::default(),
+                                args: Punctuated::new(),
+                            })
+                        ),
+                        op: syn_verus::BinOp::Imply(Token![==>](expr_i.span())),
+                        right: Box::new(
+                            Expr::Paren(syn_verus::ExprParen{
+                                attrs: Vec::new(),
+                                paren_token: token::Paren{ span: into_spans(expr_i.span()) },
+                                expr: Box::new(expr_i.clone()),
+                            })
+                        ),
+                    }
+                    )
+                );
+            }
+            
+            ret.sig.spec.ensures = Some(new_ensures);
+        }
+
+        // println!("gen wrapper fun: {:#?}", ret);
+
+        ret
+    }
+    
 
     fn visit_fn(
         &mut self,
@@ -1405,6 +1957,65 @@ impl Visitor {
                 });
             }
         }
+        
+        let mut new_fns = Vec::new();
+
+        if self.erase_ghost.keep(){
+            for item in items.iter_mut() {
+                match item {
+                    Item::Fn(fun) =>
+                    {
+                        // println!("found a fun: {:#?}", fun);
+                        match (&fun.sig.mode, &fun.sig.asyncness) {
+                            (FnMode::Default, Some(_)) => {
+                                // println!("found a async fun: {:#?}", item);
+                                // fun.sig.asyncness = None;
+                                // println!("found a async Default fun: {:#?}", fun);
+                                // self.transform_async_item_fn(fun);
+                                new_fns.push(syn_verus::Item::Fn(self.gen_async_item_fn_wrapper(fun)));
+                                self.rewrite_async_item_fn(fun);
+                            },
+                            (FnMode::Exec(_), Some(_)) => {
+                                // println!("found a async Exec fun: {:#?}", item);
+                            },
+                            _ => {
+                            },
+                        }
+                        for stmt in fun.block.stmts.iter_mut(){
+                            self.rewrite_await_stmt(stmt);
+                        }
+                        // println!("fun after rewrite await {:#?}", fun);
+
+                    },
+                    Item::Impl(item_impl) =>{
+                        for impl_item in item_impl.items.iter_mut(){
+                            match impl_item{
+                                ImplItem::Fn(impl_item_fn) => {
+                                    // println!("found a impl fun: {:#?}", impl_item_fn);
+                                    match (&impl_item_fn.sig.mode, &impl_item_fn.sig.asyncness) {
+                                        (FnMode::Default, Some(_)) => {
+                                            // println!("found a async fun: {:#?}", item);
+                                            // fun.sig.asyncness = None;
+                                            // println!("found a async Default fun: {:#?}", fun);
+                                            // self.transform_async_impl_item_fn(impl_item_fn);
+                                        },
+                                        (FnMode::Exec(_), Some(_)) => {
+                                            // println!("found a async Exec fun: {:#?}", item);
+                                        },
+                                        _ => {
+                                        },
+                                    }
+                                },
+                                _ => {},
+                            }
+                        }
+                    } 
+                    _ =>{},
+                }
+            }
+            items.append(&mut new_fns);
+        }
+
         for item in items.iter_mut() {
             match &item {
                 Item::Global(global) => {
@@ -4343,8 +4954,20 @@ pub(crate) fn rewrite_items(
     erase_ghost: EraseGhost,
     use_spec_traits: bool,
 ) -> proc_macro::TokenStream {
+    // println!("EraseGhost: {:#?}", erase_ghost);
+    // println!("TokenStream: {:#?}", stream);
     let stream = rejoin_tokens(stream);
     let mut items: Items = parse_macro_input!(stream as Items);
+    // println!("after rejoin_tokens items.len(): {:#?}", items.items.len());
+    // for item in items.items.iter(){
+    //     match item {
+    //         Fn(f) => {
+    //             println!("ItemFn: {:#?}", f);
+    //             // println!("output type:{:#?}",f.sig.output);
+    //         },
+    //         _ => {},
+    //     }
+    // } 
     let mut new_stream = TokenStream::new();
     let mut visitor = Visitor {
         erase_ghost,
@@ -4364,10 +4987,35 @@ pub(crate) fn rewrite_items(
         visitor.inside_const = false;
         visitor.inside_arith = InsideArith::None;
     }
+
+    // println!("after visit_items_prefilter items.len(): {:#?}", items.items.len());
+    // for item in items.items.iter(){
+    //     match item {
+    //         Fn(f) => {
+    //             println!("ItemFn: {:#?}", f);
+    //             // println!("output type:{:#?}",f.sig.output);
+    //         },
+    //         _ => {},
+    //     }
+    // } 
+
     visitor.visit_items_post(&mut items.items);
+
+    // println!("after visit_items_post items.len(): {:#?}", items.items.len());
+    // for item in items.items.iter(){
+    //     match item {
+    //         Fn(f) => {
+    //             println!("ItemFn: {:#?}", f);
+    //             // println!("output type:{:#?}",f.sig.output);
+    //         },
+    //         _ => {},
+    //     }
+    // } 
+
     for item in items.items {
         item.to_tokens(&mut new_stream);
     }
+
     proc_macro::TokenStream::from(new_stream)
 }
 
