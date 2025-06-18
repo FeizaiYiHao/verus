@@ -8,7 +8,7 @@ test_verify_one_file! {
         use vstd::prelude::*;
         trait DummyTrait{}
         impl DummyTrait for bool{}
-        fn return_opaque_variable() -> impl DummyTrait{
+        fn return_opaque_variable() -> impl DummyTrait {
             true
         }
         fn test(){
@@ -22,7 +22,7 @@ test_verify_one_file! {
         use vstd::prelude::*;
         trait DummyTrait{}
         impl DummyTrait for bool{}
-        fn return_opaque_variable() -> impl DummyTrait{
+        fn return_opaque_variable() -> impl DummyTrait {
             true
         }
         fn test(){
@@ -46,7 +46,7 @@ test_verify_one_file! {
                 false
             }
         }
-        fn return_opaque_variable() -> impl DummyTrait{
+        fn return_opaque_variable() -> impl DummyTrait {
             true
         }
         fn test(){
@@ -60,27 +60,28 @@ test_verify_one_file! {
 test_verify_one_file! {
     #[test] test_return_opaque_type_reveal_real_type verus_code! {
         use vstd::prelude::*;
-        trait DummyTrait{
+        trait DummyTrait {
             type Output;
             fn foo(&self) -> (ret: bool)
-            ensures
-                ret == false;
+                ensures
+                    ret == false
+            ;
             fn get_output(&self) -> (ret : Self::Output);
         }
-        impl DummyTrait for bool{
+        impl DummyTrait for bool {
             type Output = bool;
             fn foo(&self) -> (ret: bool)
             {
                 false
             }
-            fn get_output(&self) -> (ret : Self::Output){
+            fn get_output(&self) -> (ret : Self::Output) {
                 *self
             }
         }
-        fn return_opaque_variable() -> impl DummyTrait<Output = bool>{
+        fn return_opaque_variable() -> impl DummyTrait<Output = bool> {
             true
         }
-        fn test(){
+        fn test() {
             let x = return_opaque_variable();
             let output = x.get_output();
             // Here Verus should be able to infer the type of output, but assertion should fail

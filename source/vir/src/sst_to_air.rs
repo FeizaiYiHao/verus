@@ -384,10 +384,7 @@ pub fn typ_to_ids(ctx: &Ctx, typ: &Typ) -> Vec<Expr> {
             &vec![Arc::new(ExprX::Const(Constant::Bool(*b)))],
         )),
         TypX::Air(_) => panic!("internal error: typ_to_ids of Air"),
-        TypX::Opaque { id, .. } => {
-            let ret = suffix_typ_param_ids(id).iter().map(|x| ident_var(&x.lower())).collect();
-            ret
-        }
+        TypX::Opaque { id, .. } => suffix_typ_param_ids(id).iter().map(|x| ident_var(&x.lower())).collect(),
     }
 }
 
@@ -2744,7 +2741,6 @@ pub(crate) fn decl_opaque_ty(
                 local_shared.push(Arc::new(DeclX::Const(x.lower(), str_typ(t))));
             }
             for e in crate::traits::trait_bounds_to_air(ctx, trait_bounds) {
-                // println!("Real trait bound {:#?}", e);
                 // The outer query already has this in reqs, but inner queries need it separately:
                 local_shared.push(Arc::new(DeclX::Axiom(air::ast::Axiom { named: None, expr: e })));
             }
@@ -2808,8 +2804,6 @@ pub(crate) fn body_stm_to_air(
             TypX::Opaque { id, trait_bounds: _ } => {
                 // for opaque tyeps, recursively declare all the opaque types and their trait bounds
                 decl_opaque_ty(ctx, &mut local_shared, &decl.typ, &mut declared_opaque_typs);
-
-                // if declared_opaque_typs.insert(id.clone()){
                 local_shared.push(if decl.kind.is_mutable() {
                     Arc::new(DeclX::Var(
                         suffix_local_unique_id(&decl.ident),
@@ -2821,7 +2815,6 @@ pub(crate) fn body_stm_to_air(
                         typ_to_air(ctx, &decl.typ),
                     ))
                 });
-                // }
 
                 let (x, _t) = &crate::def::suffix_typ_param_ids_types(id)[1];
                 local_shared.push(mk_unnamed_axiom(Arc::new(ExprX::Apply(
@@ -2921,8 +2914,6 @@ pub(crate) fn body_stm_to_air(
 
     let mut _modified = IndexSet::new();
 
-    // println!("declared: {:#?}", declared);
-    // println!("assigned: {:#?}", assigned);
     let stm = crate::sst_vars::stm_assign(
         &mut state.assign_map,
         &declared,
@@ -2932,8 +2923,6 @@ pub(crate) fn body_stm_to_air(
     );
 
     let mut stmts = stm_to_stmts(ctx, &mut state, &stm)?;
-
-    // println!("state.commands after stm_to_stmts: {:#?}", state.commands);
 
     if has_mut_params {
         stmts.insert(0, Arc::new(StmtX::Snapshot(snapshot_ident(SNAPSHOT_PRE))));
