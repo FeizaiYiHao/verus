@@ -73,6 +73,9 @@ fn gen_typ(state: &mut State, typ: &vir::ast::Typ) -> Typ {
     match &**typ {
         vir::ast::TypX::Bool | vir::ast::TypX::Int(..) => {
             Box::new(TypX::Primitive(vir::ast_util::typ_to_diagnostic_str(typ)))
+        }        
+        vir::ast::TypX::Opaque{ .. } => {
+            panic!("internal error: unexpected opaque type in trait")
         }
         vir::ast::TypX::Datatype(Dt::Tuple(_), ts, _) => {
             let ts = gen_typs(state, ts);

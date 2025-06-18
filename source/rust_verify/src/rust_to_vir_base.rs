@@ -59,6 +59,9 @@ fn def_path_to_vir_path<'tcx>(tcx: TyCtxt<'tcx>, def_path: DefPath) -> Option<Pa
             DefPathData::ForeignMod => {
                 // this segment can be ignored
             }
+            DefPathData::OpaqueTy => {
+                segments.push(Arc::new(vir::def::RUST_OPAQUE_TYPE.to_string() + &d.disambiguator.to_string()));
+            }
             _ => return None,
         }
     }
@@ -1070,8 +1073,75 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
                 }
             }
         }
-        TyKind::Alias(rustc_middle::ty::AliasTyKind::Opaque, _) => {
-            unsupported_err!(span, "opaque type")
+        TyKind::Alias(rustc_middle::ty::AliasTyKind::Opaque, al_ty) => {
+            let id: String = format!("opaty_{}_{}_{:?}",al_ty.def_id.krate.as_u32(), al_ty.def_id.index.as_u32(), al_ty.args).chars()
+                .filter(|c| !matches!(c, '[' | ']' | '"' | '\'' | ':' | '/' | '#' | ' ' | ','))
+                .collect::<String>().to_uppercase();
+            let instantiated_bounds = tcx.item_bounds(al_ty.def_id).instantiate(tcx, al_ty.args);
+            let mut trait_bounds = Vec::new();
+            for bound in instantiated_bounds{
+                 match bound.kind().skip_binder() {
+                    ClauseKind::Trait(TraitPredicate {
+                        trait_ref,
+                        polarity: rustc_middle::ty::PredicatePolarity::Positive,
+                    }) => {
+                        let substs = trait_ref.args;
+                        let trait_def_id = trait_ref.def_id;
+                        let generic_bound = check_opaque_ty_generic_bound(
+                            tcx, 
+                            verus_items, 
+                            param_env_src, 
+                            span, 
+                            trait_def_id, 
+                            substs, 
+                            &Arc::new(TypX::TypParam(Arc::new(id.clone())))
+                        )?.unwrap();
+                        trait_bounds.push(generic_bound);
+                    },
+                    ClauseKind::Projection(pred) => {
+                        let item_def_id = pred.projection_term.def_id;
+
+                        if Some(item_def_id) == tcx.lang_items().fn_once_output() {
+                            continue;
+                        }
+                        let typ = if let TermKind::Ty(ty) = pred.term.unpack() {
+                            mid_ty_to_vir(tcx, verus_items, param_env_src, span, &ty, false)?
+                        } else {
+                            return err_span(span, "Verus does not yet support this type of bound");
+                        };
+                        let substs = pred.projection_term.args;
+                        let trait_def_id = pred.projection_term.trait_def_id(tcx);
+                        let assoc_item = tcx.associated_item(item_def_id);
+                        let name = Arc::new(assoc_item.name.to_string());
+                        let generic_bound = check_opaque_ty_generic_bound(
+                            tcx,
+                            verus_items,
+                            param_env_src,
+                            span,
+                            trait_def_id,
+                            substs,
+                            &Arc::new(TypX::TypParam(Arc::new(id.clone())))
+                        )?;
+                        if let Some(generic_bound) = generic_bound {
+                            if let GenericBoundX::Trait(TraitId::Path(path), typs) = &*generic_bound {
+                                let bound = GenericBoundX::TypEquality(
+                                    path.clone(),
+                                    typs.clone(),
+                                    name.clone(),
+                                    typ.clone(),
+                                );
+                                trait_bounds.push(Arc::new(bound));
+                            } else {
+                                return err_span(span, "Verus does not yet support this type of bound");
+                            }
+                        } else {
+                            panic!("internal error: generic_bound should return GenericBoundX::Trait")
+                        }
+                    },
+                    _=>{},
+                }
+            }
+          (Arc::new(TypX::Opaque{id: Arc::new(id.clone()), trait_bounds: Arc::new(trait_bounds)}), false)
         }
         TyKind::Alias(rustc_middle::ty::AliasTyKind::Weak, _) => {
             unsupported_err!(span, "opaque type")
@@ -1390,6 +1460,51 @@ pub(crate) fn try_get_proof_fn_modes<'tcx>(
             Ok(None)
         }
         _ => Ok(None),
+    }
+}
+
+pub(crate) fn check_opaque_ty_generic_bound<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    verus_items: &crate::verus_items::VerusItems,
+    param_env_src: DefId,
+    span: Span,
+    trait_def_id: DefId,
+    args: &[GenericArg<'tcx>],
+    self_ty: &Typ,
+) -> Result<Option<vir::ast::GenericBound>, VirErr> {
+    if Some(trait_def_id) == tcx.lang_items().copy_trait()
+        || Some(trait_def_id) == tcx.lang_items().unpin_trait()
+        || Some(trait_def_id) == tcx.lang_items().sync_trait()
+        || Some(trait_def_id) == tcx.lang_items().tuple_trait()
+        || Some(trait_def_id) == tcx.get_diagnostic_item(rustc_span::sym::Send)
+    {
+        Ok(None)
+    } else {
+        let mut vir_args = vec![self_ty.clone()];
+        for arg in args.iter().skip(1) {
+            match arg.unpack() {
+                GenericArgKind::Lifetime(_) => {}
+                GenericArgKind::Type(ty) => {
+                    vir_args.push(mid_ty_to_vir(
+                        tcx,
+                        verus_items,
+                        param_env_src,
+                        span,
+                        &ty,
+                        false,
+                    )?);
+                }
+                GenericArgKind::Const(cnst) => {
+                    vir_args.push(mid_ty_const_to_vir(tcx, Some(span), &cnst)?);
+                }
+            }
+        }
+        let trait_name = if Some(trait_def_id) == tcx.lang_items().sized_trait() {
+            TraitId::Sized
+        } else {
+            TraitId::Path(def_id_to_vir_path(tcx, verus_items, trait_def_id))
+        };
+        Ok(Some(Arc::new(GenericBoundX::Trait(trait_name, Arc::new(vir_args)))))
     }
 }
 
