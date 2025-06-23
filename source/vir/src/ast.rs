@@ -246,11 +246,14 @@ pub enum TypX {
     FnDef(Fun, Typs, Option<Fun>),
     /// Datatype (concrete or abstract) applied to type arguments
     Datatype(Dt, Typs, ImplPaths),
+    /// When an opaque type is defined (e.g., by a function return), Rustc creates
+    /// an unique opaque type constructor for it.
+    /// This opaque type is just an instantiation of the opaque type constructor with args
     Opaque {
-        /// an id generated from its def_id and type prams.
-        id: Ident,
-        /// the trait bounds of the opaque type
-        trait_bounds: GenericBounds,
+        // path of the opaque type constructor.
+        def_path: Path,
+        // args of the instantiation. e.g., let x = foo<args>(); if foo returns an opaque type.
+        args: Typs,
     },
     /// Other primitive type (applied to type arguments)
     Primitive(Primitive, Typs),
@@ -1255,6 +1258,17 @@ pub struct DatatypeX {
 pub type Datatype = Arc<Spanned<DatatypeX>>;
 pub type Datatypes = Vec<Datatype>;
 
+/// Opaque type constructors
+#[derive(Clone, Debug, Serialize, Deserialize, ToDebugSNode)]
+pub struct OpaquetypeX {
+    pub name: Path,
+    pub typ_params: Typs,
+    pub typ_bounds: GenericBounds,
+}
+
+pub type Opaquetype = Arc<Spanned<OpaquetypeX>>;
+pub type Opaquetypes = Vec<Opaquetype>;
+
 pub type Trait = Arc<Spanned<TraitX>>;
 #[derive(Clone, Debug, Serialize, Deserialize, ToDebugSNode)]
 pub struct TraitX {
@@ -1354,4 +1368,6 @@ pub struct KrateX {
     pub path_as_rust_names: Vec<(Path, String)>,
     /// Arch info
     pub arch: Arch,
+    /// All opaque type constructors
+    pub opaque_types: Vec<Opaquetype>,
 }

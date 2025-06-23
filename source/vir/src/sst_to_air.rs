@@ -384,7 +384,21 @@ pub fn typ_to_ids(ctx: &Ctx, typ: &Typ) -> Vec<Expr> {
             &vec![Arc::new(ExprX::Const(Constant::Bool(*b)))],
         )),
         TypX::Air(_) => panic!("internal error: typ_to_ids of Air"),
-        TypX::Opaque { id, .. } => suffix_typ_param_ids(id).iter().map(|x| ident_var(&x.lower())).collect(),
+        TypX::Opaque { def_path, args } => {
+            if args.len() != 0 {
+                let mut e_args = Vec::new();
+                for arg in args.iter() {
+                    e_args.extend(typ_to_ids(ctx, arg));
+                }
+                let self_dcr = ident_apply(&crate::def::prefix_dcr_id(def_path), &e_args);
+                let self_type = ident_apply(&crate::def::prefix_type_id(def_path), &e_args);
+                vec![self_dcr, self_type]
+            } else {
+                let self_dcr = str_var(&crate::def::prefix_dcr_id(def_path));
+                let self_type = str_var(&crate::def::prefix_type_id(def_path));
+                vec![self_dcr, self_type]
+            }
+        }
     }
 }
 
@@ -534,7 +548,7 @@ pub(crate) fn typ_invariant(ctx: &Ctx, typ: &Typ, expr: &Expr) -> Option<Expr> {
             None
         }
         TypX::FnDef(..) => None,
-        TypX::Opaque { .. } => None,
+        TypX::Opaque { .. } => Some(expr_has_typ(ctx, expr, typ)),
     }
 }
 
@@ -2708,47 +2722,6 @@ fn mk_static_prelude(ctx: &Ctx, statics: &Vec<Fun>) -> Vec<Stmt> {
         .collect()
 }
 
-pub(crate) fn decl_opaque_ty(
-    ctx: &Ctx,
-    local_shared: &mut Vec<Decl>,
-    typ: &Typ,
-    declared_opaque_typs: &mut HashSet<Ident>,
-) {
-    match &**typ {
-        TypX::Opaque { id, trait_bounds } => {
-            for trait_bound in trait_bounds.iter() {
-                match &**trait_bound {
-                    crate::ast::GenericBoundX::Trait(_trait_id, items) => {
-                        for item in items.iter() {
-                            decl_opaque_ty(ctx, local_shared, item, declared_opaque_typs);
-                        }
-                    }
-                    crate::ast::GenericBoundX::TypEquality(_path_x, items, _, typ_x) => {
-                        decl_opaque_ty(ctx, local_shared, typ_x, declared_opaque_typs);
-                        for item in items.iter() {
-                            decl_opaque_ty(ctx, local_shared, item, declared_opaque_typs);
-                        }
-                    }
-                    crate::ast::GenericBoundX::ConstTyp(..) => {
-                        panic!("ill-formed opaque type sst. ConstTyp {:#?}", typ);
-                    }
-                }
-            }
-            if declared_opaque_typs.insert(id.clone()) {
-                let (x, t) = &crate::def::suffix_typ_param_ids_types(id)[0];
-                local_shared.push(Arc::new(DeclX::Const(x.lower(), str_typ(t))));
-                let (x, t) = &crate::def::suffix_typ_param_ids_types(id)[1];
-                local_shared.push(Arc::new(DeclX::Const(x.lower(), str_typ(t))));
-            }
-            for e in crate::traits::trait_bounds_to_air(ctx, trait_bounds) {
-                // The outer query already has this in reqs, but inner queries need it separately:
-                local_shared.push(Arc::new(DeclX::Axiom(air::ast::Axiom { named: None, expr: e })));
-            }
-        }
-        _ => {}
-    }
-}
-
 pub(crate) fn body_stm_to_air(
     ctx: &Ctx,
     func_span: &Span,
@@ -2798,49 +2771,12 @@ pub(crate) fn body_stm_to_air(
             local_shared.push(Arc::new(DeclX::Const(x.lower(), str_typ(t))));
         }
     }
-    let mut declared_opaque_typs = HashSet::<Ident>::new();
     for decl in local_decls.iter() {
-        match &*decl.typ {
-            TypX::Opaque { id, trait_bounds: _ } => {
-                // for opaque tyeps, recursively declare all the opaque types and their trait bounds
-                decl_opaque_ty(ctx, &mut local_shared, &decl.typ, &mut declared_opaque_typs);
-                local_shared.push(if decl.kind.is_mutable() {
-                    Arc::new(DeclX::Var(
-                        suffix_local_unique_id(&decl.ident),
-                        typ_to_air(ctx, &decl.typ),
-                    ))
-                } else {
-                    Arc::new(DeclX::Const(
-                        suffix_local_unique_id(&decl.ident),
-                        typ_to_air(ctx, &decl.typ),
-                    ))
-                });
-
-                let (x, _t) = &crate::def::suffix_typ_param_ids_types(id)[1];
-                local_shared.push(mk_unnamed_axiom(Arc::new(ExprX::Apply(
-                    Arc::new(crate::def::HAS_TYPE.to_string()),
-                    {
-                        let mut v = Vec::new();
-                        v.push(Arc::new(ExprX::Var(suffix_local_unique_id(&decl.ident))));
-                        v.push(Arc::new(ExprX::Var(x.lower())));
-                        Arc::new(v)
-                    },
-                ))));
-            }
-            _ => {
-                local_shared.push(if decl.kind.is_mutable() {
-                    Arc::new(DeclX::Var(
-                        suffix_local_unique_id(&decl.ident),
-                        typ_to_air(ctx, &decl.typ),
-                    ))
-                } else {
-                    Arc::new(DeclX::Const(
-                        suffix_local_unique_id(&decl.ident),
-                        typ_to_air(ctx, &decl.typ),
-                    ))
-                });
-            }
-        }
+        local_shared.push(if decl.kind.is_mutable() {
+            Arc::new(DeclX::Var(suffix_local_unique_id(&decl.ident), typ_to_air(ctx, &decl.typ)))
+        } else {
+            Arc::new(DeclX::Const(suffix_local_unique_id(&decl.ident), typ_to_air(ctx, &decl.typ)))
+        });
     }
 
     set_fuel(ctx, &mut local_shared, hidden);

@@ -172,12 +172,16 @@ pub fn types_equal(typ1: &Typ, typ2: &Typ) -> bool {
             f1 == f2 && n_types_equal(ts1, ts2)
         }
         (
-            TypX::Opaque { trait_bounds: trait_bounds1, .. },
-            TypX::Opaque { trait_bounds: trait_bounds2, .. },
+            TypX::Opaque { def_path: def_path1, args: args1 },
+            TypX::Opaque { def_path: def_path2, args: args2 },
         ) => {
-            // Not so sure about this. If two variables are returned from the same opaque function with the same type prams,
-            // it is sound to compare them.
-            *trait_bounds1 == *trait_bounds2
+            // Revisit
+            // We should probably allow this. Here's why:
+            // First, if two variables of opaque type uses the same opaque type constructor (def_path) and
+            // the same args, they have the same actual type behind the opaque type. Or Rust will complain.
+            // Second, for complex proofs, sometimes it's useful to assert(x == y) to
+            // help guide the proof.
+            def_path1 == def_path2 && args1 == args2
         }
         (TypX::Bool, _) => false,
         (TypX::Int(_), _) => false,
