@@ -362,6 +362,7 @@ pub fn crate_to_vir<'a, 'tcx>(
         functions: Vec::new(),
         reveal_groups: Vec::new(),
         datatypes: Vec::new(),
+        opaque_types: Vec::new(),
         traits: Vec::new(),
         trait_impls: Vec::new(),
         assoc_type_impls: Vec::new(),
@@ -514,6 +515,11 @@ pub fn crate_to_vir<'a, 'tcx>(
             }
             VerifOrExternal::External { path: None, path_string: _, explicit: _ } => {}
         }
+    }
+
+    for opaque_id in crate_items.opaque_tys.iter() {
+        let opaque_ty = ctxt.tcx.hir().expect_opaque_ty(*opaque_id);
+        crate::rust_to_vir_base::opaque_def_to_vir(ctxt, &mut vir, opaque_ty)?;
     }
 
     vir.path_as_rust_names = vir::ast_util::get_path_as_rust_names_for_krate(&ctxt.vstd_crate_name);

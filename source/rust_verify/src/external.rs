@@ -44,7 +44,7 @@ use crate::rustc_hir::intravisit::*;
 use crate::verus_items::get_rust_item;
 use rustc_hir::{
     ForeignItem, ForeignItemId, HirId, ImplItem, ImplItemId, ImplItemKind, Item, ItemId, ItemKind,
-    OwnerId, TraitItem, TraitItemId, TraitItemKind,
+    OpaqueTy, OwnerId, TraitItem, TraitItemId, TraitItemKind,
 };
 use rustc_span::Span;
 use std::collections::HashMap;
@@ -58,6 +58,8 @@ pub struct CrateItems {
     pub items: Vec<CrateItem>,
     /// Same information, indexed by OwnerId
     pub map: HashMap<OwnerId, VerifOrExternal>,
+    /// Vector of all opaque types
+    pub opaque_tys: Vec<rustc_hir::def_id::LocalDefId>,
 }
 
 /// Categorizes a single item-thing as VerusAware of External.
@@ -141,6 +143,7 @@ pub(crate) fn get_crate_items<'tcx>(ctxt: &Context<'tcx>) -> Result<CrateItems, 
         module_path: root_module_path,
         errors: vec![],
         in_impl: None,
+        opaque_tys: vec![],
     };
     let owner = ctxt.tcx.hir_owner_node(rustc_hir::CRATE_OWNER_ID);
     visitor.visit_mod(root_module, owner.span(), rustc_hir::CRATE_HIR_ID);
@@ -161,7 +164,7 @@ pub(crate) fn get_crate_items<'tcx>(ctxt: &Context<'tcx>) -> Result<CrateItems, 
         assert!(old.is_none());
     }
 
-    Ok(CrateItems { items: visitor.items, map })
+    Ok(CrateItems { items: visitor.items, map, opaque_tys: visitor.opaque_tys })
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -191,6 +194,7 @@ struct VisitMod<'a, 'tcx> {
     state: VerifState,
     module_path: Path,
     in_impl: Option<InsideImpl>,
+    opaque_tys: Vec<rustc_hir::def_id::LocalDefId>,
 }
 
 impl<'a, 'tcx> rustc_hir::intravisit::Visitor<'tcx> for VisitMod<'a, 'tcx> {
@@ -217,6 +221,10 @@ impl<'a, 'tcx> rustc_hir::intravisit::Visitor<'tcx> for VisitMod<'a, 'tcx> {
     fn visit_trait_item(&mut self, item: &'tcx TraitItem<'tcx>) {
         self.visit_general(GeneralItem::TraitItem(item), item.hir_id(), item.span);
     }
+
+    fn visit_opaque_ty(&mut self, opaque: &'tcx OpaqueTy<'tcx>) {
+        self.visit_opaque(opaque);
+    }
 }
 
 fn opts_in_to_verus(eattrs: &ExternalAttrs) -> bool {
@@ -231,6 +239,11 @@ fn opts_in_to_verus(eattrs: &ExternalAttrs) -> bool {
 }
 
 impl<'a, 'tcx> VisitMod<'a, 'tcx> {
+    fn visit_opaque(&mut self, opaque: &'tcx OpaqueTy<'tcx>) {
+        rustc_hir::intravisit::walk_opaque_ty(self, opaque);
+
+        self.opaque_tys.push(opaque.def_id);
+    }
     fn visit_general(&mut self, general_item: GeneralItem<'tcx>, hir_id: HirId, span: Span) {
         let attrs = self.ctxt.tcx.hir().attrs(hir_id);
 
