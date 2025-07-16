@@ -6,7 +6,6 @@ use proc_macro2::TokenTree;
 use quote::ToTokens;
 use quote::format_ident;
 use quote::{quote, quote_spanned};
-use syn::Receiver;
 use syn::token::Comma;
 use syn_verus::BroadcastUse;
 use syn_verus::DefaultEnsures;
