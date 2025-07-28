@@ -2063,7 +2063,8 @@ pub(crate) fn opaque_def_to_vir<'tcx>(
     let mut args = Vec::new();
 
     match opaque_ty.origin {
-        rustc_hir::OpaqueTyOrigin::FnReturn { parent, .. } => {
+        rustc_hir::OpaqueTyOrigin::FnReturn { parent, .. }
+        | rustc_hir::OpaqueTyOrigin::AsyncFn { parent, .. } => {
             let mode = crate::attributes::get_mode(
                 Mode::Exec,
                 ctxt.tcx.get_attrs_unchecked(parent.into()),
@@ -2193,7 +2194,7 @@ pub(crate) fn opaque_def_to_vir<'tcx>(
         _ => {
             return err_span(
                 opaque_ty.span,
-                "Verus only support opaque types defined by function returns now",
+                "Verus only support opaque types defined by (async) function returns now",
             );
         }
     }
