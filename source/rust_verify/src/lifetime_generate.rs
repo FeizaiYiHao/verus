@@ -3397,7 +3397,7 @@ pub(crate) fn gen_check_tracked_lifetimes<'tcx>(
 /// and rustc does not allow await on vstd::Future
 /// Here we ignore the trait defs and base util functions defined in vstd::future::lifetime_ignore
 pub(crate) fn lifetime_ignore<'tcx>(path: &Path) -> bool {
-    println!("lifetime_ignore path {:#?}", path);
+    // println!("lifetime_ignore path {:#?}", path);
     match &**path {
         PathX { krate: None, .. } => false,
         PathX { krate: Some(krate_name), segments } => {

@@ -729,7 +729,7 @@ pub(crate) fn emit_exp(state: &mut EmitState, exp: &Exp) {
             state.write("))");
         }
         ExpX::Await(exp) => {
-            println!("found await {:#?}", exp);
+            // println!("found await {:#?}", exp);
             emit_exp(state, exp);
             state.write(".await");
         }
