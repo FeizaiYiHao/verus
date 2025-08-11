@@ -288,311 +288,321 @@ pub(crate) trait AstVisitor<R: Returner, Err, Scope: Scoper> {
             ExprX::AirStmt(_) => R::ret(|| expr_new(expr.x.clone())),
             ExprX::Nondeterministic => R::ret(|| expr_new(expr.x.clone())),
             ExprX::Loc(e) => {
-                let e1 = self.visit_expr(e)?;
-                R::ret(|| expr_new(ExprX::Loc(R::get(e1))))
-            }
-            ExprX::Call(call_target, exprs) => {
-                let ct = self.visit_call_target(call_target)?;
-                let es = self.visit_exprs(exprs)?;
-                R::ret(|| expr_new(ExprX::Call(R::get(ct), R::get_vec_a(es))))
-            }
-            ExprX::Ctor(dt, id, binders, opt_e) => {
-                let bs = self.visit_binders_expr(binders)?;
-                let oe = self.visit_opt_expr(opt_e)?;
-                R::ret(|| {
-                    expr_new(ExprX::Ctor(dt.clone(), id.clone(), R::get_vec_a(bs), R::get_opt(oe)))
-                })
-            }
-            ExprX::NullaryOpr(nullary_opr) => {
-                let no = self.visit_nullary_opr(nullary_opr)?;
-                R::ret(|| expr_new(ExprX::NullaryOpr(R::get(no))))
-            }
-            ExprX::Unary(op, e) => {
-                let e1 = self.visit_expr(e)?;
-                R::ret(|| expr_new(ExprX::Unary(*op, R::get(e1))))
-            }
-            ExprX::UnaryOpr(opr, e) => {
-                let uo = self.visit_unary_opr(opr)?;
-                let e1 = self.visit_expr(e)?;
-                R::ret(|| expr_new(ExprX::UnaryOpr(R::get(uo), R::get(e1))))
-            }
-            ExprX::Binary(op, e1, e2) => {
-                let e1 = self.visit_expr(e1)?;
-                let e2 = self.visit_expr(e2)?;
-                R::ret(|| expr_new(ExprX::Binary(*op, R::get(e1), R::get(e2))))
-            }
-            ExprX::BinaryOpr(opr, e1, e2) => {
-                let bo = self.visit_binary_opr(opr)?;
-                let e1 = self.visit_expr(e1)?;
-                let e2 = self.visit_expr(e2)?;
-                R::ret(|| expr_new(ExprX::BinaryOpr(R::get(bo), R::get(e1), R::get(e2))))
-            }
-            ExprX::Multi(multi_op, es) => {
-                let es = self.visit_exprs(es)?;
-                R::ret(|| expr_new(ExprX::Multi(multi_op.clone(), R::get_vec_a(es))))
-            }
-            ExprX::Quant(quant, bs, e) => {
-                let binders = self.visit_binders_typ(bs)?;
-                self.push_scope();
-                for b in R::get_vec_or(&binders, bs).iter() {
-                    self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
-                }
-                let e = self.visit_expr(e)?;
-                self.pop_scope();
-                R::ret(|| expr_new(ExprX::Quant(quant.clone(), R::get_vec_a(binders), R::get(e))))
-            }
-            ExprX::Closure(bs, e) => {
-                let binders = self.visit_binders_typ(bs)?;
-                self.push_scope();
-                for b in R::get_vec_or(&binders, bs).iter() {
-                    self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
-                }
-                let e = self.visit_expr(e)?;
-                self.pop_scope();
-                R::ret(|| expr_new(ExprX::Closure(R::get_vec_a(binders), R::get(e))))
-            }
-            ExprX::NonSpecClosure {
-                params: p,
-                proof_fn_modes,
-                body,
-                requires,
-                ensures,
-                ret: r,
-                external_spec,
-            } => {
-                let params = self.visit_binders_typ(p)?;
-                let ret = self.visit_binder_typ(r)?;
-
-                self.push_scope();
-                for b in R::get_vec_or(&params, p).iter() {
-                    self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
-                }
-
-                let requires = self.visit_exprs(requires)?;
-
-                self.push_scope();
-                let b = R::get_or(&ret, r);
-                self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
-
-                let ensures = self.visit_exprs(ensures)?;
-
-                self.pop_scope();
-
-                let body = self.visit_expr(body)?;
-
-                self.pop_scope();
-
-                let external_spec = R::map_opt(external_spec, &mut |(var_ident, e)| {
-                    let e = self.visit_expr(e)?;
-                    R::ret(|| (var_ident.clone(), R::get(e)))
-                })?;
-
-                R::ret(|| {
-                    expr_new(ExprX::NonSpecClosure {
-                        params: R::get_vec_a(params),
-                        proof_fn_modes: proof_fn_modes.clone(),
-                        body: R::get(body),
-                        requires: R::get_vec_a(requires),
-                        ensures: R::get_vec_a(ensures),
-                        ret: R::get(ret),
-                        external_spec: R::get_opt(external_spec),
-                    })
-                })
-            }
-            ExprX::ArrayLiteral(es) => {
-                let es = self.visit_exprs(es)?;
-                R::ret(|| expr_new(ExprX::ArrayLiteral(R::get_vec_a(es))))
-            }
-            ExprX::Choose { params: bs, cond, body } => {
-                let binders = self.visit_binders_typ(bs)?;
-                self.push_scope();
-                for b in R::get_vec_or(&binders, bs).iter() {
-                    self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
-                }
-                let cond = self.visit_expr(cond)?;
-                let body = self.visit_expr(body)?;
-                self.pop_scope();
-                R::ret(|| {
-                    expr_new(ExprX::Choose {
-                        params: R::get_vec_a(binders),
-                        cond: R::get(cond),
-                        body: R::get(body),
-                    })
-                })
-            }
-            ExprX::WithTriggers { triggers, body } => {
-                let triggers = self.visit_exprs_vec(triggers)?;
-                let body = self.visit_expr(body)?;
-                R::ret(|| {
-                    expr_new(ExprX::WithTriggers {
-                        triggers: R::get_vec_a(triggers),
-                        body: R::get(body),
-                    })
-                })
-            }
-            ExprX::Assign { init_not_mut, lhs, rhs, op } => {
-                let lhs = self.visit_expr(lhs)?;
-                let rhs = self.visit_expr(rhs)?;
-                R::ret(|| {
-                    expr_new(ExprX::Assign {
-                        init_not_mut: *init_not_mut,
-                        lhs: R::get(lhs),
-                        rhs: R::get(rhs),
-                        op: *op,
-                    })
-                })
-            }
-            ExprX::Header(_) => {
-                // don't descend into Headers
-                R::ret(|| expr_new(expr.x.clone()))
-            }
-            ExprX::AssertAssume { is_assume, expr } => {
-                let expr = self.visit_expr(expr)?;
-                R::ret(|| {
-                    expr_new(ExprX::AssertAssume { is_assume: *is_assume, expr: R::get(expr) })
-                })
-            }
-            ExprX::AssertAssumeUserDefinedTypeInvariant { is_assume, expr, fun } => {
-                let expr = self.visit_expr(expr)?;
-                R::ret(|| {
-                    expr_new(ExprX::AssertAssumeUserDefinedTypeInvariant {
-                        is_assume: *is_assume,
-                        expr: R::get(expr),
-                        fun: fun.clone(),
-                    })
-                })
-            }
-            ExprX::AssertBy { vars: bs, require, ensure, proof } => {
-                let binders = self.visit_binders_typ(bs)?;
-                self.push_scope();
-                for b in R::get_vec_or(&binders, bs).iter() {
-                    self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
-                }
-                let require = self.visit_expr(require)?;
-                let ensure = self.visit_expr(ensure)?;
-                let proof = self.visit_expr(proof)?;
-                self.pop_scope();
-                R::ret(|| {
-                    expr_new(ExprX::AssertBy {
-                        vars: R::get_vec_a(binders),
-                        require: R::get(require),
-                        ensure: R::get(ensure),
-                        proof: R::get(proof),
-                    })
-                })
-            }
-            ExprX::AssertQuery { requires, ensures, proof, mode } => {
-                let requires = self.visit_exprs(requires)?;
-                let ensures = self.visit_exprs(ensures)?;
-                let proof = self.visit_expr(proof)?;
-                R::ret(|| {
-                    expr_new(ExprX::AssertQuery {
-                        requires: R::get_vec_a(requires),
-                        ensures: R::get_vec_a(ensures),
-                        proof: R::get(proof),
-                        mode: *mode,
-                    })
-                })
-            }
-            ExprX::AssertCompute(expr, compute_mode) => {
-                let expr = self.visit_expr(expr)?;
-                R::ret(|| expr_new(ExprX::AssertCompute(R::get(expr), *compute_mode)))
-            }
-            ExprX::If(cond, thn, els) => {
-                let cond = self.visit_expr(cond)?;
-                let thn = self.visit_expr(thn)?;
-                let els = self.visit_opt_expr(els)?;
-                R::ret(|| expr_new(ExprX::If(R::get(cond), R::get(thn), R::get_opt(els))))
-            }
-            ExprX::Match(expr, arms) => {
-                let expr = self.visit_expr(expr)?;
-                let arms = self.visit_arms(arms)?;
-                R::ret(|| expr_new(ExprX::Match(R::get(expr), R::get_vec_a(arms))))
-            }
-            ExprX::Loop { loop_isolation, is_for_loop, label, cond, body, invs, decrease } => {
-                let cond = self.visit_opt_expr(cond)?;
-                let body = self.visit_expr(body)?;
-                let invs = self.visit_loop_invariants(invs)?;
-                let decrease = self.visit_exprs(decrease)?;
-                R::ret(|| {
-                    expr_new(ExprX::Loop {
-                        loop_isolation: *loop_isolation,
-                        is_for_loop: *is_for_loop,
-                        label: label.clone(),
-                        cond: R::get_opt(cond),
-                        body: R::get(body),
-                        invs: R::get_vec_a(invs),
-                        decrease: R::get_vec_a(decrease),
-                    })
-                })
-            }
-            ExprX::OpenInvariant(e, b, body, ato) => {
-                let e = self.visit_expr(e)?;
-
-                let binder = self.visit_binder_typ(b)?;
-
-                self.push_scope();
-                let b = R::get_or(&binder, b);
-                self.insert_binding(&b.name, ScopeEntry::new(&b.a, true, true));
-
-                let body = self.visit_expr(body)?;
-
-                self.pop_scope();
-
-                R::ret(|| {
-                    expr_new(ExprX::OpenInvariant(R::get(e), R::get(binder), R::get(body), *ato))
-                })
-            }
-            ExprX::Return(e) => {
-                let e = self.visit_opt_expr(e)?;
-                R::ret(|| expr_new(ExprX::Return(R::get_opt(e))))
-            }
-            ExprX::Ghost { alloc_wrapper, tracked, expr } => {
-                let expr = self.visit_expr(expr)?;
-                R::ret(|| {
-                    expr_new(ExprX::Ghost {
-                        alloc_wrapper: *alloc_wrapper,
-                        tracked: *tracked,
-                        expr: R::get(expr),
-                    })
-                })
-            }
-            ExprX::ProofInSpec(e) => {
-                let e = self.visit_expr(e)?;
-                R::ret(|| expr_new(ExprX::ProofInSpec(R::get(e))))
-            }
-            ExprX::Block(stmts, e) => {
-                let mut scope_count = 0;
-
-                let stmts = R::map_vec_and_flatten(stmts, &mut |s| {
-                    let stmts = self.visit_stmt(s)?;
-
-                    for stmt in R::get_vec_or_slice(&stmts, std::array::from_ref(s)).iter() {
-                        match &stmt.x {
-                            StmtX::Expr(_) => {}
-                            StmtX::Decl { pattern, mode: _, init, els: _ } => {
-                                self.push_scope();
-                                self.insert_pattern_bindings(pattern, init.is_some());
-                                scope_count += 1;
+                                let e1 = self.visit_expr(e)?;
+                                R::ret(|| expr_new(ExprX::Loc(R::get(e1))))
                             }
-                        }
-                    }
+            ExprX::Call(call_target, exprs) => {
+                                let ct = self.visit_call_target(call_target)?;
+                                let es = self.visit_exprs(exprs)?;
+                                R::ret(|| expr_new(ExprX::Call(R::get(ct), R::get_vec_a(es))))
+                            }
+            ExprX::Ctor(dt, id, binders, opt_e) => {
+                                let bs = self.visit_binders_expr(binders)?;
+                                let oe = self.visit_opt_expr(opt_e)?;
+                                R::ret(|| {
+                                    expr_new(ExprX::Ctor(dt.clone(), id.clone(), R::get_vec_a(bs), R::get_opt(oe)))
+                                })
+                            }
+            ExprX::NullaryOpr(nullary_opr) => {
+                                let no = self.visit_nullary_opr(nullary_opr)?;
+                                R::ret(|| expr_new(ExprX::NullaryOpr(R::get(no))))
+                            }
+            ExprX::Unary(op, e) => {
+                                let e1 = self.visit_expr(e)?;
+                                R::ret(|| expr_new(ExprX::Unary(*op, R::get(e1))))
+                            }
+            ExprX::UnaryOpr(opr, e) => {
+                                let uo = self.visit_unary_opr(opr)?;
+                                let e1 = self.visit_expr(e)?;
+                                R::ret(|| expr_new(ExprX::UnaryOpr(R::get(uo), R::get(e1))))
+                            }
+            ExprX::Binary(op, e1, e2) => {
+                                let e1 = self.visit_expr(e1)?;
+                                let e2 = self.visit_expr(e2)?;
+                                R::ret(|| expr_new(ExprX::Binary(*op, R::get(e1), R::get(e2))))
+                            }
+            ExprX::BinaryOpr(opr, e1, e2) => {
+                                let bo = self.visit_binary_opr(opr)?;
+                                let e1 = self.visit_expr(e1)?;
+                                let e2 = self.visit_expr(e2)?;
+                                R::ret(|| expr_new(ExprX::BinaryOpr(R::get(bo), R::get(e1), R::get(e2))))
+                            }
+            ExprX::Multi(multi_op, es) => {
+                                let es = self.visit_exprs(es)?;
+                                R::ret(|| expr_new(ExprX::Multi(multi_op.clone(), R::get_vec_a(es))))
+                            }
+            ExprX::Quant(quant, bs, e) => {
+                                let binders = self.visit_binders_typ(bs)?;
+                                self.push_scope();
+                                for b in R::get_vec_or(&binders, bs).iter() {
+                                    self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
+                                }
+                                let e = self.visit_expr(e)?;
+                                self.pop_scope();
+                                R::ret(|| expr_new(ExprX::Quant(quant.clone(), R::get_vec_a(binders), R::get(e))))
+                            }
+            ExprX::Closure(bs, e) => {
+                                let binders = self.visit_binders_typ(bs)?;
+                                self.push_scope();
+                                for b in R::get_vec_or(&binders, bs).iter() {
+                                    self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
+                                }
+                                let e = self.visit_expr(e)?;
+                                self.pop_scope();
+                                R::ret(|| expr_new(ExprX::Closure(R::get_vec_a(binders), R::get(e))))
+                            }
+            ExprX::NonSpecClosure {
+                                params: p,
+                                proof_fn_modes,
+                                body,
+                                requires,
+                                ensures,
+                                ret: r,
+                                external_spec,
+                            } => {
+                                let params = self.visit_binders_typ(p)?;
+                                let ret = self.visit_binder_typ(r)?;
 
-                    Ok(stmts)
-                })?;
+                                self.push_scope();
+                                for b in R::get_vec_or(&params, p).iter() {
+                                    self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
+                                }
 
-                let e = self.visit_opt_expr(e)?;
+                                let requires = self.visit_exprs(requires)?;
 
-                for _i in 0..scope_count {
-                    self.pop_scope();
-                }
+                                self.push_scope();
+                                let b = R::get_or(&ret, r);
+                                self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
 
-                R::ret(|| expr_new(ExprX::Block(R::get_vec_a(stmts), R::get_opt(e))))
-            }
+                                let ensures = self.visit_exprs(ensures)?;
+
+                                self.pop_scope();
+
+                                let body = self.visit_expr(body)?;
+
+                                self.pop_scope();
+
+                                let external_spec = R::map_opt(external_spec, &mut |(var_ident, e)| {
+                                    let e = self.visit_expr(e)?;
+                                    R::ret(|| (var_ident.clone(), R::get(e)))
+                                })?;
+
+                                R::ret(|| {
+                                    expr_new(ExprX::NonSpecClosure {
+                                        params: R::get_vec_a(params),
+                                        proof_fn_modes: proof_fn_modes.clone(),
+                                        body: R::get(body),
+                                        requires: R::get_vec_a(requires),
+                                        ensures: R::get_vec_a(ensures),
+                                        ret: R::get(ret),
+                                        external_spec: R::get_opt(external_spec),
+                                    })
+                                })
+                            }
+            ExprX::ArrayLiteral(es) => {
+                                let es = self.visit_exprs(es)?;
+                                R::ret(|| expr_new(ExprX::ArrayLiteral(R::get_vec_a(es))))
+                            }
+            ExprX::Choose { params: bs, cond, body } => {
+                                let binders = self.visit_binders_typ(bs)?;
+                                self.push_scope();
+                                for b in R::get_vec_or(&binders, bs).iter() {
+                                    self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
+                                }
+                                let cond = self.visit_expr(cond)?;
+                                let body = self.visit_expr(body)?;
+                                self.pop_scope();
+                                R::ret(|| {
+                                    expr_new(ExprX::Choose {
+                                        params: R::get_vec_a(binders),
+                                        cond: R::get(cond),
+                                        body: R::get(body),
+                                    })
+                                })
+                            }
+            ExprX::WithTriggers { triggers, body } => {
+                                let triggers = self.visit_exprs_vec(triggers)?;
+                                let body = self.visit_expr(body)?;
+                                R::ret(|| {
+                                    expr_new(ExprX::WithTriggers {
+                                        triggers: R::get_vec_a(triggers),
+                                        body: R::get(body),
+                                    })
+                                })
+                            }
+            ExprX::Assign { init_not_mut, lhs, rhs, op } => {
+                                let lhs = self.visit_expr(lhs)?;
+                                let rhs = self.visit_expr(rhs)?;
+                                R::ret(|| {
+                                    expr_new(ExprX::Assign {
+                                        init_not_mut: *init_not_mut,
+                                        lhs: R::get(lhs),
+                                        rhs: R::get(rhs),
+                                        op: *op,
+                                    })
+                                })
+                            }
+            ExprX::Header(_) => {
+                                // don't descend into Headers
+                                R::ret(|| expr_new(expr.x.clone()))
+                            }
+            ExprX::AssertAssume { is_assume, expr } => {
+                                let expr = self.visit_expr(expr)?;
+                                R::ret(|| {
+                                    expr_new(ExprX::AssertAssume { is_assume: *is_assume, expr: R::get(expr) })
+                                })
+                            }
+            ExprX::AssertAssumeUserDefinedTypeInvariant { is_assume, expr, fun } => {
+                                let expr = self.visit_expr(expr)?;
+                                R::ret(|| {
+                                    expr_new(ExprX::AssertAssumeUserDefinedTypeInvariant {
+                                        is_assume: *is_assume,
+                                        expr: R::get(expr),
+                                        fun: fun.clone(),
+                                    })
+                                })
+                            }
+            ExprX::AssertBy { vars: bs, require, ensure, proof } => {
+                                let binders = self.visit_binders_typ(bs)?;
+                                self.push_scope();
+                                for b in R::get_vec_or(&binders, bs).iter() {
+                                    self.insert_binding(&b.name, ScopeEntry::new(&b.a, false, true));
+                                }
+                                let require = self.visit_expr(require)?;
+                                let ensure = self.visit_expr(ensure)?;
+                                let proof = self.visit_expr(proof)?;
+                                self.pop_scope();
+                                R::ret(|| {
+                                    expr_new(ExprX::AssertBy {
+                                        vars: R::get_vec_a(binders),
+                                        require: R::get(require),
+                                        ensure: R::get(ensure),
+                                        proof: R::get(proof),
+                                    })
+                                })
+                            }
+            ExprX::AssertQuery { requires, ensures, proof, mode } => {
+                                let requires = self.visit_exprs(requires)?;
+                                let ensures = self.visit_exprs(ensures)?;
+                                let proof = self.visit_expr(proof)?;
+                                R::ret(|| {
+                                    expr_new(ExprX::AssertQuery {
+                                        requires: R::get_vec_a(requires),
+                                        ensures: R::get_vec_a(ensures),
+                                        proof: R::get(proof),
+                                        mode: *mode,
+                                    })
+                                })
+                            }
+            ExprX::AssertCompute(expr, compute_mode) => {
+                                let expr = self.visit_expr(expr)?;
+                                R::ret(|| expr_new(ExprX::AssertCompute(R::get(expr), *compute_mode)))
+                            }
+            ExprX::If(cond, thn, els) => {
+                                let cond = self.visit_expr(cond)?;
+                                let thn = self.visit_expr(thn)?;
+                                let els = self.visit_opt_expr(els)?;
+                                R::ret(|| expr_new(ExprX::If(R::get(cond), R::get(thn), R::get_opt(els))))
+                            }
+            ExprX::Match(expr, arms) => {
+                                let expr = self.visit_expr(expr)?;
+                                let arms = self.visit_arms(arms)?;
+                                R::ret(|| expr_new(ExprX::Match(R::get(expr), R::get_vec_a(arms))))
+                            }
+            ExprX::Loop { loop_isolation, is_for_loop, label, cond, body, invs, decrease } => {
+                                let cond = self.visit_opt_expr(cond)?;
+                                let body = self.visit_expr(body)?;
+                                let invs = self.visit_loop_invariants(invs)?;
+                                let decrease = self.visit_exprs(decrease)?;
+                                R::ret(|| {
+                                    expr_new(ExprX::Loop {
+                                        loop_isolation: *loop_isolation,
+                                        is_for_loop: *is_for_loop,
+                                        label: label.clone(),
+                                        cond: R::get_opt(cond),
+                                        body: R::get(body),
+                                        invs: R::get_vec_a(invs),
+                                        decrease: R::get_vec_a(decrease),
+                                    })
+                                })
+                            }
+            ExprX::OpenInvariant(e, b, body, ato) => {
+                                let e = self.visit_expr(e)?;
+
+                                let binder = self.visit_binder_typ(b)?;
+
+                                self.push_scope();
+                                let b = R::get_or(&binder, b);
+                                self.insert_binding(&b.name, ScopeEntry::new(&b.a, true, true));
+
+                                let body = self.visit_expr(body)?;
+
+                                self.pop_scope();
+
+                                R::ret(|| {
+                                    expr_new(ExprX::OpenInvariant(R::get(e), R::get(binder), R::get(body), *ato))
+                                })
+                            }
+            ExprX::Return(e) => {
+                                let e = self.visit_opt_expr(e)?;
+                                R::ret(|| expr_new(ExprX::Return(R::get_opt(e))))
+                            }
+            ExprX::Ghost { alloc_wrapper, tracked, expr } => {
+                                let expr = self.visit_expr(expr)?;
+                                R::ret(|| {
+                                    expr_new(ExprX::Ghost {
+                                        alloc_wrapper: *alloc_wrapper,
+                                        tracked: *tracked,
+                                        expr: R::get(expr),
+                                    })
+                                })
+                            }
+            ExprX::ProofInSpec(e) => {
+                                let e = self.visit_expr(e)?;
+                                R::ret(|| expr_new(ExprX::ProofInSpec(R::get(e))))
+                            }
+            ExprX::Block(stmts, e) => {
+                                let mut scope_count = 0;
+
+                                let stmts = R::map_vec_and_flatten(stmts, &mut |s| {
+                                    let stmts = self.visit_stmt(s)?;
+
+                                    for stmt in R::get_vec_or_slice(&stmts, std::array::from_ref(s)).iter() {
+                                        match &stmt.x {
+                                            StmtX::Expr(_) => {}
+                                            StmtX::Decl { pattern, mode: _, init, els: _ } => {
+                                                self.push_scope();
+                                                self.insert_pattern_bindings(pattern, init.is_some());
+                                                scope_count += 1;
+                                            }
+                                        }
+                                    }
+
+                                    Ok(stmts)
+                                })?;
+
+                                let e = self.visit_opt_expr(e)?;
+
+                                for _i in 0..scope_count {
+                                    self.pop_scope();
+                                }
+
+                                R::ret(|| expr_new(ExprX::Block(R::get_vec_a(stmts), R::get_opt(e))))
+                            }
             ExprX::NeverToAny(e) => {
+                                let e = self.visit_expr(e)?;
+                                R::ret(|| expr_new(ExprX::NeverToAny(R::get(e))))
+                            }
+            ExprX::AsyncBlock { stmts, expr, ret_ident, ret_typ, ensures } => todo!(),
+            ExprX::Await(e) => {
+                        println!("visit await expr");
+                        let e = self.visit_expr(e)?;
+                        R::ret(|| expr_new(ExprX::Await(R::get(e))))
+                    },
+            ExprX::FutureView(e) => {
                 let e = self.visit_expr(e)?;
-                R::ret(|| expr_new(ExprX::NeverToAny(R::get(e))))
-            }
+                R::ret(|| expr_new(ExprX::FutureView(R::get(e))))
+            },
         }
     }
 
@@ -1111,6 +1121,7 @@ where
         attrs: _,
         body,
         extra_dependencies: _,
+        async_params_mode_binding: _,
     } = &function.x;
 
     map.push_scope(true);
@@ -1368,6 +1379,7 @@ where
         attrs,
         body,
         extra_dependencies,
+        async_params_mode_binding,
     } = &function.x;
     let name = name.clone();
     let proxy = proxy.clone();
@@ -1503,6 +1515,7 @@ where
         attrs,
         body,
         extra_dependencies,
+        async_params_mode_binding: async_params_mode_binding.clone(),
     };
     Ok(Spanned::new(function.span.clone(), functionx))
 }

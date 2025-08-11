@@ -305,6 +305,9 @@ pub(crate) enum VstdItem {
     CastArrayPtrToSlicePtr,
     CastPtrToUsize,
     VecIndex,
+    FutureView,
+    SpecAwaited,
+    ExecAwait,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
@@ -539,6 +542,11 @@ fn verus_items_map() -> Vec<(&'static str, VerusItem)> {
         ("verus::vstd::raw_ptr::cast_ptr_to_thin_ptr", VerusItem::Vstd(VstdItem::CastPtrToThinPtr, Some(Arc::new("raw_ptr::cast_ptr_to_thin_ptr".to_owned())))),
         ("verus::vstd::raw_ptr::cast_array_ptr_to_slice_ptr", VerusItem::Vstd(VstdItem::CastArrayPtrToSlicePtr, Some(Arc::new("raw_ptr::cast_array_ptr_to_slice_ptr".to_owned())))),
         ("verus::vstd::raw_ptr::cast_ptr_to_usize", VerusItem::Vstd(VstdItem::CastPtrToUsize, Some(Arc::new("raw_ptr::cast_ptr_to_usize".to_owned())))),
+
+
+        ("verus::vstd::future::FutureAdditionalSpecFns::view", VerusItem::Vstd(VstdItem::FutureView, Some(Arc::new("future::FutureAdditionalSpecFns::view".to_owned())))),
+        // ("verus::vstd::future::spec_awaited", VerusItem::Vstd(VstdItem::SpecAwaited, Some(Arc::new("future::spec_awaited".to_owned())))),
+        // ("verus::vstd::future::exec_await", VerusItem::Vstd(VstdItem::ExecAwait, Some(Arc::new("future::exec_await".to_owned())))),
             // SeqFn(vir::interpreter::SeqFn::Last    ))),
 
         ("verus::builtin::Structural",              VerusItem::Marker(MarkerItem::Structural)),
@@ -594,6 +602,7 @@ pub(crate) fn from_diagnostic_items(
             }
         }
     }
+    // println!("id_to_name {:#?}", id_to_name);
     VerusItems { id_to_name, name_to_id }
 }
 

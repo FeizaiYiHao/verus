@@ -100,70 +100,73 @@ pub fn get_expansion_ctx(stm: &Stm, assert_id: &AssertId) -> ExpansionContext {
 fn get_fuel_at_id(stm: &Stm, a_id: &AssertId, fuels: &mut HashMap<Fun, u32>) -> bool {
     match &stm.x {
         StmX::Call { assert_id, .. }
-        | StmX::Assert(assert_id, ..)
-        | StmX::Return { assert_id, .. } => *assert_id == Some(a_id.clone()),
+            | StmX::Assert(assert_id, ..)
+            | StmX::Return { assert_id, .. } => *assert_id == Some(a_id.clone()),
         StmX::AssertBitVector { requires: _, ensures: _ }
-        | StmX::AssertCompute(..)
-        | StmX::Assume(..)
-        | StmX::Assign { .. }
-        | StmX::RevealString { .. }
-        | StmX::Air { .. }
-        | StmX::BreakOrContinue { .. } => false,
+            | StmX::AssertCompute(..)
+            | StmX::Assume(..)
+            | StmX::Assign { .. }
+            | StmX::RevealString { .. }
+            | StmX::Air { .. }
+            | StmX::BreakOrContinue { .. } => false,
         StmX::Fuel(fun, fuel) => {
-            fuels.insert(fun.clone(), *fuel);
-            return false;
-        }
+                fuels.insert(fun.clone(), *fuel);
+                return false;
+            }
         StmX::If(_cond, stm1, stm2_opt) => {
-            let mut f1 = fuels.clone();
-            if get_fuel_at_id(stm1, a_id, &mut f1) {
-                std::mem::swap(fuels, &mut f1);
-                return true;
-            }
-            if let Some(stm2) = stm2_opt {
-                let mut f2 = fuels.clone();
-                if get_fuel_at_id(stm2, a_id, &mut f2) {
-                    std::mem::swap(fuels, &mut f2);
+                let mut f1 = fuels.clone();
+                if get_fuel_at_id(stm1, a_id, &mut f1) {
+                    std::mem::swap(fuels, &mut f1);
                     return true;
                 }
+                if let Some(stm2) = stm2_opt {
+                    let mut f2 = fuels.clone();
+                    if get_fuel_at_id(stm2, a_id, &mut f2) {
+                        std::mem::swap(fuels, &mut f2);
+                        return true;
+                    }
+                }
+                return false;
             }
-            return false;
-        }
         StmX::Loop { body, cond, .. } => {
-            if let Some((cond_stm, _cond_exp)) = cond {
-                if get_fuel_at_id(cond_stm, a_id, fuels) {
+                if let Some((cond_stm, _cond_exp)) = cond {
+                    if get_fuel_at_id(cond_stm, a_id, fuels) {
+                        return true;
+                    }
+                }
+
+                let mut inside_fuels = HashMap::<Fun, u32>::new();
+                if get_fuel_at_id(body, a_id, &mut inside_fuels) {
+                    std::mem::swap(&mut inside_fuels, fuels);
                     return true;
                 }
+                return false;
             }
-
-            let mut inside_fuels = HashMap::<Fun, u32>::new();
-            if get_fuel_at_id(body, a_id, &mut inside_fuels) {
-                std::mem::swap(&mut inside_fuels, fuels);
-                return true;
-            }
-            return false;
-        }
         StmX::OpenInvariant(stm) => {
-            if get_fuel_at_id(stm, a_id, fuels) {
-                return true;
-            }
-            return false;
-        }
-        StmX::Block(stms) => {
-            for stm in stms.iter() {
                 if get_fuel_at_id(stm, a_id, fuels) {
                     return true;
                 }
+                return false;
             }
-            return false;
-        }
+        StmX::Block(stms) => {
+                for stm in stms.iter() {
+                    if get_fuel_at_id(stm, a_id, fuels) {
+                        return true;
+                    }
+                }
+                return false;
+            }
         StmX::DeadEnd(body) | StmX::ClosureInner { body, .. } | StmX::AssertQuery { body, .. } => {
-            let mut inside_fuels = fuels.clone();
-            if get_fuel_at_id(body, a_id, &mut inside_fuels) {
-                std::mem::swap(&mut inside_fuels, fuels);
-                return true;
+                let mut inside_fuels = fuels.clone();
+                if get_fuel_at_id(body, a_id, &mut inside_fuels) {
+                    std::mem::swap(&mut inside_fuels, fuels);
+                    return true;
+                }
+                return false;
             }
+        StmX::Await(e, dest) => {
             return false;
-        }
+        },
     }
 }
 

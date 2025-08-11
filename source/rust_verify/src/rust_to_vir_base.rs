@@ -1113,7 +1113,7 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
                     unsupported_err!(span, "function pointer types for opaque types")
                 }
                 TyKind::Dynamic(..) => unsupported_err!(span, "dynamic types for opaque types"),
-                TyKind::Coroutine(..) => unsupported_err!(span, "generator types for opaque types"),
+                TyKind::Coroutine(..) => {},
                 TyKind::CoroutineWitness(..) => {
                     unsupported_err!(span, "generator witness types for opaque types")
                 }

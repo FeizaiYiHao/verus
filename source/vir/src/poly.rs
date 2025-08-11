@@ -421,293 +421,299 @@ fn visit_exp(ctx: &Ctx, state: &mut State, exp: &Exp) -> Exp {
         ExpX::Var(x) => SpannedTyped::new(&exp.span, &state.types[x], ExpX::Var(x.clone())),
         ExpX::VarLoc(x) => SpannedTyped::new(&exp.span, &state.types[x], ExpX::VarLoc(x.clone())),
         ExpX::VarAt(x, at) => {
-            SpannedTyped::new(&exp.span, &state.types[x], ExpX::VarAt(x.clone(), *at))
-        }
+                                SpannedTyped::new(&exp.span, &state.types[x], ExpX::VarAt(x.clone(), *at))
+                    }
         ExpX::StaticVar(_) => exp.clone(),
         ExpX::Loc(e) => {
-            let exp = visit_exp(ctx, state, e);
-            mk_exp_typ(&exp.clone().typ, ExpX::Loc(exp))
-        }
+                        let exp = visit_exp(ctx, state, e);
+                        mk_exp_typ(&exp.clone().typ, ExpX::Loc(exp))
+                    }
         ExpX::Old(..) => panic!("internal error: unexpected ExpX::Old"),
         ExpX::Call(call_fun, typs, exps) => match call_fun {
-            CallFun::Fun(name, _) | CallFun::Recursive(name) => {
-                let function = &ctx.func_sst_map[name].x;
-                let is_spec = function.mode == Mode::Spec;
-                let is_trait = !matches!(function.kind, FunctionKind::Static);
-                let mut args: Vec<Exp> = Vec::new();
-                for (par, arg) in function.pars.iter().zip(exps.iter()) {
-                    let arg = if is_spec || is_trait || typ_is_poly(ctx, &par.x.typ) {
-                        visit_exp_poly(ctx, state, arg)
-                    } else {
-                        visit_exp_native(ctx, state, arg)
-                    };
-                    args.push(arg);
-                }
-                match call_fun {
-                    CallFun::Fun(..) => {
-                        assert!(exps.len() == function.pars.len());
-                    }
-                    CallFun::Recursive(_) => {
-                        assert!(exps.len() == function.pars.len() + 1);
-                        let last = exps.last().unwrap();
-                        // The last argument is the fuel parameter
-                        assert!(matches!(&last.x, ExpX::Var(_)));
-                        args.push(last.clone());
-                    }
-                    _ => unreachable!(),
-                };
-                let typ = return_typ(ctx, function, is_trait, &exp.typ);
-                mk_exp_typ(&typ, ExpX::Call(call_fun.clone(), typs.clone(), Arc::new(args)))
-            }
-            CallFun::InternalFun(InternalFun::OpenInvariantMask(name, _i)) => {
-                let function = &ctx.func_sst_map[name].x;
-                let is_spec = function.mode == Mode::Spec;
-                let is_trait = !matches!(function.kind, FunctionKind::Static);
-                let mut args: Vec<Exp> = Vec::new();
-                for (par, arg) in function.pars.iter().zip(exps.iter()) {
-                    let arg = if is_spec || is_trait || typ_is_poly(ctx, &par.x.typ) {
-                        visit_exp_poly(ctx, state, arg)
-                    } else {
-                        visit_exp_native(ctx, state, arg)
-                    };
-                    args.push(arg);
-                }
-                mk_exp(ExpX::Call(call_fun.clone(), typs.clone(), Arc::new(args)))
-            }
-            CallFun::InternalFun(
-                InternalFun::ClosureReq | InternalFun::ClosureEns | InternalFun::DefaultEns,
-            ) => {
-                let exps = visit_exps_poly(ctx, state, exps);
-                mk_exp(ExpX::Call(call_fun.clone(), typs.clone(), exps))
-            }
-            CallFun::InternalFun(InternalFun::CheckDecreaseInt) => {
-                assert!(exps.len() == 3);
-                let e0 = visit_exp_native(ctx, state, &exps[0]);
-                let e1 = visit_exp_native(ctx, state, &exps[1]);
-                let e2 = visit_exp_native(ctx, state, &exps[2]);
-                mk_exp(ExpX::Call(call_fun.clone(), typs.clone(), Arc::new(vec![e0, e1, e2])))
-            }
-            CallFun::InternalFun(InternalFun::CheckDecreaseHeight) => {
-                assert!(exps.len() == 3);
-                let e0 = visit_exp_poly(ctx, state, &exps[0]);
-                let e1 = visit_exp_poly(ctx, state, &exps[1]);
-                let e2 = visit_exp_native(ctx, state, &exps[2]);
-                mk_exp(ExpX::Call(call_fun.clone(), typs.clone(), Arc::new(vec![e0, e1, e2])))
-            }
-        },
+                        CallFun::Fun(name, _) | CallFun::Recursive(name) => {
+                            let function = &ctx.func_sst_map[name].x;
+                            let is_spec = function.mode == Mode::Spec;
+                            let is_trait = !matches!(function.kind, FunctionKind::Static);
+                            let mut args: Vec<Exp> = Vec::new();
+                            for (par, arg) in function.pars.iter().zip(exps.iter()) {
+                                let arg = if is_spec || is_trait || typ_is_poly(ctx, &par.x.typ) {
+                                    visit_exp_poly(ctx, state, arg)
+                                } else {
+                                    visit_exp_native(ctx, state, arg)
+                                };
+                                args.push(arg);
+                            }
+                            match call_fun {
+                                CallFun::Fun(..) => {
+                                    assert!(exps.len() == function.pars.len());
+                                }
+                                CallFun::Recursive(_) => {
+                                    assert!(exps.len() == function.pars.len() + 1);
+                                    let last = exps.last().unwrap();
+                                    // The last argument is the fuel parameter
+                                    assert!(matches!(&last.x, ExpX::Var(_)));
+                                    args.push(last.clone());
+                                }
+                                _ => unreachable!(),
+                            };
+                            let typ = return_typ(ctx, function, is_trait, &exp.typ);
+                            mk_exp_typ(&typ, ExpX::Call(call_fun.clone(), typs.clone(), Arc::new(args)))
+                        }
+                        CallFun::InternalFun(InternalFun::OpenInvariantMask(name, _i)) => {
+                            let function = &ctx.func_sst_map[name].x;
+                            let is_spec = function.mode == Mode::Spec;
+                            let is_trait = !matches!(function.kind, FunctionKind::Static);
+                            let mut args: Vec<Exp> = Vec::new();
+                            for (par, arg) in function.pars.iter().zip(exps.iter()) {
+                                let arg = if is_spec || is_trait || typ_is_poly(ctx, &par.x.typ) {
+                                    visit_exp_poly(ctx, state, arg)
+                                } else {
+                                    visit_exp_native(ctx, state, arg)
+                                };
+                                args.push(arg);
+                            }
+                            mk_exp(ExpX::Call(call_fun.clone(), typs.clone(), Arc::new(args)))
+                        }
+                        CallFun::InternalFun(
+                            InternalFun::ClosureReq | InternalFun::ClosureEns | InternalFun::DefaultEns,
+                        ) => {
+                            let exps = visit_exps_poly(ctx, state, exps);
+                            mk_exp(ExpX::Call(call_fun.clone(), typs.clone(), exps))
+                        }
+                        CallFun::InternalFun(InternalFun::CheckDecreaseInt) => {
+                            assert!(exps.len() == 3);
+                            let e0 = visit_exp_native(ctx, state, &exps[0]);
+                            let e1 = visit_exp_native(ctx, state, &exps[1]);
+                            let e2 = visit_exp_native(ctx, state, &exps[2]);
+                            mk_exp(ExpX::Call(call_fun.clone(), typs.clone(), Arc::new(vec![e0, e1, e2])))
+                        }
+                        CallFun::InternalFun(InternalFun::CheckDecreaseHeight) => {
+                            assert!(exps.len() == 3);
+                            let e0 = visit_exp_poly(ctx, state, &exps[0]);
+                            let e1 = visit_exp_poly(ctx, state, &exps[1]);
+                            let e2 = visit_exp_native(ctx, state, &exps[2]);
+                            mk_exp(ExpX::Call(call_fun.clone(), typs.clone(), Arc::new(vec![e0, e1, e2])))
+                        }
+                    },
         ExpX::CallLambda(callee, args) => {
-            let callee = visit_exp_native(ctx, state, callee);
-            let args = visit_exps_poly(ctx, state, args);
-            let typ = coerce_typ_to_poly(ctx, &exp.typ);
-            mk_exp_typ(&typ, ExpX::CallLambda(callee, args))
-        }
+                        let callee = visit_exp_native(ctx, state, callee);
+                        let args = visit_exps_poly(ctx, state, args);
+                        let typ = coerce_typ_to_poly(ctx, &exp.typ);
+                        mk_exp_typ(&typ, ExpX::CallLambda(callee, args))
+                    }
         ExpX::Ctor(path, variant, binders) => {
-            let fields = &ctx.datatype_map[path].x.get_variant(variant).fields;
-            let mut bs: Vec<Binder<Exp>> = Vec::new();
-            for binder in binders.iter() {
-                let field = crate::ast_util::get_field(fields, &binder.name);
-                let e = if typ_is_poly(ctx, &field.a.0) {
-                    visit_exp_poly(ctx, state, &binder.a)
-                } else {
-                    // Force an expression of the form unbox(...) to match triggers with unbox:
-                    let e = visit_exp_poly(ctx, state, &binder.a);
-                    coerce_exp_to_native(ctx, &e)
-                };
-                bs.push(binder.new_a(e));
-            }
-            mk_exp(ExpX::Ctor(path.clone(), variant.clone(), Arc::new(bs)))
-        }
+                        let fields = &ctx.datatype_map[path].x.get_variant(variant).fields;
+                        let mut bs: Vec<Binder<Exp>> = Vec::new();
+                        for binder in binders.iter() {
+                            let field = crate::ast_util::get_field(fields, &binder.name);
+                            let e = if typ_is_poly(ctx, &field.a.0) {
+                                visit_exp_poly(ctx, state, &binder.a)
+                            } else {
+                                // Force an expression of the form unbox(...) to match triggers with unbox:
+                                let e = visit_exp_poly(ctx, state, &binder.a);
+                                coerce_exp_to_native(ctx, &e)
+                            };
+                            bs.push(binder.new_a(e));
+                        }
+                        mk_exp(ExpX::Ctor(path.clone(), variant.clone(), Arc::new(bs)))
+                    }
         ExpX::NullaryOpr(NullaryOpr::ConstGeneric(_)) => exp.clone(),
         ExpX::NullaryOpr(NullaryOpr::TraitBound(..)) => exp.clone(),
         ExpX::NullaryOpr(NullaryOpr::TypEqualityBound(..)) => exp.clone(),
         ExpX::NullaryOpr(NullaryOpr::ConstTypBound(..)) => exp.clone(),
         ExpX::NullaryOpr(NullaryOpr::NoInferSpecForLoopIter) => exp.clone(),
         ExpX::Unary(op, e1) => {
-            let e1 = visit_exp(ctx, state, e1);
-            match op {
-                UnaryOp::Not
-                | UnaryOp::Clip { .. }
-                | UnaryOp::BitNot(_)
-                | UnaryOp::StrLen
-                | UnaryOp::StrIsAscii => {
-                    let e1 = coerce_exp_to_native(ctx, &e1);
-                    mk_exp(ExpX::Unary(*op, e1))
-                }
-                UnaryOp::InferSpecForLoopIter { .. } => {
-                    // e1 will be the argument to spec Option::Some(...)
-                    let e1 = coerce_exp_to_poly(ctx, &e1);
-                    mk_exp(ExpX::Unary(*op, e1))
-                }
-                UnaryOp::HeightTrigger => {
-                    let e1 = coerce_exp_to_poly(ctx, &e1);
-                    mk_exp(ExpX::Unary(*op, e1))
-                }
-                UnaryOp::Trigger(_) | UnaryOp::CoerceMode { .. } => {
-                    mk_exp_typ(&e1.typ, ExpX::Unary(*op, e1.clone()))
-                }
-                UnaryOp::MustBeFinalized | UnaryOp::MustBeElaborated => {
-                    panic!("internal error: MustBeFinalized in SST")
-                }
-                UnaryOp::CastToInteger => {
-                    let unbox = UnaryOpr::Unbox(Arc::new(TypX::Int(IntRange::Int)));
-                    mk_exp(ExpX::UnaryOpr(unbox, e1.clone()))
-                }
-            }
-        }
+                        let e1 = visit_exp(ctx, state, e1);
+                        match op {
+                            UnaryOp::Not
+                            | UnaryOp::Clip { .. }
+                            | UnaryOp::BitNot(_)
+                            | UnaryOp::StrLen
+                            | UnaryOp::StrIsAscii => {
+                                let e1 = coerce_exp_to_native(ctx, &e1);
+                                mk_exp(ExpX::Unary(*op, e1))
+                            }
+                            UnaryOp::InferSpecForLoopIter { .. } => {
+                                // e1 will be the argument to spec Option::Some(...)
+                                let e1 = coerce_exp_to_poly(ctx, &e1);
+                                mk_exp(ExpX::Unary(*op, e1))
+                            }
+                            UnaryOp::HeightTrigger => {
+                                let e1 = coerce_exp_to_poly(ctx, &e1);
+                                mk_exp(ExpX::Unary(*op, e1))
+                            }
+                            UnaryOp::Trigger(_) | UnaryOp::CoerceMode { .. } => {
+                                mk_exp_typ(&e1.typ, ExpX::Unary(*op, e1.clone()))
+                            }
+                            UnaryOp::MustBeFinalized | UnaryOp::MustBeElaborated => {
+                                panic!("internal error: MustBeFinalized in SST")
+                            }
+                            UnaryOp::CastToInteger => {
+                                let unbox = UnaryOpr::Unbox(Arc::new(TypX::Int(IntRange::Int)));
+                                mk_exp(ExpX::UnaryOpr(unbox, e1.clone()))
+                            }
+                        }
+                    }
         ExpX::UnaryOpr(op, e1) => {
-            let e1 = visit_exp(ctx, state, e1);
-            match op {
-                UnaryOpr::Box(_) | UnaryOpr::Unbox(_) => {
-                    panic!("internal error: {:?} already has Box/Unbox", e1)
-                }
-                UnaryOpr::HasType(t) => {
-                    // REVIEW: not clear that typ_to_poly is appropriate here for abstract datatypes
-                    let (e1, t) = match (typ_is_poly(ctx, &e1.typ), typ_is_poly(ctx, t)) {
-                        (false, true) => (coerce_exp_to_poly(ctx, &e1), t.clone()),
-                        (true, _) => (e1.clone(), coerce_typ_to_poly(ctx, t)),
-                        _ => (e1.clone(), t.clone()),
-                    };
-                    mk_exp(ExpX::UnaryOpr(UnaryOpr::HasType(t), e1))
-                }
-                UnaryOpr::IsVariant { .. } | UnaryOpr::IntegerTypeBound(..) => {
-                    let e1 = coerce_exp_to_native(ctx, &e1);
-                    mk_exp(ExpX::UnaryOpr(op.clone(), e1))
-                }
-                UnaryOpr::CustomErr(_) => {
-                    mk_exp_typ(&e1.typ, ExpX::UnaryOpr(op.clone(), e1.clone()))
-                }
-                UnaryOpr::Field(FieldOpr {
-                    datatype,
-                    variant,
-                    field,
-                    get_variant: _,
-                    check: _,
-                }) => {
-                    let fields = &ctx.datatype_map[datatype].x.get_variant(variant).fields;
-                    let field = crate::ast_util::get_field(fields, field);
+                        let e1 = visit_exp(ctx, state, e1);
+                        match op {
+                            UnaryOpr::Box(_) | UnaryOpr::Unbox(_) => {
+                                panic!("internal error: {:?} already has Box/Unbox", e1)
+                            }
+                            UnaryOpr::HasType(t) => {
+                                // REVIEW: not clear that typ_to_poly is appropriate here for abstract datatypes
+                                let (e1, t) = match (typ_is_poly(ctx, &e1.typ), typ_is_poly(ctx, t)) {
+                                    (false, true) => (coerce_exp_to_poly(ctx, &e1), t.clone()),
+                                    (true, _) => (e1.clone(), coerce_typ_to_poly(ctx, t)),
+                                    _ => (e1.clone(), t.clone()),
+                                };
+                                mk_exp(ExpX::UnaryOpr(UnaryOpr::HasType(t), e1))
+                            }
+                            UnaryOpr::IsVariant { .. } | UnaryOpr::IntegerTypeBound(..) => {
+                                let e1 = coerce_exp_to_native(ctx, &e1);
+                                mk_exp(ExpX::UnaryOpr(op.clone(), e1))
+                            }
+                            UnaryOpr::CustomErr(_) => {
+                                mk_exp_typ(&e1.typ, ExpX::UnaryOpr(op.clone(), e1.clone()))
+                            }
+                            UnaryOpr::Field(FieldOpr {
+                                datatype,
+                                variant,
+                                field,
+                                get_variant: _,
+                                check: _,
+                            }) => {
+                                let fields = &ctx.datatype_map[datatype].x.get_variant(variant).fields;
+                                let field = crate::ast_util::get_field(fields, field);
 
-                    // Force an expression of the form unbox(...) to match triggers with unbox:
-                    let e1 = coerce_exp_to_poly(ctx, &e1);
-                    let e1 = coerce_exp_to_native(ctx, &e1);
+                                // Force an expression of the form unbox(...) to match triggers with unbox:
+                                let e1 = coerce_exp_to_poly(ctx, &e1);
+                                let e1 = coerce_exp_to_native(ctx, &e1);
 
-                    let exprx = ExpX::UnaryOpr(op.clone(), e1);
-                    let typ = if typ_is_poly(ctx, &field.a.0) {
-                        coerce_typ_to_poly(ctx, &exp.typ)
-                    } else {
-                        coerce_typ_to_native(ctx, &exp.typ)
-                    };
-                    mk_exp_typ(&typ, exprx)
-                }
-            }
-        }
+                                let exprx = ExpX::UnaryOpr(op.clone(), e1);
+                                let typ = if typ_is_poly(ctx, &field.a.0) {
+                                    coerce_typ_to_poly(ctx, &exp.typ)
+                                } else {
+                                    coerce_typ_to_native(ctx, &exp.typ)
+                                };
+                                mk_exp_typ(&typ, exprx)
+                            }
+                        }
+                    }
         ExpX::Binary(BinaryOp::ArrayIndex, e1, e2) => {
-            let e1 = visit_exp(ctx, state, e1);
-            let e2 = visit_exp(ctx, state, e2);
-            let e1 = coerce_exp_to_native(ctx, &e1);
-            let e2 = coerce_exp_to_poly(ctx, &e2);
-            let typ = coerce_typ_to_poly(ctx, &exp.typ);
-            mk_exp_typ(&typ, ExpX::Binary(BinaryOp::ArrayIndex, e1, e2))
-        }
+                        let e1 = visit_exp(ctx, state, e1);
+                        let e2 = visit_exp(ctx, state, e2);
+                        let e1 = coerce_exp_to_native(ctx, &e1);
+                        let e2 = coerce_exp_to_poly(ctx, &e2);
+                        let typ = coerce_typ_to_poly(ctx, &exp.typ);
+                        mk_exp_typ(&typ, ExpX::Binary(BinaryOp::ArrayIndex, e1, e2))
+                    }
         ExpX::Binary(op, e1, e2) => {
-            let e1 = visit_exp(ctx, state, e1);
-            let e2 = visit_exp(ctx, state, e2);
-            let (native, poly) = match op {
-                BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => (true, false),
-                BinaryOp::Implies | BinaryOp::Inequality(_) => (true, false),
-                BinaryOp::HeightCompare { .. } => (false, true),
-                BinaryOp::Arith(..) => (true, false),
-                BinaryOp::Eq(_) | BinaryOp::Ne => (false, false),
-                BinaryOp::Bitwise(..) => (true, false),
-                BinaryOp::StrGetChar { .. } => (true, false),
-                BinaryOp::ArrayIndex => unreachable!("ArrayIndex"),
-            };
-            if native {
-                let e1 = coerce_exp_to_native(ctx, &e1);
-                let e2 = coerce_exp_to_native(ctx, &e2);
-                mk_exp(ExpX::Binary(*op, e1, e2))
-            } else if poly {
-                let e1 = coerce_exp_to_poly(ctx, &e1);
-                let e2 = coerce_exp_to_poly(ctx, &e2);
-                mk_exp(ExpX::Binary(*op, e1, e2))
-            } else {
-                let (e1, e2) = coerce_exps_to_agree(ctx, &e1, &e2);
-                mk_exp(ExpX::Binary(*op, e1, e2))
-            }
-        }
+                        let e1 = visit_exp(ctx, state, e1);
+                        let e2 = visit_exp(ctx, state, e2);
+                        let (native, poly) = match op {
+                            BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => (true, false),
+                            BinaryOp::Implies | BinaryOp::Inequality(_) => (true, false),
+                            BinaryOp::HeightCompare { .. } => (false, true),
+                            BinaryOp::Arith(..) => (true, false),
+                            BinaryOp::Eq(_) | BinaryOp::Ne => (false, false),
+                            BinaryOp::Bitwise(..) => (true, false),
+                            BinaryOp::StrGetChar { .. } => (true, false),
+                            BinaryOp::ArrayIndex => unreachable!("ArrayIndex"),
+                        };
+                        if native {
+                            let e1 = coerce_exp_to_native(ctx, &e1);
+                            let e2 = coerce_exp_to_native(ctx, &e2);
+                            mk_exp(ExpX::Binary(*op, e1, e2))
+                        } else if poly {
+                            let e1 = coerce_exp_to_poly(ctx, &e1);
+                            let e2 = coerce_exp_to_poly(ctx, &e2);
+                            mk_exp(ExpX::Binary(*op, e1, e2))
+                        } else {
+                            let (e1, e2) = coerce_exps_to_agree(ctx, &e1, &e2);
+                            mk_exp(ExpX::Binary(*op, e1, e2))
+                        }
+                    }
         ExpX::BinaryOpr(op @ crate::ast::BinaryOpr::ExtEq(..), e1, e2) => {
-            let e1 = visit_exp_poly(ctx, state, e1);
-            let e2 = visit_exp_poly(ctx, state, e2);
-            mk_exp(ExpX::BinaryOpr(op.clone(), e1, e2))
-        }
+                        let e1 = visit_exp_poly(ctx, state, e1);
+                        let e2 = visit_exp_poly(ctx, state, e2);
+                        mk_exp(ExpX::BinaryOpr(op.clone(), e1, e2))
+                    }
         ExpX::If(e0, e1, e2) => {
-            let e0 = visit_exp_native(ctx, state, e0);
-            let e1 = visit_exp(ctx, state, e1);
-            let e2 = visit_exp(ctx, state, e2);
-            let (e1, e2) = coerce_exps_to_agree(ctx, &e1, &e2);
-            let t = if typ_is_poly(ctx, &e1.typ) {
-                coerce_typ_to_poly(ctx, &exp.typ)
-            } else {
-                coerce_typ_to_native(ctx, &exp.typ)
-            };
-            mk_exp_typ(&t, ExpX::If(e0, e1, e2))
-        }
+                        let e0 = visit_exp_native(ctx, state, e0);
+                        let e1 = visit_exp(ctx, state, e1);
+                        let e2 = visit_exp(ctx, state, e2);
+                        let (e1, e2) = coerce_exps_to_agree(ctx, &e1, &e2);
+                        let t = if typ_is_poly(ctx, &e1.typ) {
+                            coerce_typ_to_poly(ctx, &exp.typ)
+                        } else {
+                            coerce_typ_to_native(ctx, &exp.typ)
+                        };
+                        mk_exp_typ(&t, ExpX::If(e0, e1, e2))
+                    }
         ExpX::WithTriggers(trigs, body) => {
-            let trigs = visit_trigs(ctx, state, trigs);
-            let body = visit_exp(ctx, state, body);
-            mk_exp_typ(&body.clone().typ, ExpX::WithTriggers(trigs, body))
-        }
+                        let trigs = visit_trigs(ctx, state, trigs);
+                        let body = visit_exp(ctx, state, body);
+                        mk_exp_typ(&body.clone().typ, ExpX::WithTriggers(trigs, body))
+                    }
         ExpX::Bind(bnd, e1) => match &bnd.x {
-            BndX::Let(bs) => {
-                state.types.push_scope(true);
-                let mut new_bs: Vec<VarBinder<Exp>> = Vec::new();
-                for b in bs.iter() {
-                    // TODO: this might be better as just visit_exp:
-                    let a = visit_exp_native(ctx, state, &b.a);
-                    let _ = state.types.insert(b.name.clone(), a.typ.clone());
-                    let bx = VarBinderX { name: b.name.clone(), a };
-                    new_bs.push(Arc::new(bx));
-                }
-                let e1 = visit_exp(ctx, state, e1);
-                state.types.pop_scope();
-                mk_exp_typ(&e1.typ, ExpX::Bind(bnd.new_x(BndX::Let(Arc::new(new_bs))), e1.clone()))
-            }
-            BndX::Quant(quant, bs, trigs, _) => {
-                let natives = native_quant_vars(bs, trigs);
-                state.types.push_scope(true);
-                let bs = visit_and_insert_binders(ctx, &mut state.types, &natives, bs);
-                let trigs = visit_trigs(ctx, state, trigs);
-                let e1 = visit_exp_native(ctx, state, e1);
-                state.types.pop_scope();
-                mk_exp(ExpX::Bind(bnd.new_x(BndX::Quant(*quant, bs, trigs, None)), e1))
-            }
-            BndX::Lambda(bs, trigs) => {
-                let natives = native_quant_vars(bs, trigs);
-                state.types.push_scope(true);
-                let bs = visit_and_insert_binders(ctx, &mut state.types, &natives, bs);
-                let trigs = visit_trigs(ctx, state, trigs);
-                let e1 = visit_exp_poly(ctx, state, e1);
-                state.types.pop_scope();
-                mk_exp(ExpX::Bind(bnd.new_x(BndX::Lambda(bs, trigs)), e1))
-            }
-            BndX::Choose(bs, trigs, e2) => {
-                let natives = native_quant_vars(bs, trigs);
-                state.types.push_scope(true);
-                let bs = visit_and_insert_binders(ctx, &mut state.types, &natives, bs);
-                let trigs = visit_trigs(ctx, state, trigs);
-                let e1 = visit_exp_poly(ctx, state, e1);
-                let e2 = visit_exp_native(ctx, state, e2);
-                state.types.pop_scope();
-                mk_exp_typ(&e1.clone().typ, ExpX::Bind(bnd.new_x(BndX::Choose(bs, trigs, e2)), e1))
-            }
-        },
+                        BndX::Let(bs) => {
+                            state.types.push_scope(true);
+                            let mut new_bs: Vec<VarBinder<Exp>> = Vec::new();
+                            for b in bs.iter() {
+                                // TODO: this might be better as just visit_exp:
+                                let a = visit_exp_native(ctx, state, &b.a);
+                                let _ = state.types.insert(b.name.clone(), a.typ.clone());
+                                let bx = VarBinderX { name: b.name.clone(), a };
+                                new_bs.push(Arc::new(bx));
+                            }
+                            let e1 = visit_exp(ctx, state, e1);
+                            state.types.pop_scope();
+                            mk_exp_typ(&e1.typ, ExpX::Bind(bnd.new_x(BndX::Let(Arc::new(new_bs))), e1.clone()))
+                        }
+                        BndX::Quant(quant, bs, trigs, _) => {
+                            let natives = native_quant_vars(bs, trigs);
+                            state.types.push_scope(true);
+                            let bs = visit_and_insert_binders(ctx, &mut state.types, &natives, bs);
+                            let trigs = visit_trigs(ctx, state, trigs);
+                            let e1 = visit_exp_native(ctx, state, e1);
+                            state.types.pop_scope();
+                            mk_exp(ExpX::Bind(bnd.new_x(BndX::Quant(*quant, bs, trigs, None)), e1))
+                        }
+                        BndX::Lambda(bs, trigs) => {
+                            let natives = native_quant_vars(bs, trigs);
+                            state.types.push_scope(true);
+                            let bs = visit_and_insert_binders(ctx, &mut state.types, &natives, bs);
+                            let trigs = visit_trigs(ctx, state, trigs);
+                            let e1 = visit_exp_poly(ctx, state, e1);
+                            state.types.pop_scope();
+                            mk_exp(ExpX::Bind(bnd.new_x(BndX::Lambda(bs, trigs)), e1))
+                        }
+                        BndX::Choose(bs, trigs, e2) => {
+                            let natives = native_quant_vars(bs, trigs);
+                            state.types.push_scope(true);
+                            let bs = visit_and_insert_binders(ctx, &mut state.types, &natives, bs);
+                            let trigs = visit_trigs(ctx, state, trigs);
+                            let e1 = visit_exp_poly(ctx, state, e1);
+                            let e2 = visit_exp_native(ctx, state, e2);
+                            state.types.pop_scope();
+                            mk_exp_typ(&e1.clone().typ, ExpX::Bind(bnd.new_x(BndX::Choose(bs, trigs, e2)), e1))
+                        }
+                    },
         ExpX::ExecFnByName(_) => exp.clone(),
         ExpX::ArrayLiteral(es) => {
-            let es = visit_exps_poly(ctx, state, es);
-            let typ = coerce_typ_to_poly(ctx, &exp.typ);
-            mk_exp_typ(&typ, ExpX::ArrayLiteral(es))
-        }
+                        let es = visit_exps_poly(ctx, state, es);
+                        let typ = coerce_typ_to_poly(ctx, &exp.typ);
+                        mk_exp_typ(&typ, ExpX::ArrayLiteral(es))
+                    }
         ExpX::Interp(_) => panic!("unexpected ExpX::Interp"),
         ExpX::FuelConst(_) => exp.clone(),
+        ExpX::Await(e) => {
+                        let e = visit_exp(ctx, state, e);
+                        mk_exp_typ(&exp.clone().typ, ExpX::Await(e))
+                    },
+        ExpX::Async(spanned_typed) => todo!(),
+        ExpX::FutureView(spanned_typed) => todo!(),
     }
 }
 
@@ -751,191 +757,203 @@ fn visit_stm(ctx: &Ctx, state: &mut State, stm: &Stm) -> Stm {
     let mk_stm = |s: StmX| Spanned::new(stm.span.clone(), s);
     match &stm.x {
         StmX::Call {
-            fun,
-            resolved_method,
-            is_trait_default,
-            mode,
-            typ_args,
-            args,
-            split,
-            dest,
-            assert_id,
-        } => {
-            let function = &ctx.func_sst_map[fun].x;
-            let is_spec = function.mode == Mode::Spec;
-            let is_trait = !matches!(function.kind, FunctionKind::Static);
-            let mut new_args: Vec<Exp> = Vec::new();
-            assert!(function.pars.len() == args.len());
-            for (par, arg) in function.pars.iter().zip(args.iter()) {
-                let arg = if is_spec || is_trait || typ_is_poly(ctx, &par.x.typ) {
-                    visit_exp_poly(ctx, state, arg)
-                } else {
-                    visit_exp_native(ctx, state, arg)
-                };
-                new_args.push(arg);
-            }
-            let dest = if let Some(dest) = dest {
-                if let Some(x) = take_temp(state, dest) {
-                    let typ = return_typ(ctx, function, is_trait, &dest.dest.typ);
-                    assert!(!state.temp_types.contains_key(&x));
-                    assert!(!state.types.contains_key(&x));
-                    let _ = state.temp_types.insert(x.clone(), typ.clone());
-                    let _ = state.types.insert(x, typ);
+                        fun,
+                        resolved_method,
+                        is_trait_default,
+                        mode,
+                        typ_args,
+                        args,
+                        split,
+                        dest,
+                        assert_id,
+            } => {
+                let function = &ctx.func_sst_map[fun].x;
+                let is_spec = function.mode == Mode::Spec;
+                let is_trait = !matches!(function.kind, FunctionKind::Static);
+                let mut new_args: Vec<Exp> = Vec::new();
+                assert!(function.pars.len() == args.len());
+                for (par, arg) in function.pars.iter().zip(args.iter()) {
+                    let arg = if is_spec || is_trait || typ_is_poly(ctx, &par.x.typ) {
+                        visit_exp_poly(ctx, state, arg)
+                    } else {
+                        visit_exp_native(ctx, state, arg)
+                    };
+                    new_args.push(arg);
                 }
-                let dst = visit_exp(ctx, state, &dest.dest);
-                Some(Dest { dest: dst, is_init: dest.is_init })
-            } else {
-                None
-            };
-            let callx = StmX::Call {
-                fun: fun.clone(),
-                resolved_method: resolved_method.clone(),
-                is_trait_default: *is_trait_default,
-                mode: *mode,
-                typ_args: typ_args.clone(),
-                args: Arc::new(new_args),
-                split: split.clone(),
-                dest,
-                assert_id: assert_id.clone(),
-            };
-            mk_stm(callx)
-        }
+                let dest = if let Some(dest) = dest {
+                    if let Some(x) = take_temp(state, dest) {
+                        let typ = return_typ(ctx, function, is_trait, &dest.dest.typ);
+                        assert!(!state.temp_types.contains_key(&x));
+                        assert!(!state.types.contains_key(&x));
+                        let _ = state.temp_types.insert(x.clone(), typ.clone());
+                        let _ = state.types.insert(x, typ);
+                    }
+                    let dst = visit_exp(ctx, state, &dest.dest);
+                    Some(Dest { dest: dst, is_init: dest.is_init })
+                } else {
+                    None
+                };
+                let callx = StmX::Call {
+                    fun: fun.clone(),
+                    resolved_method: resolved_method.clone(),
+                    is_trait_default: *is_trait_default,
+                    mode: *mode,
+                    typ_args: typ_args.clone(),
+                    args: Arc::new(new_args),
+                    split: split.clone(),
+                    dest,
+                    assert_id: assert_id.clone(),
+                };
+                mk_stm(callx)
+            }
         StmX::Assert(id, msg, e1) => {
-            let e1 = visit_exp_native(ctx, state, e1);
-            mk_stm(StmX::Assert(id.clone(), msg.clone(), e1))
-        }
+                let e1 = visit_exp_native(ctx, state, e1);
+                mk_stm(StmX::Assert(id.clone(), msg.clone(), e1))
+            }
         StmX::AssertBitVector { requires, ensures } => {
-            let requires = visit_exps_native(ctx, state, requires);
-            let ensures = visit_exps_native(ctx, state, ensures);
-            mk_stm(StmX::AssertBitVector { requires, ensures })
-        }
+                let requires = visit_exps_native(ctx, state, requires);
+                let ensures = visit_exps_native(ctx, state, ensures);
+                mk_stm(StmX::AssertBitVector { requires, ensures })
+            }
         StmX::AssertQuery { mode, typ_inv_exps, typ_inv_vars, body } => {
-            let body = visit_stm(ctx, state, body);
-            let typ_inv_exps = visit_exps(ctx, state, typ_inv_exps);
-            let typ_inv_vars =
-                typ_inv_vars.iter().map(|(x, _)| (x.clone(), state.types[x].clone())).collect();
-            mk_stm(StmX::AssertQuery {
-                mode: *mode,
-                typ_inv_exps,
-                typ_inv_vars: Arc::new(typ_inv_vars),
-                body,
-            })
-        }
+                let body = visit_stm(ctx, state, body);
+                let typ_inv_exps = visit_exps(ctx, state, typ_inv_exps);
+                let typ_inv_vars =
+                    typ_inv_vars.iter().map(|(x, _)| (x.clone(), state.types[x].clone())).collect();
+                mk_stm(StmX::AssertQuery {
+                    mode: *mode,
+                    typ_inv_exps,
+                    typ_inv_vars: Arc::new(typ_inv_vars),
+                    body,
+                })
+            }
         StmX::AssertCompute(..) => panic!("AssertCompute should be removed by sst_elaborate"),
         StmX::Assume(e1) => {
-            let e1 = visit_exp_native(ctx, state, e1);
-            mk_stm(StmX::Assume(e1))
-        }
+                let e1 = visit_exp_native(ctx, state, e1);
+                mk_stm(StmX::Assume(e1))
+            }
         StmX::Assign { lhs, rhs } => {
-            let (e1, rhs) = if let Some(x) = take_temp(state, lhs) {
-                let rhs = visit_exp(ctx, state, rhs);
-                // x needs to be in types before we can visit e1:
-                assert!(!state.temp_types.contains_key(&x));
-                assert!(!state.types.contains_key(&x));
-                let _ = state.temp_types.insert(x.clone(), rhs.typ.clone());
-                let _ = state.types.insert(x, rhs.typ.clone());
-                let e1 = visit_exp(ctx, state, &lhs.dest);
-                (e1, rhs)
-            } else {
-                let e1 = visit_exp(ctx, state, &lhs.dest);
-                let rhs = if typ_is_poly(ctx, &e1.typ) {
-                    visit_exp_poly(ctx, state, rhs)
+                let (e1, rhs) = if let Some(x) = take_temp(state, lhs) {
+                    let rhs = visit_exp(ctx, state, rhs);
+                    // x needs to be in types before we can visit e1:
+                    assert!(!state.temp_types.contains_key(&x));
+                    assert!(!state.types.contains_key(&x));
+                    let _ = state.temp_types.insert(x.clone(), rhs.typ.clone());
+                    let _ = state.types.insert(x, rhs.typ.clone());
+                    let e1 = visit_exp(ctx, state, &lhs.dest);
+                    (e1, rhs)
                 } else {
-                    visit_exp_native(ctx, state, rhs)
+                    let e1 = visit_exp(ctx, state, &lhs.dest);
+                    let rhs = if typ_is_poly(ctx, &e1.typ) {
+                        visit_exp_poly(ctx, state, rhs)
+                    } else {
+                        visit_exp_native(ctx, state, rhs)
+                    };
+                    (e1, rhs)
                 };
-                (e1, rhs)
-            };
-            let lhs = Dest { dest: e1, is_init: lhs.is_init };
-            mk_stm(StmX::Assign { lhs, rhs })
-        }
+                let lhs = Dest { dest: e1, is_init: lhs.is_init };
+                mk_stm(StmX::Assign { lhs, rhs })
+            }
         StmX::Fuel(_, _) => stm.clone(),
         StmX::RevealString(_) => stm.clone(),
         StmX::DeadEnd(stm) => {
-            let stm = visit_stm(ctx, state, stm);
-            mk_stm(StmX::DeadEnd(stm))
-        }
+                let stm = visit_stm(ctx, state, stm);
+                mk_stm(StmX::DeadEnd(stm))
+            }
         StmX::Return { assert_id, base_error, ret_exp, inside_body } => {
-            let ret_exp = if let Some(e1) = ret_exp {
-                let e1 = if state.is_trait && !state.in_exec_closure {
-                    visit_exp_poly(ctx, state, e1)
+                let ret_exp = if let Some(e1) = ret_exp {
+                    let e1 = if state.is_trait && !state.in_exec_closure {
+                        visit_exp_poly(ctx, state, e1)
+                    } else {
+                        visit_exp_native(ctx, state, e1)
+                    };
+                    Some(e1)
                 } else {
-                    visit_exp_native(ctx, state, e1)
+                    None
                 };
-                Some(e1)
-            } else {
-                None
-            };
-            mk_stm(StmX::Return {
-                assert_id: assert_id.clone(),
-                base_error: base_error.clone(),
-                ret_exp,
-                inside_body: *inside_body,
-            })
-        }
+                mk_stm(StmX::Return {
+                    assert_id: assert_id.clone(),
+                    base_error: base_error.clone(),
+                    ret_exp,
+                    inside_body: *inside_body,
+                })
+            }
         StmX::BreakOrContinue { .. } => stm.clone(),
         StmX::If(e, s1, s2) => {
-            let e = visit_exp_native(ctx, state, e);
-            let s1 = visit_stm(ctx, state, s1);
-            let s2 = s2.as_ref().map(|s| visit_stm(ctx, state, s));
-            mk_stm(StmX::If(e, s1, s2))
-        }
+                let e = visit_exp_native(ctx, state, e);
+                let s1 = visit_stm(ctx, state, s1);
+                let s2 = s2.as_ref().map(|s| visit_stm(ctx, state, s));
+                mk_stm(StmX::If(e, s1, s2))
+            }
         StmX::Loop {
-            loop_isolation,
-            is_for_loop,
-            id,
-            label,
-            cond,
-            body,
-            invs,
-            decrease,
-            typ_inv_vars,
-            modified_vars,
-        } => {
-            let cond = cond
-                .as_ref()
-                .map(|(s, e)| (visit_stm(ctx, state, s), visit_exp_native(ctx, state, e)));
-            let body = visit_stm(ctx, state, body);
-            let invs = invs.iter().map(|inv| crate::sst::LoopInv {
-                inv: visit_exp_native(ctx, state, &inv.inv),
-                ..inv.clone()
-            });
-            let invs = Arc::new(invs.collect());
-            let decrease = visit_exps_native(ctx, state, decrease);
-            mk_stm(StmX::Loop {
-                loop_isolation: *loop_isolation,
-                is_for_loop: *is_for_loop,
-                id: *id,
-                label: label.clone(),
+                loop_isolation,
+                is_for_loop,
+                id,
+                label,
                 cond,
                 body,
                 invs,
                 decrease,
-                typ_inv_vars: typ_inv_vars.clone(),
-                modified_vars: modified_vars.clone(),
-            })
-        }
-        StmX::OpenInvariant(s) => {
-            let s = visit_stm(ctx, state, s);
-            mk_stm(StmX::OpenInvariant(s))
-        }
-        StmX::ClosureInner { body, typ_inv_vars } => {
-            let typ_inv_vars = Arc::new(
-                typ_inv_vars
-                    .iter()
-                    .map(|(uid, typ)| (uid.clone(), coerce_typ_to_native(ctx, typ)))
-                    .collect::<Vec<_>>(),
-            );
-
-            state.types.push_scope(true);
-            for (name, typ) in typ_inv_vars.iter() {
-                let _ = state.types.insert(name.clone(), typ.clone());
+                typ_inv_vars,
+                modified_vars,
+            } => {
+                let cond = cond
+                    .as_ref()
+                    .map(|(s, e)| (visit_stm(ctx, state, s), visit_exp_native(ctx, state, e)));
+                let body = visit_stm(ctx, state, body);
+                let invs = invs.iter().map(|inv| crate::sst::LoopInv {
+                    inv: visit_exp_native(ctx, state, &inv.inv),
+                    ..inv.clone()
+                });
+                let invs = Arc::new(invs.collect());
+                let decrease = visit_exps_native(ctx, state, decrease);
+                mk_stm(StmX::Loop {
+                    loop_isolation: *loop_isolation,
+                    is_for_loop: *is_for_loop,
+                    id: *id,
+                    label: label.clone(),
+                    cond,
+                    body,
+                    invs,
+                    decrease,
+                    typ_inv_vars: typ_inv_vars.clone(),
+                    modified_vars: modified_vars.clone(),
+                })
             }
-            let body = visit_stm(ctx, state, body);
-            state.types.pop_scope();
-            mk_stm(StmX::ClosureInner { body, typ_inv_vars: typ_inv_vars })
-        }
+        StmX::OpenInvariant(s) => {
+                let s = visit_stm(ctx, state, s);
+                mk_stm(StmX::OpenInvariant(s))
+            }
+        StmX::ClosureInner { body, typ_inv_vars } => {
+                let typ_inv_vars = Arc::new(
+                    typ_inv_vars
+                        .iter()
+                        .map(|(uid, typ)| (uid.clone(), coerce_typ_to_native(ctx, typ)))
+                        .collect::<Vec<_>>(),
+                );
+
+                state.types.push_scope(true);
+                for (name, typ) in typ_inv_vars.iter() {
+                    let _ = state.types.insert(name.clone(), typ.clone());
+                }
+                let body = visit_stm(ctx, state, body);
+                state.types.pop_scope();
+                mk_stm(StmX::ClosureInner { body, typ_inv_vars: typ_inv_vars })
+            }
         StmX::Air(_) => stm.clone(),
         StmX::Block(stms) => mk_stm(StmX::Block(visit_stms(ctx, state, stms))),
+        StmX::Await(e, dest) => {
+            let e = visit_exp_poly(ctx, state, e);
+            let dest = {
+                    if let Some(x) = take_temp(state, dest) {
+                        let _ = state.temp_types.insert(x.clone(), dest.dest.typ.clone());
+                        let _ = state.types.insert(x, dest.dest.typ.clone());
+                    }
+                    let dst = visit_exp(ctx, state, &dest.dest);
+                    Dest { dest: dst, is_init: dest.is_init }
+                };
+            mk_stm(StmX::Await(e, dest))
+        },
     }
 }
 

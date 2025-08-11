@@ -2204,6 +2204,12 @@ fn erase_fn_common<'tcx>(
         return;
     }
 
+    if let Some(sig) = sig{
+        if sig.header.asyncness.is_async(){
+            return;
+        }
+    }
+
     let mut path = def_id_to_vir_path(ctxt.tcx, &ctxt.verus_items, id);
 
     if let Some(local_id) = id.as_local() {

@@ -301,8 +301,18 @@ pub fn func_decl_to_sst(
     function: &Function,
 ) -> Result<FuncDeclSst, VirErr> {
     let (pars, reqs) = req_ens_to_sst(ctx, diagnostics, function, &function.x.require, true)?;
+
     let (ens_pars, enss0) =
         req_ens_to_sst(ctx, diagnostics, function, &function.x.ensure.0, false)?;
+
+    if function.x.attrs.is_async{
+        println!("&function.x.ensure.0 {:#?}", &function.x.ensure.0);
+        println!("ens_pars: {:#?}\nenss0: {:#?}", ens_pars, enss0);
+        // let mut new_ensures = vec![];
+        // for ens_expr in function.x.ensure.0.iter(){
+            
+        // }
+    }
     let (_, enss1) = req_ens_to_sst(ctx, diagnostics, function, &function.x.ensure.1, false)?;
 
     let mut inv_masks: Vec<Exps> = Vec::new();
@@ -953,5 +963,10 @@ pub fn function_to_sst(
         recommends_check,
         safe_api_check,
     };
+
+    if functionx.attrs.is_async{
+        // println!("async func sst {:#?}", functionx);
+    }
+
     Ok(function.new_x(functionx))
 }

@@ -197,171 +197,180 @@ pub(crate) trait Visitor<R: Returner, Err, Scope: Scoper> {
             ExpX::ExecFnByName(_) => R::ret(|| exp_new(exp.x.clone())),
             ExpX::FuelConst(_) => R::ret(|| exp_new(exp.x.clone())),
             ExpX::Loc(e1) => {
-                let e1 = self.visit_exp(e1)?;
-                R::ret(|| exp_new(ExpX::Loc(R::get(e1))))
-            }
+                                        let e1 = self.visit_exp(e1)?;
+                                        R::ret(|| exp_new(ExpX::Loc(R::get(e1))))
+                                    }
             ExpX::Old(..) => R::ret(|| exp_new(exp.x.clone())),
             ExpX::Call(fun, ts, es) => {
-                use crate::sst::CallFun;
-                let fun = match fun {
-                    CallFun::Fun(_, None) => R::ret(|| fun.clone()),
-                    CallFun::Fun(f, Some((r, ts))) => {
-                        let ts = self.visit_typs(ts)?;
-                        R::ret(|| CallFun::Fun(f.clone(), Some((r.clone(), R::get_vec_a(ts)))))
-                    }
-                    CallFun::Recursive(..) | CallFun::InternalFun(..) => R::ret(|| fun.clone()),
-                }?;
-                let ts = self.visit_typs(ts)?;
-                let es = self.visit_exps(es)?;
-                R::ret(|| exp_new(ExpX::Call(R::get(fun), R::get_vec_a(ts), R::get_vec_a(es))))
-            }
+                                        use crate::sst::CallFun;
+                                        let fun = match fun {
+                                            CallFun::Fun(_, None) => R::ret(|| fun.clone()),
+                                            CallFun::Fun(f, Some((r, ts))) => {
+                                                let ts = self.visit_typs(ts)?;
+                                                R::ret(|| CallFun::Fun(f.clone(), Some((r.clone(), R::get_vec_a(ts)))))
+                                            }
+                                            CallFun::Recursive(..) | CallFun::InternalFun(..) => R::ret(|| fun.clone()),
+                                        }?;
+                                        let ts = self.visit_typs(ts)?;
+                                        let es = self.visit_exps(es)?;
+                                        R::ret(|| exp_new(ExpX::Call(R::get(fun), R::get_vec_a(ts), R::get_vec_a(es))))
+                                    }
             ExpX::CallLambda(e0, es) => {
-                let e0 = self.visit_exp(e0)?;
-                let es = self.visit_exps(es)?;
-                R::ret(|| exp_new(ExpX::CallLambda(R::get(e0), R::get_vec_a(es))))
-            }
+                                        let e0 = self.visit_exp(e0)?;
+                                        let es = self.visit_exps(es)?;
+                                        R::ret(|| exp_new(ExpX::CallLambda(R::get(e0), R::get_vec_a(es))))
+                                    }
             ExpX::Ctor(path, ident, binders) => {
-                let binders = R::map_vec(binders, &mut |b| self.visit_binder_exp(b))?;
-                R::ret(|| exp_new(ExpX::Ctor(path.clone(), ident.clone(), R::get_vec_a(binders))))
-            }
+                                        let binders = R::map_vec(binders, &mut |b| self.visit_binder_exp(b))?;
+                                        R::ret(|| exp_new(ExpX::Ctor(path.clone(), ident.clone(), R::get_vec_a(binders))))
+                                    }
             ExpX::NullaryOpr(NullaryOpr::ConstGeneric(t)) => {
-                let t = self.visit_typ(t)?;
-                R::ret(|| exp_new(ExpX::NullaryOpr(NullaryOpr::ConstGeneric(R::get(t)))))
-            }
+                                        let t = self.visit_typ(t)?;
+                                        R::ret(|| exp_new(ExpX::NullaryOpr(NullaryOpr::ConstGeneric(R::get(t)))))
+                                    }
             ExpX::NullaryOpr(NullaryOpr::TraitBound(p, ts)) => {
-                let ts = self.visit_typs(ts)?;
-                R::ret(|| {
-                    exp_new(ExpX::NullaryOpr(NullaryOpr::TraitBound(p.clone(), R::get_vec_a(ts))))
-                })
-            }
+                                        let ts = self.visit_typs(ts)?;
+                                        R::ret(|| {
+                                            exp_new(ExpX::NullaryOpr(NullaryOpr::TraitBound(p.clone(), R::get_vec_a(ts))))
+                                        })
+                                    }
             ExpX::NullaryOpr(NullaryOpr::TypEqualityBound(p, ts, x, t)) => {
-                let ts = self.visit_typs(ts)?;
-                let t = self.visit_typ(t)?;
-                R::ret(|| {
-                    exp_new(ExpX::NullaryOpr(NullaryOpr::TypEqualityBound(
-                        p.clone(),
-                        R::get_vec_a(ts),
-                        x.clone(),
-                        R::get(t),
-                    )))
-                })
-            }
+                                        let ts = self.visit_typs(ts)?;
+                                        let t = self.visit_typ(t)?;
+                                        R::ret(|| {
+                                            exp_new(ExpX::NullaryOpr(NullaryOpr::TypEqualityBound(
+                                                p.clone(),
+                                                R::get_vec_a(ts),
+                                                x.clone(),
+                                                R::get(t),
+                                            )))
+                                        })
+                                    }
             ExpX::NullaryOpr(NullaryOpr::ConstTypBound(t1, t2)) => {
-                let t1 = self.visit_typ(t1)?;
-                let t2 = self.visit_typ(t2)?;
-                R::ret(|| {
-                    exp_new(ExpX::NullaryOpr(NullaryOpr::ConstTypBound(R::get(t1), R::get(t2))))
-                })
-            }
+                                        let t1 = self.visit_typ(t1)?;
+                                        let t2 = self.visit_typ(t2)?;
+                                        R::ret(|| {
+                                            exp_new(ExpX::NullaryOpr(NullaryOpr::ConstTypBound(R::get(t1), R::get(t2))))
+                                        })
+                                    }
             ExpX::NullaryOpr(NullaryOpr::NoInferSpecForLoopIter) => {
-                R::ret(|| exp_new(exp.x.clone()))
-            }
+                                        R::ret(|| exp_new(exp.x.clone()))
+                                    }
             ExpX::Unary(op, e1) => {
-                let e1 = self.visit_exp(e1)?;
-                R::ret(|| exp_new(ExpX::Unary(*op, R::get(e1))))
-            }
+                                        let e1 = self.visit_exp(e1)?;
+                                        R::ret(|| exp_new(ExpX::Unary(*op, R::get(e1))))
+                                    }
             ExpX::UnaryOpr(op, e1) => {
-                let e1 = self.visit_exp(e1)?;
-                let op = match op {
-                    UnaryOpr::Box(t) => {
-                        let t = self.visit_typ(t)?;
-                        R::ret(|| UnaryOpr::Box(R::get(t)))
-                    }
-                    UnaryOpr::Unbox(t) => {
-                        let t = self.visit_typ(t)?;
-                        R::ret(|| UnaryOpr::Unbox(R::get(t)))
-                    }
-                    UnaryOpr::HasType(t) => {
-                        let t = self.visit_typ(t)?;
-                        R::ret(|| UnaryOpr::HasType(R::get(t)))
-                    }
-                    UnaryOpr::IsVariant { .. }
-                    | UnaryOpr::Field { .. }
-                    | UnaryOpr::IntegerTypeBound(..)
-                    | UnaryOpr::CustomErr(..) => R::ret(|| op.clone()),
-                }?;
-                R::ret(|| exp_new(ExpX::UnaryOpr(R::get(op), R::get(e1))))
-            }
+                                        let e1 = self.visit_exp(e1)?;
+                                        let op = match op {
+                                            UnaryOpr::Box(t) => {
+                                                let t = self.visit_typ(t)?;
+                                                R::ret(|| UnaryOpr::Box(R::get(t)))
+                                            }
+                                            UnaryOpr::Unbox(t) => {
+                                                let t = self.visit_typ(t)?;
+                                                R::ret(|| UnaryOpr::Unbox(R::get(t)))
+                                            }
+                                            UnaryOpr::HasType(t) => {
+                                                let t = self.visit_typ(t)?;
+                                                R::ret(|| UnaryOpr::HasType(R::get(t)))
+                                            }
+                                            UnaryOpr::IsVariant { .. }
+                                            | UnaryOpr::Field { .. }
+                                            | UnaryOpr::IntegerTypeBound(..)
+                                            | UnaryOpr::CustomErr(..) => R::ret(|| op.clone()),
+                                        }?;
+                                        R::ret(|| exp_new(ExpX::UnaryOpr(R::get(op), R::get(e1))))
+                                    }
             ExpX::Binary(op, e1, e2) => {
-                let e1 = self.visit_exp(e1)?;
-                let e2 = self.visit_exp(e2)?;
-                R::ret(|| exp_new(ExpX::Binary(*op, R::get(e1), R::get(e2))))
-            }
+                                        let e1 = self.visit_exp(e1)?;
+                                        let e2 = self.visit_exp(e2)?;
+                                        R::ret(|| exp_new(ExpX::Binary(*op, R::get(e1), R::get(e2))))
+                                    }
             ExpX::BinaryOpr(BinaryOpr::ExtEq(deep, t), e1, e2) => {
-                let t = self.visit_typ(t)?;
-                let e1 = self.visit_exp(e1)?;
-                let e2 = self.visit_exp(e2)?;
-                R::ret(|| {
-                    exp_new(ExpX::BinaryOpr(
-                        BinaryOpr::ExtEq(*deep, R::get(t)),
-                        R::get(e1),
-                        R::get(e2),
-                    ))
-                })
-            }
+                                        let t = self.visit_typ(t)?;
+                                        let e1 = self.visit_exp(e1)?;
+                                        let e2 = self.visit_exp(e2)?;
+                                        R::ret(|| {
+                                            exp_new(ExpX::BinaryOpr(
+                                                BinaryOpr::ExtEq(*deep, R::get(t)),
+                                                R::get(e1),
+                                                R::get(e2),
+                                            ))
+                                        })
+                                    }
             ExpX::If(e1, e2, e3) => {
-                let e1 = self.visit_exp(e1)?;
-                let e2 = self.visit_exp(e2)?;
-                let e3 = self.visit_exp(e3)?;
-                R::ret(|| exp_new(ExpX::If(R::get(e1), R::get(e2), R::get(e3))))
-            }
+                                        let e1 = self.visit_exp(e1)?;
+                                        let e2 = self.visit_exp(e2)?;
+                                        let e3 = self.visit_exp(e3)?;
+                                        R::ret(|| exp_new(ExpX::If(R::get(e1), R::get(e2), R::get(e3))))
+                                    }
             ExpX::WithTriggers(triggers, body) => {
-                let triggers = self.visit_triggers(triggers)?;
-                let body = self.visit_exp(body)?;
-                R::ret(|| exp_new(ExpX::WithTriggers(R::get(triggers), R::get(body))))
-            }
+                                        let triggers = self.visit_triggers(triggers)?;
+                                        let body = self.visit_exp(body)?;
+                                        R::ret(|| exp_new(ExpX::WithTriggers(R::get(triggers), R::get(body))))
+                                    }
             ExpX::Bind(bnd, e1) => {
-                let bndx = match &bnd.x {
-                    BndX::Let(bs) => {
-                        let binders = R::map_vec(bs, &mut |b| self.visit_var_binder_exp(b))?;
-                        self.push_scope();
-                        for b in R::get_vec_or(&binders, &bs).iter() {
-                            self.insert_binding_exp(b, bnd);
-                        }
-                        R::ret(|| BndX::Let(R::get_vec_a(binders)))?
-                    }
-                    BndX::Quant(quant, bs, ts, ab) => {
-                        let binders = R::map_vec(bs, &mut |b| self.visit_var_binder_typ(b))?;
-                        self.push_scope();
-                        for b in R::get_vec_or(&binders, &bs).iter() {
-                            self.insert_binding_typ(b, bnd);
-                        }
-                        let ts = self.visit_triggers(ts)?;
-                        R::ret(|| {
-                            BndX::Quant(*quant, R::get_vec_a(binders), R::get(ts), ab.clone())
-                        })?
-                    }
-                    BndX::Lambda(bs, ts) => {
-                        let binders = R::map_vec(bs, &mut |b| self.visit_var_binder_typ(b))?;
-                        self.push_scope();
-                        for b in R::get_vec_or(&binders, &bs).iter() {
-                            self.insert_binding_typ(b, bnd);
-                        }
-                        let ts = self.visit_triggers(ts)?;
-                        R::ret(|| BndX::Lambda(R::get_vec_a(binders), R::get(ts)))?
-                    }
-                    BndX::Choose(bs, ts, cond) => {
-                        let binders = R::map_vec(bs, &mut |b| self.visit_var_binder_typ(b))?;
-                        self.push_scope();
-                        for b in R::get_vec_or(&binders, &bs).iter() {
-                            self.insert_binding_typ(b, bnd);
-                        }
-                        let ts = self.visit_triggers(ts)?;
-                        let cond = self.visit_exp(cond)?;
-                        R::ret(|| BndX::Choose(R::get_vec_a(binders), R::get(ts), R::get(cond)))?
-                    }
-                };
-                let e1 = self.visit_exp(e1)?;
-                self.pop_scope();
-                R::ret(|| {
-                    exp_new(ExpX::Bind(Spanned::new(bnd.span.clone(), R::get(bndx)), R::get(e1)))
-                })
-            }
+                                        let bndx = match &bnd.x {
+                                            BndX::Let(bs) => {
+                                                let binders = R::map_vec(bs, &mut |b| self.visit_var_binder_exp(b))?;
+                                                self.push_scope();
+                                                for b in R::get_vec_or(&binders, &bs).iter() {
+                                                    self.insert_binding_exp(b, bnd);
+                                                }
+                                                R::ret(|| BndX::Let(R::get_vec_a(binders)))?
+                                            }
+                                            BndX::Quant(quant, bs, ts, ab) => {
+                                                let binders = R::map_vec(bs, &mut |b| self.visit_var_binder_typ(b))?;
+                                                self.push_scope();
+                                                for b in R::get_vec_or(&binders, &bs).iter() {
+                                                    self.insert_binding_typ(b, bnd);
+                                                }
+                                                let ts = self.visit_triggers(ts)?;
+                                                R::ret(|| {
+                                                    BndX::Quant(*quant, R::get_vec_a(binders), R::get(ts), ab.clone())
+                                                })?
+                                            }
+                                            BndX::Lambda(bs, ts) => {
+                                                let binders = R::map_vec(bs, &mut |b| self.visit_var_binder_typ(b))?;
+                                                self.push_scope();
+                                                for b in R::get_vec_or(&binders, &bs).iter() {
+                                                    self.insert_binding_typ(b, bnd);
+                                                }
+                                                let ts = self.visit_triggers(ts)?;
+                                                R::ret(|| BndX::Lambda(R::get_vec_a(binders), R::get(ts)))?
+                                            }
+                                            BndX::Choose(bs, ts, cond) => {
+                                                let binders = R::map_vec(bs, &mut |b| self.visit_var_binder_typ(b))?;
+                                                self.push_scope();
+                                                for b in R::get_vec_or(&binders, &bs).iter() {
+                                                    self.insert_binding_typ(b, bnd);
+                                                }
+                                                let ts = self.visit_triggers(ts)?;
+                                                let cond = self.visit_exp(cond)?;
+                                                R::ret(|| BndX::Choose(R::get_vec_a(binders), R::get(ts), R::get(cond)))?
+                                            }
+                                        };
+                                        let e1 = self.visit_exp(e1)?;
+                                        self.pop_scope();
+                                        R::ret(|| {
+                                            exp_new(ExpX::Bind(Spanned::new(bnd.span.clone(), R::get(bndx)), R::get(e1)))
+                                        })
+                                    }
             ExpX::ArrayLiteral(es) => {
-                let es = self.visit_exps(es)?;
-                R::ret(|| exp_new(ExpX::ArrayLiteral(R::get_vec_a(es))))
-            }
+                                        let es = self.visit_exps(es)?;
+                                        R::ret(|| exp_new(ExpX::ArrayLiteral(R::get_vec_a(es))))
+                                    }
             ExpX::Interp(_) => R::ret(|| exp_new(exp.x.clone())),
+            ExpX::Await(e) => {
+                                        let e = self.visit_exp(e)?;
+                                        R::ret(|| exp_new(ExpX::Await(R::get(e))))
+                                    },
+            ExpX::Async(spanned_typed) => todo!(),
+            ExpX::FutureView(e) => {
+                let e = self.visit_exp(e)?;
+                R::ret(|| exp_new(ExpX::Await(R::get(e))))
+            },
         }
     }
 
@@ -369,158 +378,163 @@ pub(crate) trait Visitor<R: Returner, Err, Scope: Scoper> {
         let stm_new = |s: StmX| Spanned::new(stm.span.clone(), s);
         match &stm.x {
             StmX::Call {
-                fun,
-                resolved_method,
-                is_trait_default,
-                mode,
-                typ_args,
-                args,
-                split,
-                dest,
-                assert_id,
-            } => {
-                let resolved_method = if let Some((f, ts)) = resolved_method {
-                    let ts = self.visit_typs(ts)?;
-                    R::ret(|| Some((f.clone(), R::get_vec_a(ts))))
-                } else {
-                    R::ret(|| None)
-                }?;
-                let typ_args = self.visit_typs(typ_args)?;
-                let args = self.visit_exps(args)?;
-                let dest = R::map_opt(dest, &mut |d| self.visit_dest(d))?;
-                R::ret(|| {
-                    stm_new(StmX::Call {
-                        fun: fun.clone(),
-                        resolved_method: R::get(resolved_method),
-                        is_trait_default: *is_trait_default,
-                        mode: *mode,
-                        typ_args: R::get_vec_a(typ_args),
-                        args: R::get_vec_a(args),
-                        split: split.clone(),
-                        dest: R::get_opt(dest),
-                        assert_id: assert_id.clone(),
-                    })
-                })
-            }
+                        fun,
+                        resolved_method,
+                        is_trait_default,
+                        mode,
+                        typ_args,
+                        args,
+                        split,
+                        dest,
+                        assert_id,
+                    } => {
+                        let resolved_method = if let Some((f, ts)) = resolved_method {
+                            let ts = self.visit_typs(ts)?;
+                            R::ret(|| Some((f.clone(), R::get_vec_a(ts))))
+                        } else {
+                            R::ret(|| None)
+                        }?;
+                        let typ_args = self.visit_typs(typ_args)?;
+                        let args = self.visit_exps(args)?;
+                        let dest = R::map_opt(dest, &mut |d| self.visit_dest(d))?;
+                        R::ret(|| {
+                            stm_new(StmX::Call {
+                                fun: fun.clone(),
+                                resolved_method: R::get(resolved_method),
+                                is_trait_default: *is_trait_default,
+                                mode: *mode,
+                                typ_args: R::get_vec_a(typ_args),
+                                args: R::get_vec_a(args),
+                                split: split.clone(),
+                                dest: R::get_opt(dest),
+                                assert_id: assert_id.clone(),
+                            })
+                        })
+                    }
             StmX::Assert(assert_id, span2, exp) => {
-                let exp = self.visit_exp(exp)?;
-                R::ret(|| stm_new(StmX::Assert(assert_id.clone(), span2.clone(), R::get(exp))))
-            }
+                        let exp = self.visit_exp(exp)?;
+                        R::ret(|| stm_new(StmX::Assert(assert_id.clone(), span2.clone(), R::get(exp))))
+                    }
             StmX::AssertBitVector { requires, ensures } => {
-                let requires = self.visit_exps(requires)?;
-                let ensures = self.visit_exps(ensures)?;
-                R::ret(|| {
-                    stm_new(StmX::AssertBitVector {
-                        requires: R::get_vec_a(requires),
-                        ensures: R::get_vec_a(ensures),
-                    })
-                })
-            }
+                        let requires = self.visit_exps(requires)?;
+                        let ensures = self.visit_exps(ensures)?;
+                        R::ret(|| {
+                            stm_new(StmX::AssertBitVector {
+                                requires: R::get_vec_a(requires),
+                                ensures: R::get_vec_a(ensures),
+                            })
+                        })
+                    }
             StmX::AssertCompute(assert_id, exp, compute) => {
-                let exp = self.visit_exp(exp)?;
-                R::ret(|| stm_new(StmX::AssertCompute(assert_id.clone(), R::get(exp), *compute)))
-            }
+                        let exp = self.visit_exp(exp)?;
+                        R::ret(|| stm_new(StmX::AssertCompute(assert_id.clone(), R::get(exp), *compute)))
+                    }
             StmX::Assume(exp) => {
-                let exp = self.visit_exp(exp)?;
-                R::ret(|| stm_new(StmX::Assume(R::get(exp))))
-            }
+                        let exp = self.visit_exp(exp)?;
+                        R::ret(|| stm_new(StmX::Assume(R::get(exp))))
+                    }
             StmX::Assign { lhs, rhs } => {
-                let lhs = self.visit_dest(lhs)?;
-                let rhs = self.visit_exp(rhs)?;
-                R::ret(|| stm_new(StmX::Assign { lhs: R::get(lhs), rhs: R::get(rhs) }))
-            }
+                        let lhs = self.visit_dest(lhs)?;
+                        let rhs = self.visit_exp(rhs)?;
+                        R::ret(|| stm_new(StmX::Assign { lhs: R::get(lhs), rhs: R::get(rhs) }))
+                    }
             StmX::Fuel(..) => R::ret(|| stm.clone()),
             StmX::RevealString(_) => R::ret(|| stm.clone()),
             StmX::DeadEnd(stm) => {
-                let s = self.visit_stm(&stm)?;
-                R::ret(|| stm_new(StmX::DeadEnd(R::get(s))))
-            }
+                        let s = self.visit_stm(&stm)?;
+                        R::ret(|| stm_new(StmX::DeadEnd(R::get(s))))
+                    }
             StmX::Return { base_error, ret_exp, inside_body, assert_id } => {
-                let ret_exp = R::map_opt(ret_exp, &mut |e| self.visit_exp(e))?;
-                R::ret(|| {
-                    stm_new(StmX::Return {
-                        base_error: base_error.clone(),
-                        ret_exp: R::get_opt(ret_exp),
-                        inside_body: *inside_body,
-                        assert_id: assert_id.clone(),
-                    })
-                })
-            }
+                        let ret_exp = R::map_opt(ret_exp, &mut |e| self.visit_exp(e))?;
+                        R::ret(|| {
+                            stm_new(StmX::Return {
+                                base_error: base_error.clone(),
+                                ret_exp: R::get_opt(ret_exp),
+                                inside_body: *inside_body,
+                                assert_id: assert_id.clone(),
+                            })
+                        })
+                    }
             StmX::BreakOrContinue { label: _, is_break: _ } => R::ret(|| stm.clone()),
             StmX::If(exp, s1, s2) => {
-                let exp = self.visit_exp(exp)?;
-                let s1 = self.visit_stm(s1)?;
-                let s2 = R::map_opt(s2, &mut |s| self.visit_stm(s))?;
-                R::ret(|| stm_new(StmX::If(R::get(exp), R::get(s1), R::get_opt(s2))))
-            }
+                        let exp = self.visit_exp(exp)?;
+                        let s1 = self.visit_stm(s1)?;
+                        let s2 = R::map_opt(s2, &mut |s| self.visit_stm(s))?;
+                        R::ret(|| stm_new(StmX::If(R::get(exp), R::get(s1), R::get_opt(s2))))
+                    }
             StmX::Loop {
-                loop_isolation,
-                is_for_loop,
-                id,
-                label,
-                cond,
-                body,
-                invs,
-                decrease,
-                typ_inv_vars,
-                modified_vars,
-            } => {
-                let cond = R::map_opt(cond, &mut |(cond_stm, cond_exp)| {
-                    let cond_stm = self.visit_stm(cond_stm)?;
-                    let cond_exp = self.visit_exp(cond_exp)?;
-                    R::ret(|| (R::get(cond_stm), R::get(cond_exp)))
-                })?;
-                let body = self.visit_stm(body)?;
-                let invs = R::map_vec(invs, &mut |inv| self.visit_loop_inv(inv))?;
-                let decrease = self.visit_exps(decrease)?;
-                let typ_inv_vars = self.visit_typ_inv_vars(typ_inv_vars)?;
-                R::ret(|| {
-                    stm_new(StmX::Loop {
-                        loop_isolation: *loop_isolation,
-                        is_for_loop: *is_for_loop,
-                        id: *id,
-                        label: label.clone(),
-                        cond: R::get_opt(cond),
-                        body: R::get(body),
-                        invs: R::get_vec_a(invs),
-                        decrease: R::get_vec_a(decrease),
-                        typ_inv_vars: R::get_vec_a(typ_inv_vars),
-                        modified_vars: modified_vars.clone(),
-                    })
-                })
-            }
+                        loop_isolation,
+                        is_for_loop,
+                        id,
+                        label,
+                        cond,
+                        body,
+                        invs,
+                        decrease,
+                        typ_inv_vars,
+                        modified_vars,
+                    } => {
+                        let cond = R::map_opt(cond, &mut |(cond_stm, cond_exp)| {
+                            let cond_stm = self.visit_stm(cond_stm)?;
+                            let cond_exp = self.visit_exp(cond_exp)?;
+                            R::ret(|| (R::get(cond_stm), R::get(cond_exp)))
+                        })?;
+                        let body = self.visit_stm(body)?;
+                        let invs = R::map_vec(invs, &mut |inv| self.visit_loop_inv(inv))?;
+                        let decrease = self.visit_exps(decrease)?;
+                        let typ_inv_vars = self.visit_typ_inv_vars(typ_inv_vars)?;
+                        R::ret(|| {
+                            stm_new(StmX::Loop {
+                                loop_isolation: *loop_isolation,
+                                is_for_loop: *is_for_loop,
+                                id: *id,
+                                label: label.clone(),
+                                cond: R::get_opt(cond),
+                                body: R::get(body),
+                                invs: R::get_vec_a(invs),
+                                decrease: R::get_vec_a(decrease),
+                                typ_inv_vars: R::get_vec_a(typ_inv_vars),
+                                modified_vars: modified_vars.clone(),
+                            })
+                        })
+                    }
             StmX::OpenInvariant(body) => {
-                let body = self.visit_stm(body)?;
-                R::ret(|| stm_new(StmX::OpenInvariant(R::get(body))))
-            }
+                        let body = self.visit_stm(body)?;
+                        R::ret(|| stm_new(StmX::OpenInvariant(R::get(body))))
+                    }
             StmX::Block(stms) => {
-                let stms = self.visit_stms(stms)?;
-                R::ret(|| stm_new(StmX::Block(R::get_vec_a(stms))))
-            }
+                        let stms = self.visit_stms(stms)?;
+                        R::ret(|| stm_new(StmX::Block(R::get_vec_a(stms))))
+                    }
             StmX::ClosureInner { body, typ_inv_vars } => {
-                let body = self.visit_stm(body)?;
-                let typ_inv_vars = self.visit_typ_inv_vars(typ_inv_vars)?;
-                R::ret(|| {
-                    stm_new(StmX::ClosureInner {
-                        body: R::get(body),
-                        typ_inv_vars: R::get_vec_a(typ_inv_vars),
-                    })
-                })
-            }
+                        let body = self.visit_stm(body)?;
+                        let typ_inv_vars = self.visit_typ_inv_vars(typ_inv_vars)?;
+                        R::ret(|| {
+                            stm_new(StmX::ClosureInner {
+                                body: R::get(body),
+                                typ_inv_vars: R::get_vec_a(typ_inv_vars),
+                            })
+                        })
+                    }
             StmX::AssertQuery { mode, typ_inv_exps, typ_inv_vars, body } => {
-                let typ_inv_exps = self.visit_exps(typ_inv_exps)?;
-                let typ_inv_vars = self.visit_typ_inv_vars(typ_inv_vars)?;
-                let body = self.visit_stm(body)?;
-                R::ret(|| {
-                    stm_new(StmX::AssertQuery {
-                        mode: *mode,
-                        typ_inv_exps: R::get_vec_a(typ_inv_exps),
-                        typ_inv_vars: R::get_vec_a(typ_inv_vars),
-                        body: R::get(body),
-                    })
-                })
-            }
+                        let typ_inv_exps = self.visit_exps(typ_inv_exps)?;
+                        let typ_inv_vars = self.visit_typ_inv_vars(typ_inv_vars)?;
+                        let body = self.visit_stm(body)?;
+                        R::ret(|| {
+                            stm_new(StmX::AssertQuery {
+                                mode: *mode,
+                                typ_inv_exps: R::get_vec_a(typ_inv_exps),
+                                typ_inv_vars: R::get_vec_a(typ_inv_vars),
+                                body: R::get(body),
+                            })
+                        })
+                    }
             StmX::Air(_) => R::ret(|| stm.clone()),
+            StmX::Await(e, dest) => {
+                let e = self.visit_exp(e)?;
+                let dest = self.visit_dest(dest)?;
+                R::ret(|| stm_new(StmX::Await(R::get(e), R::get(dest))))
+            },
         }
     }
 

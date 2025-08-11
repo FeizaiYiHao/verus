@@ -48,87 +48,90 @@ fn insert_auto_ext_equal(ctx: &Ctx, exp: &Exp) -> Exp {
     // with an empty by().)
     match &exp.x {
         ExpX::Unary(op, e) => match op {
-            UnaryOp::Not | UnaryOp::BitNot(_) | UnaryOp::Clip { .. } => exp.clone(),
-            UnaryOp::StrLen | UnaryOp::StrIsAscii => exp.clone(),
-            UnaryOp::InferSpecForLoopIter { .. } => exp.clone(),
-            UnaryOp::Trigger(_)
-            | UnaryOp::CoerceMode { .. }
-            | UnaryOp::MustBeFinalized
-            | UnaryOp::MustBeElaborated
-            | UnaryOp::HeightTrigger
-            | UnaryOp::CastToInteger => exp.new_x(ExpX::Unary(*op, insert_auto_ext_equal(ctx, e))),
-        },
+                                UnaryOp::Not | UnaryOp::BitNot(_) | UnaryOp::Clip { .. } => exp.clone(),
+                                UnaryOp::StrLen | UnaryOp::StrIsAscii => exp.clone(),
+                                UnaryOp::InferSpecForLoopIter { .. } => exp.clone(),
+                                UnaryOp::Trigger(_)
+                                | UnaryOp::CoerceMode { .. }
+                                | UnaryOp::MustBeFinalized
+                                | UnaryOp::MustBeElaborated
+                                | UnaryOp::HeightTrigger
+                                | UnaryOp::CastToInteger => exp.new_x(ExpX::Unary(*op, insert_auto_ext_equal(ctx, e))),
+                    },
         ExpX::UnaryOpr(op, e) => match op {
-            UnaryOpr::HasType(_) | UnaryOpr::IsVariant { .. } => exp.clone(),
-            UnaryOpr::Field(_) => exp.clone(),
-            UnaryOpr::IntegerTypeBound(..) => exp.clone(),
-            UnaryOpr::Box(_) | UnaryOpr::Unbox(_) => panic!("unexpected box"),
-            UnaryOpr::CustomErr(_) => {
-                exp.new_x(ExpX::UnaryOpr(op.clone(), insert_auto_ext_equal(ctx, e)))
-            }
-        },
+                        UnaryOpr::HasType(_) | UnaryOpr::IsVariant { .. } => exp.clone(),
+                        UnaryOpr::Field(_) => exp.clone(),
+                        UnaryOpr::IntegerTypeBound(..) => exp.clone(),
+                        UnaryOpr::Box(_) | UnaryOpr::Unbox(_) => panic!("unexpected box"),
+                        UnaryOpr::CustomErr(_) => {
+                            exp.new_x(ExpX::UnaryOpr(op.clone(), insert_auto_ext_equal(ctx, e)))
+                        }
+                    },
         ExpX::Binary(op, e1, e2) => match op {
-            BinaryOp::Eq(Mode::Spec)
-                if auto_ext_equal_typ(ctx, &e1.typ)
-                    && crate::ast_util::types_equal(&e1.typ, &e2.typ) =>
-            {
-                let op = BinaryOpr::ExtEq(false, e1.typ.clone());
-                exp.new_x(ExpX::BinaryOpr(op, e1.clone(), e2.clone()))
-            }
-            BinaryOp::And | BinaryOp::Or => {
-                let e1 = insert_auto_ext_equal(ctx, e1);
-                let e2 = insert_auto_ext_equal(ctx, e2);
-                exp.new_x(ExpX::Binary(*op, e1, e2))
-            }
-            BinaryOp::Implies => {
-                let e2 = insert_auto_ext_equal(ctx, e2);
-                exp.new_x(ExpX::Binary(*op, e1.clone(), e2))
-            }
-            BinaryOp::Eq(_)
-            | BinaryOp::HeightCompare { .. }
-            | BinaryOp::Ne
-            | BinaryOp::Inequality(_)
-            | BinaryOp::Xor
-            | BinaryOp::Arith(..)
-            | BinaryOp::Bitwise(..)
-            | BinaryOp::StrGetChar
-            | BinaryOp::ArrayIndex => exp.clone(),
-        },
+                        BinaryOp::Eq(Mode::Spec)
+                            if auto_ext_equal_typ(ctx, &e1.typ)
+                                && crate::ast_util::types_equal(&e1.typ, &e2.typ) =>
+                        {
+                            let op = BinaryOpr::ExtEq(false, e1.typ.clone());
+                            exp.new_x(ExpX::BinaryOpr(op, e1.clone(), e2.clone()))
+                        }
+                        BinaryOp::And | BinaryOp::Or => {
+                            let e1 = insert_auto_ext_equal(ctx, e1);
+                            let e2 = insert_auto_ext_equal(ctx, e2);
+                            exp.new_x(ExpX::Binary(*op, e1, e2))
+                        }
+                        BinaryOp::Implies => {
+                            let e2 = insert_auto_ext_equal(ctx, e2);
+                            exp.new_x(ExpX::Binary(*op, e1.clone(), e2))
+                        }
+                        BinaryOp::Eq(_)
+                        | BinaryOp::HeightCompare { .. }
+                        | BinaryOp::Ne
+                        | BinaryOp::Inequality(_)
+                        | BinaryOp::Xor
+                        | BinaryOp::Arith(..)
+                        | BinaryOp::Bitwise(..)
+                        | BinaryOp::StrGetChar
+                        | BinaryOp::ArrayIndex => exp.clone(),
+                    },
         ExpX::BinaryOpr(BinaryOpr::ExtEq(..), _, _) => exp.clone(),
         ExpX::If(e1, e2, e3) => {
-            let e2 = insert_auto_ext_equal(ctx, e2);
-            let e3 = insert_auto_ext_equal(ctx, e3);
-            exp.new_x(ExpX::If(e1.clone(), e2, e3))
-        }
+                        let e2 = insert_auto_ext_equal(ctx, e2);
+                        let e3 = insert_auto_ext_equal(ctx, e3);
+                        exp.new_x(ExpX::If(e1.clone(), e2, e3))
+                    }
         ExpX::WithTriggers(trigs, e) => {
-            let e = insert_auto_ext_equal(ctx, e);
-            exp.new_x(ExpX::WithTriggers(trigs.clone(), e.clone()))
-        }
+                        let e = insert_auto_ext_equal(ctx, e);
+                        exp.new_x(ExpX::WithTriggers(trigs.clone(), e.clone()))
+                    }
         ExpX::Bind(bnd, e) => match &bnd.x {
-            BndX::Let(..) | BndX::Quant(..) => {
-                let e = insert_auto_ext_equal(ctx, e);
-                exp.new_x(ExpX::Bind(bnd.clone(), e))
-            }
-            BndX::Lambda(..) | BndX::Choose(..) => exp.clone(),
-        },
+                        BndX::Let(..) | BndX::Quant(..) => {
+                            let e = insert_auto_ext_equal(ctx, e);
+                            exp.new_x(ExpX::Bind(bnd.clone(), e))
+                        }
+                        BndX::Lambda(..) | BndX::Choose(..) => exp.clone(),
+                    },
         ExpX::ArrayLiteral(es) => {
-            let es = es.iter().map(|e| insert_auto_ext_equal(ctx, e)).collect();
-            exp.new_x(ExpX::ArrayLiteral(Arc::new(es)))
-        }
+                        let es = es.iter().map(|e| insert_auto_ext_equal(ctx, e)).collect();
+                        exp.new_x(ExpX::ArrayLiteral(Arc::new(es)))
+                    }
         ExpX::Const(_)
-        | ExpX::Var(_)
-        | ExpX::StaticVar(_)
-        | ExpX::VarLoc(_)
-        | ExpX::VarAt(..)
-        | ExpX::Loc(_)
-        | ExpX::Old(..)
-        | ExpX::Call(..)
-        | ExpX::CallLambda(..)
-        | ExpX::Ctor(..)
-        | ExpX::NullaryOpr(_)
-        | ExpX::ExecFnByName(_)
-        | ExpX::FuelConst(_)
-        | ExpX::Interp(_) => exp.clone(),
+                    | ExpX::Var(_)
+                    | ExpX::StaticVar(_)
+                    | ExpX::VarLoc(_)
+                    | ExpX::VarAt(..)
+                    | ExpX::Loc(_)
+                    | ExpX::Old(..)
+                    | ExpX::Call(..)
+                    | ExpX::CallLambda(..)
+                    | ExpX::Ctor(..)
+                    | ExpX::NullaryOpr(_)
+                    | ExpX::ExecFnByName(_)
+                    | ExpX::FuelConst(_)
+                    | ExpX::Interp(_) => exp.clone(),
+        ExpX::Await(spanned_typed) => todo!(),
+        ExpX::Async(spanned_typed) => todo!(),
+        ExpX::FutureView(spanned_typed) => todo!(),
     }
 }
 

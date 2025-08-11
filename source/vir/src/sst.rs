@@ -93,6 +93,9 @@ pub enum ExpX {
     // only used internally by the interpreter; should never be seen outside it
     Interp(InterpExp),
     FuelConst(usize),
+    FutureView(Exp),
+    Await(Exp),
+    Async(Exp),
 }
 
 #[derive(Debug, Clone, Copy, ToDebugSNode)]
@@ -208,6 +211,7 @@ pub enum StmX {
     },
     Air(Arc<String>),
     Block(Stms),
+    Await(Exp, Dest),
 }
 
 // poly.rs uses the specific kind of each local to decide on a poly/native type for the local

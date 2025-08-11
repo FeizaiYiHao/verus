@@ -8,6 +8,7 @@
 use crate::def::Spanned;
 use crate::messages::{Message, Span};
 pub use air::ast::{Binder, Binders};
+use im::HashMap;
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -892,6 +893,10 @@ pub enum ExprX {
     NeverToAny(Expr),
     /// nondeterministic choice
     Nondeterministic,
+
+    AsyncBlock{ stmts:Stmts, expr: Option<Expr>, ret_ident: Option<Ident>, ret_typ: Option<Typ>, ensures: Option<Expr>},
+    FutureView(Expr),
+    Await(Expr),
 }
 
 /// Statement, similar to rustc_hir::Stmt
@@ -1034,6 +1039,8 @@ pub struct FunctionAttrsX {
     pub exec_assume_termination: bool,
     /// Whether to allow this function to not terminate
     pub exec_allows_no_decreases_clause: bool,
+    ///
+    pub is_async: bool,
 }
 
 /// Function specification of its invariant mask
@@ -1181,6 +1188,9 @@ pub struct FunctionX {
     /// Extra dependencies, only used for for the purposes of recursion-well-foundedness
     /// Useful only for trusted fns.
     pub extra_dependencies: Vec<Fun>,
+    ///
+    /// 
+    pub async_params_mode_binding: Option<Arc<Vec<(VarIdent, Mode)>>>,
 }
 
 pub type RevealGroup = Arc<Spanned<RevealGroupX>>;

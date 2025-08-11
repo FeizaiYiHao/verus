@@ -1774,6 +1774,8 @@ impl Visitor {
 
         item_fn.block.stmts = stmts;
 
+        println!("assume_specification item_fn {:#?}", item_fn);
+
         Item::Fn(item_fn)
     }
 

@@ -15,7 +15,7 @@ use crate::util::{err_span, vec_map, vec_map_result, vir_err_span_str};
 use crate::verus_items::{
     self, ArithItem, AssertItem, BinaryOpItem, BuiltinFunctionItem, ChainedItem, CompilableOprItem,
     DirectiveItem, EqualityItem, ExprItem, QuantItem, RustItem, SpecArithItem,
-    SpecGhostTrackedItem, SpecItem, SpecLiteralItem, SpecOrdItem, UnaryOpItem, VerusItem,
+    SpecGhostTrackedItem, SpecItem, SpecLiteralItem, SpecOrdItem, UnaryOpItem, VerusItem, VstdItem,
 };
 use crate::{unsupported_err, unsupported_err_unless};
 use air::ast_util::str_ident;
@@ -27,12 +27,10 @@ use rustc_span::Span;
 use rustc_span::def_id::DefId;
 use rustc_span::source_map::Spanned;
 use rustc_trait_selection::infer::InferCtxtExt;
+use std::path;
 use std::sync::Arc;
 use vir::ast::{
-    ArithOp, AssertQueryMode, AutospecUsage, BinaryOp, BitwiseOp, BuiltinSpecFun, CallTarget,
-    ChainedOp, ComputeMode, Constant, ExprX, FieldOpr, FunX, HeaderExpr, HeaderExprX, InequalityOp,
-    IntRange, IntegerTypeBoundKind, Mode, ModeCoercion, MultiOp, Quant, Typ, TypX, UnaryOp,
-    UnaryOpr, VarAt, VarBinder, VarBinderX, VarIdent, VariantCheck, VirErr,
+    ArithOp, AssertQueryMode, AutospecUsage, BinaryOp, BitwiseOp, BuiltinSpecFun, CallTarget, ChainedOp, ComputeMode, Constant, ExprX, FieldOpr, FunX, HeaderExpr, HeaderExprX, InequalityOp, IntRange, IntegerTypeBoundKind, Krate, Mode, ModeCoercion, MultiOp, Quant, Typ, TypX, UnaryOp, UnaryOpr, VarAt, VarBinder, VarBinderX, VarIdent, VariantCheck, VirErr
 };
 use vir::ast_util::{
     const_int_from_string, mk_tuple_typ, mk_tuple_x, typ_to_diagnostic_str, types_equal,
@@ -56,6 +54,9 @@ pub(crate) fn fn_call_to_vir<'tcx>(
 
     let rust_item = verus_items::get_rust_item(tcx, f);
     let verus_item = bctx.ctxt.get_verus_item(f);
+
+    // println!("def id {:#?}", f);
+    // println!("verus item {:#?}", verus_item);
 
     if bctx.external_body
         && !matches!(
@@ -82,7 +83,6 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             ExprX::Block(Arc::new(vec![]), None),
         ));
     }
-
     match rust_item {
         Some(RustItem::BoxNew) if bctx.in_ghost => {
             record_compilable_operator(bctx, expr, CompilableOperator::BoxNew);
@@ -130,9 +130,21 @@ pub(crate) fn fn_call_to_vir<'tcx>(
         }
         _ => {}
     }
-
     if let Some(verus_item) = verus_item {
         match verus_item {
+            VerusItem::Vstd(VstdItem::FutureView, _) => {
+                return verus_item_to_vir(
+                    bctx,
+                    expr,
+                    expr_typ,
+                    verus_item,
+                    &args,
+                    tcx,
+                    node_substs,
+                    f,
+                    outer_modifier,
+                );
+            }
             VerusItem::Vstd(_, _)
             | VerusItem::Marker(_)
             | VerusItem::BuiltinType(_)
@@ -153,6 +165,17 @@ pub(crate) fn fn_call_to_vir<'tcx>(
             }
         }
     }
+
+    let path = def_id_to_vir_path(tcx, &bctx.ctxt.verus_items, f);
+    // match (&path.krate, path.segments.get(0), path.segments.get(1),path.segments.get(2)){
+    //     (Some(krate), Some(seg1), Some(seg2), Some(seg3))
+    //     if **krate == "vstd" && **seg1 == "future" && **seg2 == "FutureAdditionalSpecFns" && **seg3 == "view"=> {
+    //         println!("FutureView Found args: {:#?}", args);
+    //         let arg = mk_one_vir_arg(bctx, expr.span, &args)?;
+    //         return Ok(bctx.spanned_typed_new(expr.span, &expr_typ()?,ExprX::FutureView(arg)));
+    //     },
+    //     _ => {},
+    // }
 
     let f_attrs = bctx.ctxt.tcx.get_attrs_unchecked(f);
     if crate::attributes::is_get_field_many_variants(
@@ -1588,6 +1611,11 @@ fn verus_item_to_vir<'tcx, 'a>(
                 Arc::new(vir_args),
             ));
         }
+        VerusItem::Vstd(VstdItem::FutureView, _) => {
+            println!("FutureView Found");
+            let arg = mk_one_vir_arg(bctx, expr.span, &args)?;
+            mk_expr(ExprX::Await(arg))
+        },
         VerusItem::Vstd(_, _)
         | VerusItem::Marker(_)
         | VerusItem::BuiltinType(_)

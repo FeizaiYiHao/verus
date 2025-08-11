@@ -195,127 +195,130 @@ fn check_trigger_expr(
             ExpX::Const(_) => Ok(()),
             ExpX::StaticVar(_) => Ok(()),
             ExpX::CallLambda(_, args) => {
-                check_trigger_expr_args(state, true, args);
-                Ok(())
-            }
+                                        check_trigger_expr_args(state, true, args);
+                                        Ok(())
+                                    }
             ExpX::Ctor(_, _, bs) => {
-                for b in bs.iter() {
-                    check_trigger_expr_arg(state, true, &b.a);
-                }
-                Ok(())
-            }
+                                        for b in bs.iter() {
+                                            check_trigger_expr_arg(state, true, &b.a);
+                                        }
+                                        Ok(())
+                                    }
             ExpX::ArrayLiteral(_) => {
-                Err(error(&exp.span, "triggers cannot contain array literals"))
-            }
+                                        Err(error(&exp.span, "triggers cannot contain array literals"))
+                                    }
             ExpX::Loc(..) | ExpX::VarLoc(..) => Ok(()),
             ExpX::ExecFnByName(..) => Ok(()),
             ExpX::Call(_, _typs, args) => {
-                check_trigger_expr_args(state, true, args);
-                Ok(())
-            }
+                                        check_trigger_expr_args(state, true, args);
+                                        Ok(())
+                                    }
             ExpX::Var(x) => {
-                if lets.contains(x) {
-                    return Err(error(
-                        &exp.span,
-                        "let variables in triggers not supported, use #![trigger ...] instead",
-                    ));
-                }
-                Ok(())
-            }
+                                        if lets.contains(x) {
+                                            return Err(error(
+                                                &exp.span,
+                                                "let variables in triggers not supported, use #![trigger ...] instead",
+                                            ));
+                                        }
+                                        Ok(())
+                                    }
             ExpX::VarAt(_, VarAt::Pre) => Ok(()),
             ExpX::Old(_, _) => panic!("internal error: Old"),
             ExpX::NullaryOpr(crate::ast::NullaryOpr::ConstGeneric(_typ)) => Ok(()),
             ExpX::NullaryOpr(crate::ast::NullaryOpr::TraitBound(..)) => {
-                Err(error(&exp.span, "triggers cannot contain trait bounds"))
-            }
+                                        Err(error(&exp.span, "triggers cannot contain trait bounds"))
+                                    }
             ExpX::NullaryOpr(crate::ast::NullaryOpr::TypEqualityBound(..)) => {
-                Err(error(&exp.span, "triggers cannot contain trait bounds"))
-            }
+                                        Err(error(&exp.span, "triggers cannot contain trait bounds"))
+                                    }
             ExpX::NullaryOpr(crate::ast::NullaryOpr::ConstTypBound(..)) => {
-                Err(error(&exp.span, "triggers cannot contain const type bounds"))
-            }
+                                        Err(error(&exp.span, "triggers cannot contain const type bounds"))
+                                    }
             ExpX::NullaryOpr(crate::ast::NullaryOpr::NoInferSpecForLoopIter) => {
-                Err(error(&exp.span, "triggers cannot contain loop spec inference"))
-            }
+                                        Err(error(&exp.span, "triggers cannot contain loop spec inference"))
+                                    }
             ExpX::Unary(op, arg) => match op {
-                UnaryOp::StrLen | UnaryOp::StrIsAscii | UnaryOp::BitNot(_) => {
-                    check_trigger_expr_arg(state, true, arg);
-                    Ok(())
-                }
-                UnaryOp::Clip { .. } => {
-                    check_trigger_expr_arg(state, false, arg);
-                    Ok(())
-                }
-                UnaryOp::Trigger(_)
-                | UnaryOp::HeightTrigger
-                | UnaryOp::CoerceMode { .. }
-                | UnaryOp::MustBeFinalized
-                | UnaryOp::MustBeElaborated
-                | UnaryOp::CastToInteger => Ok(()),
-                UnaryOp::InferSpecForLoopIter { .. } => {
-                    Err(error(&exp.span, "triggers cannot contain loop spec inference"))
-                }
-                UnaryOp::Not => Err(error(&exp.span, "triggers cannot contain boolean operators")),
-            },
+                                        UnaryOp::StrLen | UnaryOp::StrIsAscii | UnaryOp::BitNot(_) => {
+                                            check_trigger_expr_arg(state, true, arg);
+                                            Ok(())
+                                        }
+                                        UnaryOp::Clip { .. } => {
+                                            check_trigger_expr_arg(state, false, arg);
+                                            Ok(())
+                                        }
+                                        UnaryOp::Trigger(_)
+                                        | UnaryOp::HeightTrigger
+                                        | UnaryOp::CoerceMode { .. }
+                                        | UnaryOp::MustBeFinalized
+                                        | UnaryOp::MustBeElaborated
+                                        | UnaryOp::CastToInteger => Ok(()),
+                                        UnaryOp::InferSpecForLoopIter { .. } => {
+                                            Err(error(&exp.span, "triggers cannot contain loop spec inference"))
+                                        }
+                                        UnaryOp::Not => Err(error(&exp.span, "triggers cannot contain boolean operators")),
+                                    },
             ExpX::UnaryOpr(op, arg) => match op {
-                UnaryOpr::Box(_) | UnaryOpr::Unbox(_) => panic!("unexpected box"),
-                UnaryOpr::CustomErr(_) => Ok(()),
-                UnaryOpr::IsVariant { .. } | UnaryOpr::Field { .. } => {
-                    check_trigger_expr_arg(state, true, arg);
-                    Ok(())
-                }
-                UnaryOpr::IntegerTypeBound(..) => {
-                    check_trigger_expr_arg(state, false, arg);
-                    Ok(())
-                }
-                UnaryOpr::HasType(_) => panic!("internal error: trigger on HasType"),
-            },
+                                        UnaryOpr::Box(_) | UnaryOpr::Unbox(_) => panic!("unexpected box"),
+                                        UnaryOpr::CustomErr(_) => Ok(()),
+                                        UnaryOpr::IsVariant { .. } | UnaryOpr::Field { .. } => {
+                                            check_trigger_expr_arg(state, true, arg);
+                                            Ok(())
+                                        }
+                                        UnaryOpr::IntegerTypeBound(..) => {
+                                            check_trigger_expr_arg(state, false, arg);
+                                            Ok(())
+                                        }
+                                        UnaryOpr::HasType(_) => panic!("internal error: trigger on HasType"),
+                                    },
             ExpX::Binary(op, arg1, arg2) => {
-                use BinaryOp::*;
-                match op {
-                    And | Or | Xor | Implies | Eq(_) | Ne => {
-                        Err(error(&exp.span, "triggers cannot contain boolean operators"))
-                    }
-                    HeightCompare { .. } => Err(error(
-                        &exp.span,
-                        "triggers cannot contain interior is_smaller_than expressions",
-                    )),
-                    Inequality(_) => Err(error(&exp.span, "triggers cannot contain inequalities")),
-                    StrGetChar | Bitwise(..) => {
-                        check_trigger_expr_arg(state, true, arg1);
-                        check_trigger_expr_arg(state, true, arg2);
-                        Ok(())
-                    }
-                    ArrayIndex => {
-                        check_trigger_expr_arg(state, true, arg1);
-                        check_trigger_expr_arg(state, true, arg2);
-                        Ok(())
-                    }
-                    Arith(..) => {
-                        check_trigger_expr_arg(state, false, arg1);
-                        check_trigger_expr_arg(state, false, arg2);
-                        Ok(())
-                    }
-                }
-            }
+                                        use BinaryOp::*;
+                                        match op {
+                                            And | Or | Xor | Implies | Eq(_) | Ne => {
+                                                Err(error(&exp.span, "triggers cannot contain boolean operators"))
+                                            }
+                                            HeightCompare { .. } => Err(error(
+                                                &exp.span,
+                                                "triggers cannot contain interior is_smaller_than expressions",
+                                            )),
+                                            Inequality(_) => Err(error(&exp.span, "triggers cannot contain inequalities")),
+                                            StrGetChar | Bitwise(..) => {
+                                                check_trigger_expr_arg(state, true, arg1);
+                                                check_trigger_expr_arg(state, true, arg2);
+                                                Ok(())
+                                            }
+                                            ArrayIndex => {
+                                                check_trigger_expr_arg(state, true, arg1);
+                                                check_trigger_expr_arg(state, true, arg2);
+                                                Ok(())
+                                            }
+                                            Arith(..) => {
+                                                check_trigger_expr_arg(state, false, arg1);
+                                                check_trigger_expr_arg(state, false, arg2);
+                                                Ok(())
+                                            }
+                                        }
+                                    }
             ExpX::BinaryOpr(crate::ast::BinaryOpr::ExtEq(_, _typ), arg1, arg2) => {
-                check_trigger_expr_arg(state, true, arg1);
-                check_trigger_expr_arg(state, true, arg2);
-                Ok(())
-            }
+                                        check_trigger_expr_arg(state, true, arg1);
+                                        check_trigger_expr_arg(state, true, arg2);
+                                        Ok(())
+                                    }
             ExpX::If(_, _, _) => Err(error(&exp.span, "triggers cannot contain if/else")),
             ExpX::WithTriggers(..) => {
-                Err(error(&exp.span, "triggers cannot contain #![trigger ...]"))
-            }
+                                        Err(error(&exp.span, "triggers cannot contain #![trigger ...]"))
+                                    }
             ExpX::Bind(_, _) => {
-                Err(error(&exp.span, "triggers cannot contain let/forall/exists/lambda/choose"))
-            }
+                                        Err(error(&exp.span, "triggers cannot contain let/forall/exists/lambda/choose"))
+                                    }
             ExpX::Interp(_) => {
-                panic!("Found an interpreter expression {:?} outside the interpreter", exp)
-            }
+                                        panic!("Found an interpreter expression {:?} outside the interpreter", exp)
+                                    }
             ExpX::FuelConst(_) => {
-                panic!("Found FuelConst expression during trigger selection")
-            }
+                                        panic!("Found FuelConst expression during trigger selection")
+                                    }
+            ExpX::Await(spanned_typed) => todo!(),
+            ExpX::Async(spanned_typed) => todo!(),
+            ExpX::FutureView(spanned_typed) => todo!(),
         },
     )
 }

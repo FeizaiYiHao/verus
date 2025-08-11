@@ -27,7 +27,7 @@ use rustc_hir::def::{CtorKind, DefKind, Res};
 use rustc_hir::{
     AssignOpKind, BinOpKind, Block, Closure, Destination, Expr, ExprKind, HirId, ItemKind, LetExpr,
     LetStmt, Lit, LoopSource, Node, Pat, PatExpr, PatExprKind, PatKind, QPath, Stmt, StmtKind,
-    StructTailExpr, UnOp,
+    StructTailExpr, UnOp, CoroutineSource, CoroutineDesugaring, CoroutineKind, ClosureKind, LangItem
 };
 use rustc_hir::{Attribute, BindingMode, BorrowKind, ByRef, Mutability};
 use rustc_middle::ty::adjustment::{
@@ -559,8 +559,12 @@ pub(crate) fn block_to_vir<'tcx>(
     if block.stmts.len() != 0 {
         modifier = ExprModifier { deref_mut: false, ..modifier };
     }
-    let vir_expr = block.expr.map(|expr| expr_to_vir(bctx, &expr, modifier)).transpose()?;
 
+    // println!("block {:#?}", block);
+
+    let vir_expr = block.expr.map(|expr| expr_to_vir(bctx, &expr, modifier)).transpose()?;
+    // println!("vir_stmts {:#?}", vir_stmts);
+    // println!("vir_expr {:#?}", vir_expr);
     let x = ExprX::Block(Arc::new(vir_stmts), vir_expr);
     Ok(bctx.spanned_typed_new(span.clone(), ty, x))
 }
@@ -1950,6 +1954,29 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     mk_expr(ExprX::If(vir_cond, vir_lhs, vir_rhs))
                 }
             }
+        }ExprKind::Match(Expr{hir_id: _, kind:ExprKind::Call(Expr{hir_id: _, kind: ExprKind::Path(QPath::LangItem(LangItem::IntoFutureIntoFuture, _)), span: _},call_args), span: _}, arms, _match_source) 
+        // if matches!(expr.kind, ExprKind::Call(Expr{hir_id, kind: ExprKind::Path(QPath::LangItem(LangItem::IntoFutureIntoFuture, _)), span},call_args))
+        => {
+            println!("found await, expr awaited on :{:#?}", call_args[0]);
+            let vir_expr = expr_to_vir(bctx, &call_args[0], modifier)?;
+            // let mut vir_arms: Vec<vir::ast::Arm> = Vec::new();
+            // for arm in arms.iter() {
+            //     let pattern = pattern_to_vir(bctx, &arm.pat)?;
+            //     let guard = match &arm.guard {
+            //         None => mk_expr(ExprX::Const(Constant::Bool(true)))?,
+            //         Some(guard_expr) => expr_to_vir(bctx, guard_expr, modifier)?,
+            //     };
+            //     let body = expr_to_vir(bctx, &arm.body, modifier)?;
+            //     let vir_arm = ArmX { pattern, guard, body };
+            //     vir_arms.push(bctx.spanned_new(arm.span, vir_arm));
+            // }
+            // let ret = mk_expr(ExprX::Call(
+            //     CallTarget::Fun(CallTargetKind, Fun, Typs, ImplPaths, AutospecUsage),
+            //     vec![]
+            // ));
+            let ret = mk_expr(ExprX::Await(vir_expr));
+            println!("await expr:{:#?}", ret);
+            ret
         }
         ExprKind::Match(expr, arms, _match_source) => {
             let vir_expr = expr_to_vir(bctx, expr, modifier)?;
@@ -2772,7 +2799,26 @@ pub(crate) fn closure_to_vir<'tcx>(
     proof_fn_modes: Option<(Arc<Vec<Mode>>, Mode)>,
     modifier: ExprModifier,
 ) -> Result<vir::ast::Expr, VirErr> {
-    if let ExprKind::Closure(Closure { fn_decl, body: body_id, .. }) = &closure_expr.kind {
+    if let ExprKind::Closure(Closure { fn_decl, body: body_id, 
+        kind: ClosureKind::Coroutine(CoroutineKind::Desugared(CoroutineDesugaring::Async, CoroutineSource::Fn)), .. }) = &closure_expr.kind {
+        let closure_body = crate::rust_to_vir_func::find_body(&bctx.ctxt, body_id);
+        match closure_body.value.kind{
+            rustc_hir::ExprKind::Block(block, ..) => {
+                let expr = block.expr.expect("async closure expr");
+                match expr.kind{
+                    rustc_hir::ExprKind::DropTemps(expr) => {
+                        println!("async func Coroutine expr {:#?}", expr);
+                        expr_to_vir(&bctx, expr, ExprModifier::REGULAR)
+                    },
+                    _ => {
+                        return  err_span( closure_body.value.span,format!("an `assume_specification` declaration cannot be marked `external_body`"),)
+                    }
+                }
+            }
+            _ => {return  err_span( closure_body.value.span,format!("an `assume_specification` declaration cannot be marked `external_body`"),) }
+        }
+    }
+    else if let ExprKind::Closure(Closure { fn_decl, body: body_id, .. }) = &closure_expr.kind {
         unsupported_err_unless!(!fn_decl.c_variadic, closure_expr.span, "c_variadic");
         unsupported_err_unless!(
             matches!(fn_decl.implicit_self, rustc_hir::ImplicitSelfKind::None),

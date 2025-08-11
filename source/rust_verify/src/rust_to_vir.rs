@@ -180,6 +180,20 @@ fn check_item<'tcx>(
 
     match &item.kind {
         ItemKind::Fn { sig, generics, body: body_id, .. } => {
+
+
+            let body = crate::rust_to_vir_func::find_body(ctxt, body_id);
+
+            match body.value.kind {
+                rustc_hir::ExprKind::Closure(cls) => {
+                    let closure_body = crate::rust_to_vir_func::find_body(ctxt, &cls.body);
+                    // println!("sig {:#?}", sig);
+                    // println!("body_hir {:#?}", body);
+                    // println!("Closure body_hirs {:#?}", closure_body);
+                },
+                _ => {},
+            }
+
             check_item_fn(
                 ctxt,
                 &mut vir.functions,

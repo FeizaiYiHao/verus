@@ -507,9 +507,9 @@ fn hash_exp<H: Hasher>(state: &mut H, exp: &Exp) {
         Old(id, uid) => dohash!(5, id, uid),
         Call(fun, typs, exps) => dohash!(6, fun, typs; hash_exps(exps)),
         CallLambda(lambda, args) => {
-            dohash!(7; hash_exp(lambda));
-            hash_iter(state, args.iter().enumerate(), hash_exp);
-        }
+                                dohash!(7; hash_exp(lambda));
+                                hash_iter(state, args.iter().enumerate(), hash_exp);
+                    }
         Ctor(path, id, bnds) => dohash!(8, path, id; hash_binders_exp(bnds)),
         NullaryOpr(op) => dohash!(-1, op),
         Unary(op, e) => dohash!(9, op; hash_exp(e)),
@@ -520,22 +520,25 @@ fn hash_exp<H: Hasher>(state: &mut H, exp: &Exp) {
         WithTriggers(trigs, e) => dohash!(13; hash_trigs(trigs), hash_exp(e)),
         Bind(bnd, e) => dohash!(14; hash_bnd(bnd), hash_exp(e)),
         Interp(e) => {
-            dohash!(15);
-            match e {
-                InterpExp::FreeVar(id) => dohash!(0, id),
-                InterpExp::Seq(exps) => dohash!(1; hash_exps_vector(exps)),
-                InterpExp::Closure(e, _ctx) => dohash!(2; hash_exp(e)),
-                InterpExp::Array(exps) => dohash!(3; hash_exps_vector(exps)),
-            }
-        }
+                        dohash!(15);
+                        match e {
+                            InterpExp::FreeVar(id) => dohash!(0, id),
+                            InterpExp::Seq(exps) => dohash!(1; hash_exps_vector(exps)),
+                            InterpExp::Closure(e, _ctx) => dohash!(2; hash_exp(e)),
+                            InterpExp::Array(exps) => dohash!(3; hash_exps_vector(exps)),
+                        }
+                    }
         StaticVar(f) => dohash!(16, f),
         ExecFnByName(fun) => {
-            dohash!(17, fun);
-        }
+                        dohash!(17, fun);
+                    }
         ArrayLiteral(es) => dohash!(18; hash_exps(es)),
         FuelConst(i) => {
-            dohash!(19, i);
-        }
+                        dohash!(19, i);
+                    }
+        Await(spanned_typed) => todo!(),
+        Async(spanned_typed) => todo!(),
+        FutureView(spanned_typed) => todo!(),
     }
 }
 
@@ -1079,662 +1082,664 @@ fn eval_expr_internal(ctx: &Ctx, state: &mut State, exp: &Exp) -> Result<Exp, Vi
     let r = match &exp.x {
         Const(_) => ok,
         Var(id) => match state.env.get(id) {
-            None => {
-                state.log(format!("Failed to find a match for variable {:?}", id));
-                // "Hide" the variable, so that we don't accidentally
-                // mix free and bound variables while interpreting
-                exp_new(Interp(InterpExp::FreeVar(id.clone())))
-            }
-            Some(e) => Ok(e.clone()),
-        },
-        NullaryOpr(op) => {
-            match op {
-                crate::ast::NullaryOpr::ConstGeneric(typ) => {
-                    match &**typ {
-                        TypX::TypParam(id) => {
-                            let var_id = VarIdent(id.clone(), VarIdentDisambiguate::TypParamBare);
-                            match state.env.get(&var_id) {
                                 None => {
-                                    state.log(format!(
-                                        "Failed to find a match for const generic {:?}",
-                                        var_id
-                                    ));
+                                    state.log(format!("Failed to find a match for variable {:?}", id));
                                     // "Hide" the variable, so that we don't accidentally
                                     // mix free and bound variables while interpreting
-                                    exp_new(Interp(InterpExp::FreeVar(var_id.clone())))
+                                    exp_new(Interp(InterpExp::FreeVar(id.clone())))
                                 }
                                 Some(e) => Ok(e.clone()),
-                            }
-                        }
-                        _ => ok,
-                    }
-                }
-                _ => ok,
-            }
-        }
-        Unary(op, e) => {
-            use Constant::*;
-            use UnaryOp::*;
-            let e = eval_expr_internal(ctx, state, e)?;
-            let ok = exp_new(Unary(*op, e.clone()));
-            match &e.x {
-                Const(Bool(b)) => {
-                    // Explicitly enumerate UnaryOps, in case more are added
-                    match op {
-                        Not => bool_new(!b),
-                        BitNot(..)
-                        | Clip { .. }
-                        | HeightTrigger
-                        | Trigger(_)
-                        | CoerceMode { .. }
-                        | StrLen
-                        | StrIsAscii
-                        | InferSpecForLoopIter { .. } => ok,
-                        MustBeFinalized | UnaryOp::MustBeElaborated => {
-                            panic!("Found MustBeFinalized op {:?} after calling finalize_exp", exp)
-                        }
-                        CastToInteger => {
-                            panic!("CastToInteger should have been removed by poly!")
-                        }
-                    }
-                }
-                Const(Int(i)) => {
-                    // Explicitly enumerate UnaryOps, in case more are added
-                    match op {
-                        BitNot(None) => match i.to_i128() {
-                            Some(i) => int_new(BigInt::from_i128(!i).unwrap()),
-                            None => ok,
-                        },
-                        BitNot(Some(w)) => match i.to_u128() {
-                            Some(i) => match u128_to_width(!i, *w, ctx.arch) {
-                                Some(i) => int_new(i),
-                                None => ok,
-                            },
-                            None => ok,
-                        },
-                        Clip { range, truncate: _ } => {
-                            let in_range =
-                                |lower: BigInt, upper: BigInt| !(i < &lower || i > &upper);
-                            let mut apply_range = |lower: BigInt, upper: BigInt| {
-                                if !in_range(lower, upper) {
-                                    let msg =
-                                        "Computation clipped an integer that was out of range";
-                                    state.msgs.push(warning(&exp.span, msg));
-                                    ok.clone()
-                                } else {
-                                    // Use the type of clip, not the inner expression,
-                                    // to reflect the type change imposed by clip
-                                    Ok(SpannedTyped::new(&e.span, &exp.typ, e.x.clone()))
-                                }
-                            };
-                            let apply_unicode_scalar_range = |state: &mut State| {
-                                if !valid_unicode_scalar_bigint(i) {
-                                    let msg =
-                                        "Computation clipped an integer that was out of range";
-                                    state.msgs.push(warning(&exp.span, msg));
-                                    ok.clone()
-                                } else {
-                                    // Use the type of clip, not the inner expression,
-                                    // to reflect the type change imposed by clip
-                                    Ok(SpannedTyped::new(&e.span, &exp.typ, e.x.clone()))
-                                }
-                            };
-                            match range {
-                                IntRange::Int => ok,
-                                IntRange::Nat => apply_range(BigInt::zero(), i.clone()),
-                                IntRange::Char => apply_unicode_scalar_range(state),
-                                IntRange::U(n) => {
-                                    let u = apply_range(
-                                        BigInt::zero(),
-                                        (BigInt::one() << n) - BigInt::one(),
-                                    );
-                                    u
-                                }
-                                IntRange::I(n) => apply_range(
-                                    -1 * (BigInt::one() << (n - 1)),
-                                    (BigInt::one() << (n - 1)) - BigInt::one(),
-                                ),
-                                IntRange::USize => {
-                                    let lower = BigInt::zero();
-                                    let upper = |n| (BigInt::one() << n) - BigInt::one();
-                                    match ctx.arch {
-                                        ArchWordBits::Either32Or64 => {
-                                            if in_range(lower.clone(), upper(32)) {
-                                                // then must be in range of 64 too
-                                                apply_range(lower, upper(32))
-                                            } else {
-                                                // may or may not be in range of 64, we must conservatively give up.
-                                                state.msgs.push(warning(&exp.span, "Computation clipped an arch-dependent integer that was out of range"));
-                                                ok.clone()
+                    },
+        NullaryOpr(op) => {
+                        match op {
+                            crate::ast::NullaryOpr::ConstGeneric(typ) => {
+                                match &**typ {
+                                    TypX::TypParam(id) => {
+                                        let var_id = VarIdent(id.clone(), VarIdentDisambiguate::TypParamBare);
+                                        match state.env.get(&var_id) {
+                                            None => {
+                                                state.log(format!(
+                                                    "Failed to find a match for const generic {:?}",
+                                                    var_id
+                                                ));
+                                                // "Hide" the variable, so that we don't accidentally
+                                                // mix free and bound variables while interpreting
+                                                exp_new(Interp(InterpExp::FreeVar(var_id.clone())))
                                             }
+                                            Some(e) => Ok(e.clone()),
                                         }
-                                        ArchWordBits::Exactly(n) => apply_range(lower, upper(n)),
-                                    }
-                                }
-                                IntRange::ISize => {
-                                    let lower = |n| -1 * (BigInt::one() << (n - 1));
-                                    let upper = |n| (BigInt::one() << (n - 1)) - BigInt::one();
-                                    match ctx.arch {
-                                        ArchWordBits::Either32Or64 => {
-                                            if in_range(lower(32), upper(32)) {
-                                                // then must be in range of 64 too
-                                                apply_range(lower(32), upper(32))
-                                            } else {
-                                                // may or may not be in range of 64, we must conservatively give up.
-                                                state.msgs.push(warning(&exp.span, "Computation clipped an arch-dependent integer that was out of range"));
-                                                ok.clone()
-                                            }
-                                        }
-                                        ArchWordBits::Exactly(n) => apply_range(lower(n), upper(n)),
-                                    }
-                                }
-                            }
-                        }
-                        MustBeFinalized | UnaryOp::MustBeElaborated => {
-                            panic!("Found MustBeFinalized op {:?} after calling finalize_exp", exp)
-                        }
-                        CastToInteger => {
-                            panic!("CastToInteger should have been removed by poly!")
-                        }
-                        Not
-                        | HeightTrigger
-                        | Trigger(_)
-                        | CoerceMode { .. }
-                        | StrLen
-                        | StrIsAscii
-                        | InferSpecForLoopIter { .. } => ok,
-                    }
-                }
-                // !(!(e_inner)) == e_inner
-                Unary(Not, e_inner) if matches!(op, Not) => Ok(e_inner.clone()),
-                _ => ok,
-            }
-        }
-        UnaryOpr(op, e) => {
-            let e = eval_expr_internal(ctx, state, e)?;
-            let ok = exp_new(UnaryOpr(op.clone(), e.clone()));
-            use crate::ast::UnaryOpr::*;
-            match op {
-                Box(_) | Unbox(_) => {
-                    panic!("Box/Unbox are added later; we shouldn't see them here")
-                }
-                HasType(_) => ok,
-                IsVariant { datatype, variant } => match &e.x {
-                    Ctor(dt, var, _) => bool_new(dt == datatype && var == variant),
-                    _ => ok,
-                },
-                Field(f) => match &e.x {
-                    Ctor(_dt, _var, binders) => {
-                        match binders.iter().position(|b| b.name == f.field) {
-                            None => ok,
-                            Some(i) => Ok(binders.get(i).unwrap().a.clone()),
-                        }
-                    }
-                    _ => ok,
-                },
-                IntegerTypeBound(kind, _) => {
-                    // We're about to take an exponent, so bound this
-                    // by something reasonable.
-                    match &e.x {
-                        Const(Constant::Int(i)) => match i.to_u32() {
-                            Some(i) if i <= 1024 => match kind {
-                                IntegerTypeBoundKind::ArchWordBits => match ctx.arch {
-                                    ArchWordBits::Exactly(b) => {
-                                        int_new(BigInt::from_u32(b).unwrap())
                                     }
                                     _ => ok,
-                                },
-                                _ if i == 0 => int_new(BigInt::from_usize(0).unwrap()),
-                                IntegerTypeBoundKind::UnsignedMax => {
-                                    int_new(BigInt::from_usize(2).unwrap().pow(i) - 1)
                                 }
-                                IntegerTypeBoundKind::SignedMax => {
-                                    int_new(BigInt::from_usize(2).unwrap().pow(i - 1) - 1)
-                                }
-                                IntegerTypeBoundKind::SignedMin => {
-                                    int_new(-BigInt::from_usize(2).unwrap().pow(i - 1))
-                                }
-                            },
+                            }
                             _ => ok,
-                        },
-                        _ => ok,
-                    }
-                }
-                CustomErr(_) => Ok(e),
-            }
-        }
-        Binary(op, e1, e2) => {
-            use BinaryOp::*;
-            use Constant::*;
-            // We initially evaluate only e1, since op may short circuit
-            // e.g., x != 0 && y == 5 / x
-            let e1 = eval_expr_internal(ctx, state, e1)?;
-            // Create the default value with a possibly updated value for e2
-            let ok_e2 = |e2: Exp| exp_new(Binary(*op, e1.clone(), e2.clone()));
-            match op {
-                And => match &e1.x {
-                    Const(Bool(true)) => eval_expr_internal(ctx, state, e2),
-                    Const(Bool(false)) => bool_new(false),
-                    _ => {
-                        let e2 = eval_expr_internal(ctx, state, e2)?;
-                        match &e2.x {
-                            Const(Bool(true)) => Ok(e1.clone()),
-                            Const(Bool(false)) => bool_new(false),
-                            _ => ok_e2(e2),
                         }
                     }
-                },
-                Or => match &e1.x {
-                    Const(Bool(true)) => bool_new(true),
-                    Const(Bool(false)) => eval_expr_internal(ctx, state, e2),
-                    _ => {
-                        let e2 = eval_expr_internal(ctx, state, e2)?;
-                        match &e2.x {
-                            Const(Bool(true)) => bool_new(true),
-                            Const(Bool(false)) => Ok(e1.clone()),
-                            _ => ok_e2(e2),
-                        }
-                    }
-                },
-                Xor => {
-                    let e2 = eval_expr_internal(ctx, state, e2)?;
-                    match (&e1.x, &e2.x) {
-                        (Const(Bool(b1)), Const(Bool(b2))) => {
-                            let r = (*b1 && !b2) || (!b1 && *b2);
-                            bool_new(r)
-                        }
-                        (Const(Bool(true)), _) => exp_new(Unary(UnaryOp::Not, e2.clone())),
-                        (Const(Bool(false)), _) => Ok(e2.clone()),
-                        (_, Const(Bool(true))) => exp_new(Unary(UnaryOp::Not, e1.clone())),
-                        (_, Const(Bool(false))) => Ok(e1.clone()),
-                        _ => ok_e2(e2),
-                    }
-                }
-                Implies => {
-                    match &e1.x {
-                        Const(Bool(true)) => eval_expr_internal(ctx, state, e2),
-                        Const(Bool(false)) => bool_new(true),
-                        _ => {
-                            let e2 = eval_expr_internal(ctx, state, e2)?;
-                            match &e2.x {
-                                Const(Bool(true)) => bool_new(false),
-                                Const(Bool(false)) =>
-                                // Recurse in case we can simplify the new negation
-                                {
-                                    eval_expr_internal(
-                                        ctx,
-                                        state,
-                                        &exp_new(Unary(UnaryOp::Not, e1.clone()))?,
-                                    )
-                                }
-                                _ => ok_e2(e2),
-                            }
-                        }
-                    }
-                }
-                Eq(_mode) => {
-                    let e2 = eval_expr_internal(ctx, state, e2)?;
-                    match e1.syntactic_eq(&e2) {
-                        None => ok_e2(e2),
-                        Some(b) => bool_new(b),
-                    }
-                }
-                Ne => {
-                    let e2 = eval_expr_internal(ctx, state, e2)?;
-                    match e1.syntactic_eq(&e2) {
-                        None => ok_e2(e2),
-                        Some(b) => bool_new(!b),
-                    }
-                }
-                Inequality(op) => {
-                    let e2 = eval_expr_internal(ctx, state, e2)?;
-                    match (&e1.x, &e2.x) {
-                        (Const(Int(i1)), Const(Int(i2))) => {
-                            use InequalityOp::*;
-                            let b = match op {
-                                Le => i1 <= i2,
-                                Ge => i1 >= i2,
-                                Lt => i1 < i2,
-                                Gt => i1 > i2,
-                            };
-                            bool_new(b)
-                        }
-                        _ => ok_e2(e2),
-                    }
-                }
-                Arith(op, _mode) => {
-                    let e2 = eval_expr_internal(ctx, state, e2)?;
-                    use ArithOp::*;
-                    match (&e1.x, &e2.x) {
-                        // Ideal case where both sides are concrete
-                        (Const(Int(i1)), Const(Int(i2))) => {
-                            use ArithOp::*;
-                            match op {
-                                Add => int_new(i1 + i2),
-                                Sub => int_new(i1 - i2),
-                                Mul => int_new(i1 * i2),
-                                EuclideanDiv => {
-                                    if i2.is_zero() {
-                                        ok_e2(e2) // Treat as symbolic instead of erroring
-                                    } else {
-                                        int_new(i1.div_euclid(i2))
+        Unary(op, e) => {
+                        use Constant::*;
+                        use UnaryOp::*;
+                        let e = eval_expr_internal(ctx, state, e)?;
+                        let ok = exp_new(Unary(*op, e.clone()));
+                        match &e.x {
+                            Const(Bool(b)) => {
+                                // Explicitly enumerate UnaryOps, in case more are added
+                                match op {
+                                    Not => bool_new(!b),
+                                    BitNot(..)
+                                    | Clip { .. }
+                                    | HeightTrigger
+                                    | Trigger(_)
+                                    | CoerceMode { .. }
+                                    | StrLen
+                                    | StrIsAscii
+                                    | InferSpecForLoopIter { .. } => ok,
+                                    MustBeFinalized | UnaryOp::MustBeElaborated => {
+                                        panic!("Found MustBeFinalized op {:?} after calling finalize_exp", exp)
                                     }
-                                }
-                                EuclideanMod => {
-                                    if i2.is_zero() {
-                                        ok_e2(e2) // Treat as symbolic instead of erroring
-                                    } else {
-                                        int_new(i1.rem_euclid(i2))
+                                    CastToInteger => {
+                                        panic!("CastToInteger should have been removed by poly!")
                                     }
                                 }
                             }
-                        }
-                        // Special cases for certain concrete values
-                        (Const(Int(i1)), _) if i1.is_zero() && matches!(op, Add) => Ok(e2.clone()),
-                        (Const(Int(i1)), _) if i1.is_zero() && matches!(op, Mul) => zero,
-                        (Const(Int(i1)), _) if i1.is_one() && matches!(op, Mul) => Ok(e2.clone()),
-                        (_, Const(Int(i2))) if i2.is_zero() => {
-                            use ArithOp::*;
-                            match op {
-                                Add | Sub => Ok(e1.clone()),
-                                Mul => zero,
-                                EuclideanDiv => {
-                                    ok_e2(e2) // Treat as symbolic instead of erroring
-                                }
-                                EuclideanMod => {
-                                    ok_e2(e2) // Treat as symbolic instead of erroring
+                            Const(Int(i)) => {
+                                // Explicitly enumerate UnaryOps, in case more are added
+                                match op {
+                                    BitNot(None) => match i.to_i128() {
+                                        Some(i) => int_new(BigInt::from_i128(!i).unwrap()),
+                                        None => ok,
+                                    },
+                                    BitNot(Some(w)) => match i.to_u128() {
+                                        Some(i) => match u128_to_width(!i, *w, ctx.arch) {
+                                            Some(i) => int_new(i),
+                                            None => ok,
+                                        },
+                                        None => ok,
+                                    },
+                                    Clip { range, truncate: _ } => {
+                                        let in_range =
+                                            |lower: BigInt, upper: BigInt| !(i < &lower || i > &upper);
+                                        let mut apply_range = |lower: BigInt, upper: BigInt| {
+                                            if !in_range(lower, upper) {
+                                                let msg =
+                                                    "Computation clipped an integer that was out of range";
+                                                state.msgs.push(warning(&exp.span, msg));
+                                                ok.clone()
+                                            } else {
+                                                // Use the type of clip, not the inner expression,
+                                                // to reflect the type change imposed by clip
+                                                Ok(SpannedTyped::new(&e.span, &exp.typ, e.x.clone()))
+                                            }
+                                        };
+                                        let apply_unicode_scalar_range = |state: &mut State| {
+                                            if !valid_unicode_scalar_bigint(i) {
+                                                let msg =
+                                                    "Computation clipped an integer that was out of range";
+                                                state.msgs.push(warning(&exp.span, msg));
+                                                ok.clone()
+                                            } else {
+                                                // Use the type of clip, not the inner expression,
+                                                // to reflect the type change imposed by clip
+                                                Ok(SpannedTyped::new(&e.span, &exp.typ, e.x.clone()))
+                                            }
+                                        };
+                                        match range {
+                                            IntRange::Int => ok,
+                                            IntRange::Nat => apply_range(BigInt::zero(), i.clone()),
+                                            IntRange::Char => apply_unicode_scalar_range(state),
+                                            IntRange::U(n) => {
+                                                let u = apply_range(
+                                                    BigInt::zero(),
+                                                    (BigInt::one() << n) - BigInt::one(),
+                                                );
+                                                u
+                                            }
+                                            IntRange::I(n) => apply_range(
+                                                -1 * (BigInt::one() << (n - 1)),
+                                                (BigInt::one() << (n - 1)) - BigInt::one(),
+                                            ),
+                                            IntRange::USize => {
+                                                let lower = BigInt::zero();
+                                                let upper = |n| (BigInt::one() << n) - BigInt::one();
+                                                match ctx.arch {
+                                                    ArchWordBits::Either32Or64 => {
+                                                        if in_range(lower.clone(), upper(32)) {
+                                                            // then must be in range of 64 too
+                                                            apply_range(lower, upper(32))
+                                                        } else {
+                                                            // may or may not be in range of 64, we must conservatively give up.
+                                                            state.msgs.push(warning(&exp.span, "Computation clipped an arch-dependent integer that was out of range"));
+                                                            ok.clone()
+                                                        }
+                                                    }
+                                                    ArchWordBits::Exactly(n) => apply_range(lower, upper(n)),
+                                                }
+                                            }
+                                            IntRange::ISize => {
+                                                let lower = |n| -1 * (BigInt::one() << (n - 1));
+                                                let upper = |n| (BigInt::one() << (n - 1)) - BigInt::one();
+                                                match ctx.arch {
+                                                    ArchWordBits::Either32Or64 => {
+                                                        if in_range(lower(32), upper(32)) {
+                                                            // then must be in range of 64 too
+                                                            apply_range(lower(32), upper(32))
+                                                        } else {
+                                                            // may or may not be in range of 64, we must conservatively give up.
+                                                            state.msgs.push(warning(&exp.span, "Computation clipped an arch-dependent integer that was out of range"));
+                                                            ok.clone()
+                                                        }
+                                                    }
+                                                    ArchWordBits::Exactly(n) => apply_range(lower(n), upper(n)),
+                                                }
+                                            }
+                                        }
+                                    }
+                                    MustBeFinalized | UnaryOp::MustBeElaborated => {
+                                        panic!("Found MustBeFinalized op {:?} after calling finalize_exp", exp)
+                                    }
+                                    CastToInteger => {
+                                        panic!("CastToInteger should have been removed by poly!")
+                                    }
+                                    Not
+                                    | HeightTrigger
+                                    | Trigger(_)
+                                    | CoerceMode { .. }
+                                    | StrLen
+                                    | StrIsAscii
+                                    | InferSpecForLoopIter { .. } => ok,
                                 }
                             }
-                        }
-                        (_, Const(Int(i2))) if i2.is_one() && matches!(op, EuclideanMod) => {
-                            int_new(BigInt::zero())
-                        }
-                        (_, Const(Int(i2))) if i2.is_one() && matches!(op, Mul | EuclideanDiv) => {
-                            Ok(e1.clone())
-                        }
-                        _ => {
-                            match op {
-                                // X - X => 0
-                                ArithOp::Sub if e1.definitely_eq(&e2) => zero,
-                                _ => ok_e2(e2),
-                            }
+                            // !(!(e_inner)) == e_inner
+                            Unary(Not, e_inner) if matches!(op, Not) => Ok(e_inner.clone()),
+                            _ => ok,
                         }
                     }
-                }
-                Bitwise(op, _) => {
-                    use BitwiseOp::*;
-                    let e2 = eval_expr_internal(ctx, state, e2)?;
-                    match (&e1.x, &e2.x) {
-                        // Ideal case where both sides are concrete
-                        (Const(Int(i1)), Const(Int(i2))) => match op {
-                            BitXor => int_new(i1 ^ i2),
-                            BitAnd => int_new(i1 & i2),
-                            BitOr => int_new(i1 | i2),
-                            Shr(_) => match i2.to_u128() {
-                                None => ok,
-                                Some(i2) => int_new(i1 >> i2),
+        UnaryOpr(op, e) => {
+                        let e = eval_expr_internal(ctx, state, e)?;
+                        let ok = exp_new(UnaryOpr(op.clone(), e.clone()));
+                        use crate::ast::UnaryOpr::*;
+                        match op {
+                            Box(_) | Unbox(_) => {
+                                panic!("Box/Unbox are added later; we shouldn't see them here")
+                            }
+                            HasType(_) => ok,
+                            IsVariant { datatype, variant } => match &e.x {
+                                Ctor(dt, var, _) => bool_new(dt == datatype && var == variant),
+                                _ => ok,
                             },
-                            Shl(w, signed) => {
-                                if *signed {
-                                    match (i1.to_i128(), i2.to_u128()) {
-                                        (Some(i1), Some(i2)) => {
-                                            let i1_shifted =
-                                                if i2 >= 128 { 0i128 } else { i1 << i2 };
-                                            match i128_to_width(i1_shifted, *w, ctx.arch) {
-                                                Some(i) => int_new(i),
-                                                None => ok,
-                                            }
-                                        }
-                                        _ => ok,
+                            Field(f) => match &e.x {
+                                Ctor(_dt, _var, binders) => {
+                                    match binders.iter().position(|b| b.name == f.field) {
+                                        None => ok,
+                                        Some(i) => Ok(binders.get(i).unwrap().a.clone()),
                                     }
-                                } else {
-                                    match (i1.to_u128(), i2.to_u128()) {
-                                        (Some(i1), Some(i2)) => {
-                                            let i1_shifted =
-                                                if i2 >= 128 { 0u128 } else { i1 << i2 };
-                                            match u128_to_width(i1_shifted, *w, ctx.arch) {
-                                                Some(i) => int_new(i),
-                                                None => ok,
+                                }
+                                _ => ok,
+                            },
+                            IntegerTypeBound(kind, _) => {
+                                // We're about to take an exponent, so bound this
+                                // by something reasonable.
+                                match &e.x {
+                                    Const(Constant::Int(i)) => match i.to_u32() {
+                                        Some(i) if i <= 1024 => match kind {
+                                            IntegerTypeBoundKind::ArchWordBits => match ctx.arch {
+                                                ArchWordBits::Exactly(b) => {
+                                                    int_new(BigInt::from_u32(b).unwrap())
+                                                }
+                                                _ => ok,
+                                            },
+                                            _ if i == 0 => int_new(BigInt::from_usize(0).unwrap()),
+                                            IntegerTypeBoundKind::UnsignedMax => {
+                                                int_new(BigInt::from_usize(2).unwrap().pow(i) - 1)
                                             }
-                                        }
+                                            IntegerTypeBoundKind::SignedMax => {
+                                                int_new(BigInt::from_usize(2).unwrap().pow(i - 1) - 1)
+                                            }
+                                            IntegerTypeBoundKind::SignedMin => {
+                                                int_new(-BigInt::from_usize(2).unwrap().pow(i - 1))
+                                            }
+                                        },
                                         _ => ok,
+                                    },
+                                    _ => ok,
+                                }
+                            }
+                            CustomErr(_) => Ok(e),
+                        }
+                    }
+        Binary(op, e1, e2) => {
+                        use BinaryOp::*;
+                        use Constant::*;
+                        // We initially evaluate only e1, since op may short circuit
+                        // e.g., x != 0 && y == 5 / x
+                        let e1 = eval_expr_internal(ctx, state, e1)?;
+                        // Create the default value with a possibly updated value for e2
+                        let ok_e2 = |e2: Exp| exp_new(Binary(*op, e1.clone(), e2.clone()));
+                        match op {
+                            And => match &e1.x {
+                                Const(Bool(true)) => eval_expr_internal(ctx, state, e2),
+                                Const(Bool(false)) => bool_new(false),
+                                _ => {
+                                    let e2 = eval_expr_internal(ctx, state, e2)?;
+                                    match &e2.x {
+                                        Const(Bool(true)) => Ok(e1.clone()),
+                                        Const(Bool(false)) => bool_new(false),
+                                        _ => ok_e2(e2),
+                                    }
+                                }
+                            },
+                            Or => match &e1.x {
+                                Const(Bool(true)) => bool_new(true),
+                                Const(Bool(false)) => eval_expr_internal(ctx, state, e2),
+                                _ => {
+                                    let e2 = eval_expr_internal(ctx, state, e2)?;
+                                    match &e2.x {
+                                        Const(Bool(true)) => bool_new(true),
+                                        Const(Bool(false)) => Ok(e1.clone()),
+                                        _ => ok_e2(e2),
+                                    }
+                                }
+                            },
+                            Xor => {
+                                let e2 = eval_expr_internal(ctx, state, e2)?;
+                                match (&e1.x, &e2.x) {
+                                    (Const(Bool(b1)), Const(Bool(b2))) => {
+                                        let r = (*b1 && !b2) || (!b1 && *b2);
+                                        bool_new(r)
+                                    }
+                                    (Const(Bool(true)), _) => exp_new(Unary(UnaryOp::Not, e2.clone())),
+                                    (Const(Bool(false)), _) => Ok(e2.clone()),
+                                    (_, Const(Bool(true))) => exp_new(Unary(UnaryOp::Not, e1.clone())),
+                                    (_, Const(Bool(false))) => Ok(e1.clone()),
+                                    _ => ok_e2(e2),
+                                }
+                            }
+                            Implies => {
+                                match &e1.x {
+                                    Const(Bool(true)) => eval_expr_internal(ctx, state, e2),
+                                    Const(Bool(false)) => bool_new(true),
+                                    _ => {
+                                        let e2 = eval_expr_internal(ctx, state, e2)?;
+                                        match &e2.x {
+                                            Const(Bool(true)) => bool_new(false),
+                                            Const(Bool(false)) =>
+                                            // Recurse in case we can simplify the new negation
+                                            {
+                                                eval_expr_internal(
+                                                    ctx,
+                                                    state,
+                                                    &exp_new(Unary(UnaryOp::Not, e1.clone()))?,
+                                                )
+                                            }
+                                            _ => ok_e2(e2),
+                                        }
                                     }
                                 }
                             }
-                        },
-                        // Special cases for certain concrete values
-                        (Const(Int(i)), _) | (_, Const(Int(i)))
-                            if i.is_zero() && matches!(op, BitAnd) =>
-                        {
-                            zero
-                        }
-                        (Const(Int(i1)), _) if i1.is_zero() && matches!(op, BitOr) => {
-                            Ok(e2.clone())
-                        }
-                        (_, Const(Int(i2))) if i2.is_zero() && matches!(op, BitOr) => {
-                            Ok(e1.clone())
-                        }
-                        _ => {
-                            match op {
-                                // X ^ X => 0
-                                BitXor if e1.definitely_eq(&e2) => zero,
-                                // X & X = X, X | X = X
-                                BitAnd | BitOr if e1.definitely_eq(&e2) => Ok(e1.clone()),
-                                _ => ok_e2(e2),
+                            Eq(_mode) => {
+                                let e2 = eval_expr_internal(ctx, state, e2)?;
+                                match e1.syntactic_eq(&e2) {
+                                    None => ok_e2(e2),
+                                    Some(b) => bool_new(b),
+                                }
                             }
+                            Ne => {
+                                let e2 = eval_expr_internal(ctx, state, e2)?;
+                                match e1.syntactic_eq(&e2) {
+                                    None => ok_e2(e2),
+                                    Some(b) => bool_new(!b),
+                                }
+                            }
+                            Inequality(op) => {
+                                let e2 = eval_expr_internal(ctx, state, e2)?;
+                                match (&e1.x, &e2.x) {
+                                    (Const(Int(i1)), Const(Int(i2))) => {
+                                        use InequalityOp::*;
+                                        let b = match op {
+                                            Le => i1 <= i2,
+                                            Ge => i1 >= i2,
+                                            Lt => i1 < i2,
+                                            Gt => i1 > i2,
+                                        };
+                                        bool_new(b)
+                                    }
+                                    _ => ok_e2(e2),
+                                }
+                            }
+                            Arith(op, _mode) => {
+                                let e2 = eval_expr_internal(ctx, state, e2)?;
+                                use ArithOp::*;
+                                match (&e1.x, &e2.x) {
+                                    // Ideal case where both sides are concrete
+                                    (Const(Int(i1)), Const(Int(i2))) => {
+                                        use ArithOp::*;
+                                        match op {
+                                            Add => int_new(i1 + i2),
+                                            Sub => int_new(i1 - i2),
+                                            Mul => int_new(i1 * i2),
+                                            EuclideanDiv => {
+                                                if i2.is_zero() {
+                                                    ok_e2(e2) // Treat as symbolic instead of erroring
+                                                } else {
+                                                    int_new(i1.div_euclid(i2))
+                                                }
+                                            }
+                                            EuclideanMod => {
+                                                if i2.is_zero() {
+                                                    ok_e2(e2) // Treat as symbolic instead of erroring
+                                                } else {
+                                                    int_new(i1.rem_euclid(i2))
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Special cases for certain concrete values
+                                    (Const(Int(i1)), _) if i1.is_zero() && matches!(op, Add) => Ok(e2.clone()),
+                                    (Const(Int(i1)), _) if i1.is_zero() && matches!(op, Mul) => zero,
+                                    (Const(Int(i1)), _) if i1.is_one() && matches!(op, Mul) => Ok(e2.clone()),
+                                    (_, Const(Int(i2))) if i2.is_zero() => {
+                                        use ArithOp::*;
+                                        match op {
+                                            Add | Sub => Ok(e1.clone()),
+                                            Mul => zero,
+                                            EuclideanDiv => {
+                                                ok_e2(e2) // Treat as symbolic instead of erroring
+                                            }
+                                            EuclideanMod => {
+                                                ok_e2(e2) // Treat as symbolic instead of erroring
+                                            }
+                                        }
+                                    }
+                                    (_, Const(Int(i2))) if i2.is_one() && matches!(op, EuclideanMod) => {
+                                        int_new(BigInt::zero())
+                                    }
+                                    (_, Const(Int(i2))) if i2.is_one() && matches!(op, Mul | EuclideanDiv) => {
+                                        Ok(e1.clone())
+                                    }
+                                    _ => {
+                                        match op {
+                                            // X - X => 0
+                                            ArithOp::Sub if e1.definitely_eq(&e2) => zero,
+                                            _ => ok_e2(e2),
+                                        }
+                                    }
+                                }
+                            }
+                            Bitwise(op, _) => {
+                                use BitwiseOp::*;
+                                let e2 = eval_expr_internal(ctx, state, e2)?;
+                                match (&e1.x, &e2.x) {
+                                    // Ideal case where both sides are concrete
+                                    (Const(Int(i1)), Const(Int(i2))) => match op {
+                                        BitXor => int_new(i1 ^ i2),
+                                        BitAnd => int_new(i1 & i2),
+                                        BitOr => int_new(i1 | i2),
+                                        Shr(_) => match i2.to_u128() {
+                                            None => ok,
+                                            Some(i2) => int_new(i1 >> i2),
+                                        },
+                                        Shl(w, signed) => {
+                                            if *signed {
+                                                match (i1.to_i128(), i2.to_u128()) {
+                                                    (Some(i1), Some(i2)) => {
+                                                        let i1_shifted =
+                                                            if i2 >= 128 { 0i128 } else { i1 << i2 };
+                                                        match i128_to_width(i1_shifted, *w, ctx.arch) {
+                                                            Some(i) => int_new(i),
+                                                            None => ok,
+                                                        }
+                                                    }
+                                                    _ => ok,
+                                                }
+                                            } else {
+                                                match (i1.to_u128(), i2.to_u128()) {
+                                                    (Some(i1), Some(i2)) => {
+                                                        let i1_shifted =
+                                                            if i2 >= 128 { 0u128 } else { i1 << i2 };
+                                                        match u128_to_width(i1_shifted, *w, ctx.arch) {
+                                                            Some(i) => int_new(i),
+                                                            None => ok,
+                                                        }
+                                                    }
+                                                    _ => ok,
+                                                }
+                                            }
+                                        }
+                                    },
+                                    // Special cases for certain concrete values
+                                    (Const(Int(i)), _) | (_, Const(Int(i)))
+                                        if i.is_zero() && matches!(op, BitAnd) =>
+                                    {
+                                        zero
+                                    }
+                                    (Const(Int(i1)), _) if i1.is_zero() && matches!(op, BitOr) => {
+                                        Ok(e2.clone())
+                                    }
+                                    (_, Const(Int(i2))) if i2.is_zero() && matches!(op, BitOr) => {
+                                        Ok(e1.clone())
+                                    }
+                                    _ => {
+                                        match op {
+                                            // X ^ X => 0
+                                            BitXor if e1.definitely_eq(&e2) => zero,
+                                            // X & X = X, X | X = X
+                                            BitAnd | BitOr if e1.definitely_eq(&e2) => Ok(e1.clone()),
+                                            _ => ok_e2(e2),
+                                        }
+                                    }
+                                }
+                            }
+                            ArrayIndex => {
+                                let e2 = eval_expr_internal(ctx, state, e2)?;
+                                eval_array_index(state, exp, &e1, &e2)
+                            }
+                            HeightCompare { .. } | StrGetChar => ok_e2(e2.clone()),
                         }
                     }
-                }
-                ArrayIndex => {
-                    let e2 = eval_expr_internal(ctx, state, e2)?;
-                    eval_array_index(state, exp, &e1, &e2)
-                }
-                HeightCompare { .. } | StrGetChar => ok_e2(e2.clone()),
-            }
-        }
         BinaryOpr(op, e1, e2) => {
-            let e1 = eval_expr_internal(ctx, state, e1)?;
-            let e2 = eval_expr_internal(ctx, state, e2)?;
-            match op {
-                crate::ast::BinaryOpr::ExtEq(..) => match e1.syntactic_eq(&e2) {
-                    None => exp_new(BinaryOpr(op.clone(), e1.clone(), e2.clone())),
-                    Some(b) => bool_new(b),
-                },
-            }
-        }
+                        let e1 = eval_expr_internal(ctx, state, e1)?;
+                        let e2 = eval_expr_internal(ctx, state, e2)?;
+                        match op {
+                            crate::ast::BinaryOpr::ExtEq(..) => match e1.syntactic_eq(&e2) {
+                                None => exp_new(BinaryOpr(op.clone(), e1.clone(), e2.clone())),
+                                Some(b) => bool_new(b),
+                            },
+                        }
+                    }
         If(e1, e2, e3) => {
-            let e1 = eval_expr_internal(ctx, state, e1)?;
-            match &e1.x {
-                Const(Constant::Bool(b)) => {
-                    if *b {
-                        eval_expr_internal(ctx, state, e2)
-                    } else {
-                        eval_expr_internal(ctx, state, e3)
-                    }
-                }
-                _ => {
-                    // We still try to simplify both branches, if we can
-                    let e2 = eval_expr_internal(ctx, state, e2)?;
-                    let e3 = eval_expr_internal(ctx, state, e3)?;
-                    exp_new(If(e1, e2, e3))
-                }
-            }
-        }
-        Call(CallFun::Fun(fun, resolved_method), typs, args) => {
-            let (fun, typs) = match resolved_method {
-                None => (fun, typs),
-                Some((f, ts)) => (f, ts),
-            };
-            if state.perf {
-                // Record the call for later performance analysis
-                match state.fun_calls.get_mut(fun) {
-                    None => {
-                        state.fun_calls.insert(fun.clone(), 1);
-                    }
-                    Some(count) => {
-                        *count += 1;
-                    }
-                }
-            }
-            // Simplify arguments
-            let new_args: Result<Vec<Exp>, VirErr> =
-                args.iter().map(|e| eval_expr_internal(ctx, state, e)).collect();
-            let new_args = Arc::new(new_args?);
-            if let Some(array_fn) = is_array_fn(&fun) {
-                eval_array(ctx, state, array_fn, exp, &new_args)
-            } else if let Some(seq_fn) = is_sequence_fn(&fun) {
-                eval_seq(ctx, state, seq_fn, exp, &new_args)
-            } else {
-                // Try to find the function's body
-                match ctx.fun_ssts.get(fun) {
-                    Some(func)
-                        if func.x.axioms.spec_axioms.is_some() && func.x.kind.inline_okay() =>
-                    {
-                        let memoize = func.x.attrs.memoize;
-                        match state.lookup_call(&fun, &new_args, memoize) {
-                            Some(prev_result) => {
-                                state.cache_hits += 1;
-                                Ok(prev_result)
+                        let e1 = eval_expr_internal(ctx, state, e1)?;
+                        match &e1.x {
+                            Const(Constant::Bool(b)) => {
+                                if *b {
+                                    eval_expr_internal(ctx, state, e2)
+                                } else {
+                                    eval_expr_internal(ctx, state, e3)
+                                }
                             }
-                            None => {
-                                let typ_params = &func.x.typ_params;
-                                let pars = &func.x.pars;
-                                let body = &func.x.axioms.spec_axioms.as_ref().unwrap().body_exp;
-                                state.cache_misses += 1;
-                                state.env.push_scope(true);
-                                state.type_env.push_scope(true);
-                                for (formal, actual) in pars.iter().zip(new_args.iter()) {
-                                    let formal_id = formal.x.name.clone();
-                                    state.env.insert(formal_id, actual.clone()).unwrap();
-                                }
-                                for (formal, actual) in typ_params.iter().zip(typs.iter()) {
-                                    state.type_env.insert(formal.clone(), actual.clone()).unwrap();
-                                    // Account for const generics by adding, e.g., { N => 7 } to the environment
-                                    if let TypX::ConstInt(c) = &**actual {
-                                        let formal_id = VarIdent(
-                                            formal.clone(),
-                                            VarIdentDisambiguate::TypParamBare,
-                                        );
-                                        let value = SpannedTyped::new(
-                                            &exp.span,
-                                            &exp.typ,
-                                            Const(Constant::Int(c.clone())),
-                                        );
-                                        state.env.insert(formal_id, value).unwrap();
-                                    }
-                                }
-                                // Proactively apply the type environment to the body.
-                                // We don't do this for the variable environment, since
-                                // the body might locally shadow some of the parameter names.
-                                let empty_substs = HashMap::new();
-                                let body = subst_exp(state.type_env.map(), &empty_substs, body);
-                                let result = eval_expr_internal(ctx, state, &body);
-                                state.env.pop_scope();
-                                state.type_env.pop_scope();
-                                state.insert_call(fun, &new_args, &result.clone()?, memoize);
-                                result
+                            _ => {
+                                // We still try to simplify both branches, if we can
+                                let e2 = eval_expr_internal(ctx, state, e2)?;
+                                let e3 = eval_expr_internal(ctx, state, e3)?;
+                                exp_new(If(e1, e2, e3))
                             }
                         }
                     }
-                    _ => {
-                        // We don't have the body for this function, so we can't simplify further
-                        exp_new(Call(
-                            CallFun::Fun(fun.clone(), resolved_method.clone()),
-                            typs.clone(),
-                            new_args.clone(),
-                        ))
+        Call(CallFun::Fun(fun, resolved_method), typs, args) => {
+                        let (fun, typs) = match resolved_method {
+                            None => (fun, typs),
+                            Some((f, ts)) => (f, ts),
+                        };
+                        if state.perf {
+                            // Record the call for later performance analysis
+                            match state.fun_calls.get_mut(fun) {
+                                None => {
+                                    state.fun_calls.insert(fun.clone(), 1);
+                                }
+                                Some(count) => {
+                                    *count += 1;
+                                }
+                            }
+                        }
+                        // Simplify arguments
+                        let new_args: Result<Vec<Exp>, VirErr> =
+                            args.iter().map(|e| eval_expr_internal(ctx, state, e)).collect();
+                        let new_args = Arc::new(new_args?);
+                        if let Some(array_fn) = is_array_fn(&fun) {
+                            eval_array(ctx, state, array_fn, exp, &new_args)
+                        } else if let Some(seq_fn) = is_sequence_fn(&fun) {
+                            eval_seq(ctx, state, seq_fn, exp, &new_args)
+                        } else {
+                            // Try to find the function's body
+                            match ctx.fun_ssts.get(fun) {
+                                Some(func)
+                                    if func.x.axioms.spec_axioms.is_some() && func.x.kind.inline_okay() =>
+                                {
+                                    let memoize = func.x.attrs.memoize;
+                                    match state.lookup_call(&fun, &new_args, memoize) {
+                                        Some(prev_result) => {
+                                            state.cache_hits += 1;
+                                            Ok(prev_result)
+                                        }
+                                        None => {
+                                            let typ_params = &func.x.typ_params;
+                                            let pars = &func.x.pars;
+                                            let body = &func.x.axioms.spec_axioms.as_ref().unwrap().body_exp;
+                                            state.cache_misses += 1;
+                                            state.env.push_scope(true);
+                                            state.type_env.push_scope(true);
+                                            for (formal, actual) in pars.iter().zip(new_args.iter()) {
+                                                let formal_id = formal.x.name.clone();
+                                                state.env.insert(formal_id, actual.clone()).unwrap();
+                                            }
+                                            for (formal, actual) in typ_params.iter().zip(typs.iter()) {
+                                                state.type_env.insert(formal.clone(), actual.clone()).unwrap();
+                                                // Account for const generics by adding, e.g., { N => 7 } to the environment
+                                                if let TypX::ConstInt(c) = &**actual {
+                                                    let formal_id = VarIdent(
+                                                        formal.clone(),
+                                                        VarIdentDisambiguate::TypParamBare,
+                                                    );
+                                                    let value = SpannedTyped::new(
+                                                        &exp.span,
+                                                        &exp.typ,
+                                                        Const(Constant::Int(c.clone())),
+                                                    );
+                                                    state.env.insert(formal_id, value).unwrap();
+                                                }
+                                            }
+                                            // Proactively apply the type environment to the body.
+                                            // We don't do this for the variable environment, since
+                                            // the body might locally shadow some of the parameter names.
+                                            let empty_substs = HashMap::new();
+                                            let body = subst_exp(state.type_env.map(), &empty_substs, body);
+                                            let result = eval_expr_internal(ctx, state, &body);
+                                            state.env.pop_scope();
+                                            state.type_env.pop_scope();
+                                            state.insert_call(fun, &new_args, &result.clone()?, memoize);
+                                            result
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // We don't have the body for this function, so we can't simplify further
+                                    exp_new(Call(
+                                        CallFun::Fun(fun.clone(), resolved_method.clone()),
+                                        typs.clone(),
+                                        new_args.clone(),
+                                    ))
+                                }
+                            }
+                        }
                     }
-                }
-            }
-        }
         Call(CallFun::Recursive(_), _, _) => ok,
         Call(fun @ CallFun::InternalFun(_), typs, args) => {
-            let new_args: Result<Vec<Exp>, VirErr> =
-                args.iter().map(|e| eval_expr_internal(ctx, state, e)).collect();
-            let new_args = Arc::new(new_args?);
-            exp_new(Call(fun.clone(), typs.clone(), new_args.clone()))
-        }
+                        let new_args: Result<Vec<Exp>, VirErr> =
+                            args.iter().map(|e| eval_expr_internal(ctx, state, e)).collect();
+                        let new_args = Arc::new(new_args?);
+                        exp_new(Call(fun.clone(), typs.clone(), new_args.clone()))
+                    }
         CallLambda(lambda, args) => {
-            let lambda = eval_expr_internal(ctx, state, lambda)?;
-            match &lambda.x {
-                Interp(InterpExp::Closure(lambda, context)) => match &lambda.x {
-                    Bind(bnd, body) => match &bnd.x {
-                        BndX::Lambda(bnds, _trigs) => {
-                            let new_args: Result<Vec<Exp>, VirErr> =
-                                args.iter().map(|e| eval_expr_internal(ctx, state, e)).collect();
-                            let new_args = Arc::new(new_args?);
+                        let lambda = eval_expr_internal(ctx, state, lambda)?;
+                        match &lambda.x {
+                            Interp(InterpExp::Closure(lambda, context)) => match &lambda.x {
+                                Bind(bnd, body) => match &bnd.x {
+                                    BndX::Lambda(bnds, _trigs) => {
+                                        let new_args: Result<Vec<Exp>, VirErr> =
+                                            args.iter().map(|e| eval_expr_internal(ctx, state, e)).collect();
+                                        let new_args = Arc::new(new_args?);
+                                        state.env.push_scope(true);
+                                        // Process the original context first, so formal args take precedence
+                                        context.iter().for_each(|(k, v)| {
+                                            state.env.insert(k.clone(), v.clone()).unwrap();
+                                        });
+                                        state.env.push_scope(true);
+                                        for (formal, actual) in bnds.iter().zip(new_args.iter()) {
+                                            let formal_id = formal.name.clone();
+                                            state.env.insert(formal_id, actual.clone()).unwrap();
+                                        }
+                                        let e = eval_expr_internal(ctx, state, body);
+                                        state.env.pop_scope();
+                                        state.env.pop_scope();
+                                        e
+                                    }
+                                    _ => panic!(
+                                        "Expected CallLambda's binder to contain a lambda.  Instead found {:?}",
+                                        bnd
+                                    ),
+                                },
+                                _ => ok,
+                            },
+                            _ => ok,
+                        }
+                    }
+        Bind(bnd, e) => match &bnd.x {
+                        BndX::Let(bnds) => {
                             state.env.push_scope(true);
-                            // Process the original context first, so formal args take precedence
-                            context.iter().for_each(|(k, v)| {
-                                state.env.insert(k.clone(), v.clone()).unwrap();
-                            });
-                            state.env.push_scope(true);
-                            for (formal, actual) in bnds.iter().zip(new_args.iter()) {
-                                let formal_id = formal.name.clone();
-                                state.env.insert(formal_id, actual.clone()).unwrap();
+                            for b in bnds.iter() {
+                                let id = b.name.clone();
+                                let val = eval_expr_internal(ctx, state, &b.a)?;
+                                state.env.insert(id, val).unwrap();
                             }
-                            let e = eval_expr_internal(ctx, state, body);
-                            state.env.pop_scope();
+                            let e = eval_expr_internal(ctx, state, e);
                             state.env.pop_scope();
                             e
                         }
-                        _ => panic!(
-                            "Expected CallLambda's binder to contain a lambda.  Instead found {:?}",
-                            bnd
-                        ),
+                        BndX::Lambda(_, _) => {
+                            let mut env = HashMap::new();
+                            env.extend(state.env.map().iter().map(|(k, v)| (k.clone(), v.clone())));
+                            exp_new(Interp(InterpExp::Closure(exp.clone(), env)))
+                        }
+                        _ => ok,
                     },
-                    _ => ok,
-                },
-                _ => ok,
-            }
-        }
-        Bind(bnd, e) => match &bnd.x {
-            BndX::Let(bnds) => {
-                state.env.push_scope(true);
-                for b in bnds.iter() {
-                    let id = b.name.clone();
-                    let val = eval_expr_internal(ctx, state, &b.a)?;
-                    state.env.insert(id, val).unwrap();
-                }
-                let e = eval_expr_internal(ctx, state, e);
-                state.env.pop_scope();
-                e
-            }
-            BndX::Lambda(_, _) => {
-                let mut env = HashMap::new();
-                env.extend(state.env.map().iter().map(|(k, v)| (k.clone(), v.clone())));
-                exp_new(Interp(InterpExp::Closure(exp.clone(), env)))
-            }
-            _ => ok,
-        },
         Ctor(path, id, bnds) => {
-            let new_bnds: Result<Vec<Binder<Exp>>, VirErr> = bnds
-                .iter()
-                .map(|b| {
-                    let name = b.name.clone();
-                    let a = eval_expr_internal(ctx, state, &b.a)?;
-                    Ok(Arc::new(BinderX { name, a }))
-                })
-                .collect();
-            let new_bnds = new_bnds?;
-            exp_new(Ctor(path.clone(), id.clone(), Arc::new(new_bnds)))
-        }
+                        let new_bnds: Result<Vec<Binder<Exp>>, VirErr> = bnds
+                            .iter()
+                            .map(|b| {
+                                let name = b.name.clone();
+                                let a = eval_expr_internal(ctx, state, &b.a)?;
+                                Ok(Arc::new(BinderX { name, a }))
+                            })
+                            .collect();
+                        let new_bnds = new_bnds?;
+                        exp_new(Ctor(path.clone(), id.clone(), Arc::new(new_bnds)))
+                    }
         ArrayLiteral(exprs) => {
-            let new_exprs: Result<Vec<Exp>, VirErr> =
-                exprs.iter().map(|e| eval_expr_internal(ctx, state, e)).collect();
-            let im_vec: Vector<Exp> = new_exprs?.into_iter().collect();
-            exp_new(Interp(InterpExp::Array(im_vec)))
-        }
+                        let new_exprs: Result<Vec<Exp>, VirErr> =
+                            exprs.iter().map(|e| eval_expr_internal(ctx, state, e)).collect();
+                        let im_vec: Vector<Exp> = new_exprs?.into_iter().collect();
+                        exp_new(Interp(InterpExp::Array(im_vec)))
+                    }
         Interp(e) => match e {
-            InterpExp::FreeVar(_) => ok,
-            InterpExp::Seq(_) => ok,
-            InterpExp::Closure(_, _) => ok,
-            InterpExp::Array(_) => ok,
-        },
-        // Ignored by the interpreter at present (i.e., treated as symbolic)
+                        InterpExp::FreeVar(_) => ok,
+                        InterpExp::Seq(_) => ok,
+                        InterpExp::Closure(_, _) => ok,
+                        InterpExp::Array(_) => ok,
+                    },
         VarAt(..) | VarLoc(..) | Loc(..) | Old(..) | WithTriggers(..) | StaticVar(..) => ok,
         ExecFnByName(_) => ok,
         FuelConst(_) => ok,
+        Await(spanned_typed) => todo!(),
+        Async(spanned_typed) => todo!(),
+        FutureView(spanned_typed) => todo!(),
     };
     let res = r?;
     state.depth -= 1;

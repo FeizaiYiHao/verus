@@ -136,6 +136,16 @@ pub(crate) fn prelude_nodes(config: PreludeConfig) -> Vec<Node> {
     let type_id_ptr = str_to_node(TYPE_ID_PTR);
     let type_id_global = str_to_node(TYPE_ID_GLOBAL);
 
+    // let core_future_output_dcr = str_to_node("proj%%core!future.future.Future./Output");
+    // let core_future_output_typ = str_to_node("proj%core!future.future.Future./Output");
+    // let core_future_trait_bound = str_to_node("tr_bound%core!future.future.Future.");
+
+    let core_await_ens = str_to_node("EXEC_AWAIT_ENS");
+    let core_exec_await = str_to_node("EXEC_AWAIT");
+    let core_spec_await = str_to_node("SPEC_AWAIT");
+    let core_spec_awaited = str_to_node("AWAITED");
+    let core_async_wrapper = str_to_node("WRAPPE_IN_ASYNC");
+
     let mut prelude = nodes_vec!(
         // Fuel
         (declare-sort [FuelId] 0)
@@ -884,6 +894,57 @@ pub(crate) fn prelude_nodes(config: PreludeConfig) -> Vec<Node> {
             :pattern (([check_decrease_height] cur prev otherwise))
             :qid prelude_check_decrease_height
             :skolemid skolem_prelude_check_decrease_height
+        )))
+        // (declare-fun [core_future_output_dcr] (Dcr Type) Dcr)
+        // (declare-fun [core_future_output_typ] (Dcr Type) Type)
+        // (declare-fun [core_future_trait_bound] (Dcr Type) Bool)        
+        // (axiom (forall ((dcr Dcr) (typ Type) ) (!
+        //     (=>
+        //         ([core_future_trait_bound] dcr typ)
+        //         (sized ([core_future_output_dcr] dcr typ))
+        //     )
+        //     :pattern (([core_future_trait_bound] dcr typ))
+        //     :qid prelude_core_future_trait_bound
+        //     :skolemid skolem_prelude_core_future_trait_bound
+        // )))
+
+        (declare-fun [core_await_ens] ([Poly] [Poly]) Bool)
+        (declare-fun [core_exec_await] ([Poly]) [Poly])
+        (declare-fun [core_spec_await] ([Poly]) [Poly])
+        (declare-fun [core_spec_awaited] ([Poly]) Bool)
+        (declare-fun [core_async_wrapper] ([Poly]) [Poly])
+        (axiom (forall ((x [Poly])) (!
+            // (=>
+                // (
+                //     ([core_spec_awaited] ([core_async_wrapper] x))
+                // )
+                (=
+                    ([core_spec_await] ([core_async_wrapper] x))
+                    x
+                )
+            // )
+            :pattern (([core_async_wrapper] x))
+            :qid prelude_async_axiom
+            :skolemid skolem_prelude_async_axiom
+        )))
+
+        (axiom (forall ((f [Poly]) (res [Poly])) (!
+            (=>
+                
+                    ([core_await_ens] f res )
+                
+                (and
+                    ([core_spec_awaited] f)
+                    (=
+                        ([core_spec_await] f)
+                        res
+                    )
+                    
+                )
+            )
+            :pattern (([core_await_ens] f res))
+            :qid prelude_await_axiom
+            :skolemid skolem_prelude_await_axiom
         )))
     );
     prelude.extend(height_axioms);

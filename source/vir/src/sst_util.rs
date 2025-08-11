@@ -158,106 +158,109 @@ fn subst_exp_rec(ctxt: &SubstCtxt, state: &mut SubstState, exp: &Exp) -> Exp {
     let ft = |t: &Typ| subst_typ(&ctxt.typ_substs, t);
     match &exp.x {
         ExpX::Unary(UnaryOp::MustBeFinalized, _) if !ctxt.allow_unfinalized => {
-            // Var won't match binders if we're not finalized
-            // (special case allow_unfinalized = true for type-only substitution)
-            panic!("MustBeFinalized")
-        }
+                                // Var won't match binders if we're not finalized
+                                // (special case allow_unfinalized = true for type-only substitution)
+                                panic!("MustBeFinalized")
+                    }
         ExpX::Const(..)
-        | ExpX::Loc(..)
-        | ExpX::StaticVar(..)
-        | ExpX::Old(..)
-        | ExpX::Call(..)
-        | ExpX::CallLambda(..)
-        | ExpX::Ctor(..)
-        | ExpX::NullaryOpr(..)
-        | ExpX::Unary(..)
-        | ExpX::UnaryOpr(..)
-        | ExpX::Binary(..)
-        | ExpX::BinaryOpr(..)
-        | ExpX::If(..)
-        | ExpX::ExecFnByName(..)
-        | ExpX::FuelConst(..)
-        | ExpX::WithTriggers(..) => crate::sst_visitor::map_shallow_exp(
-            exp,
-            state,
-            &|_, t| Ok(subst_typ(ctxt.typ_substs, t)),
-            &|state, e| Ok(subst_exp_rec(ctxt, state, e)),
-        )
-        .expect("map_shallow_exp for subst_exp_rec"),
-        ExpX::Var(x) => {
-            assert!(state.fresh_var_blacklist.contains_key(x));
-            match state.substs.get(x) {
-                None => mk_exp(ExpX::Var(x.clone())),
-                Some(e) => e.clone(),
-            }
-        }
-        ExpX::VarLoc(x) => match state.substs.get(x) {
-            None => mk_exp(ExpX::VarLoc(x.clone())),
-            Some(_) => panic!("cannot substitute for VarLoc"),
-        },
-        ExpX::VarAt(x, a) => match state.substs.get(x) {
-            None => mk_exp(ExpX::VarAt(x.clone(), *a)),
-            Some(_) => panic!("cannot substitute for VarAt"),
-        },
-        ExpX::Bind(bnd, e1) => {
-            let ftrigs = |state: &mut SubstState, triggers: &Trigs| -> Trigs {
-                let mut trigs: Vec<Trig> = Vec::new();
-                for trigger in triggers.iter() {
-                    let mut trig: Vec<Exp> = Vec::new();
-                    for t in trigger.iter() {
-                        trig.push(subst_exp_rec(ctxt, state, t));
-                    }
-                    trigs.push(Arc::new(trig));
-                }
-                Arc::new(trigs)
-            };
-            let bndx = match &bnd.x {
-                BndX::Let(bs) => {
-                    let mut binders: Vec<VarBinder<Exp>> = Vec::new();
-                    for b in bs.iter() {
-                        binders.push(b.new_a(subst_exp_rec(ctxt, state, &b.a)));
-                    }
-                    let binders = subst_rename_binders(
-                        &bnd.span,
-                        ctxt,
+                    | ExpX::Loc(..)
+                    | ExpX::StaticVar(..)
+                    | ExpX::Old(..)
+                    | ExpX::Call(..)
+                    | ExpX::CallLambda(..)
+                    | ExpX::Ctor(..)
+                    | ExpX::NullaryOpr(..)
+                    | ExpX::Unary(..)
+                    | ExpX::UnaryOpr(..)
+                    | ExpX::Binary(..)
+                    | ExpX::BinaryOpr(..)
+                    | ExpX::If(..)
+                    | ExpX::ExecFnByName(..)
+                    | ExpX::FuelConst(..)
+                    | ExpX::WithTriggers(..) => crate::sst_visitor::map_shallow_exp(
+                        exp,
                         state,
-                        &Arc::new(binders),
-                        |e: &Exp| e.clone(),
-                        |e: &Exp| e.typ.clone(),
-                    );
-                    BndX::Let(binders)
-                }
-                BndX::Quant(quant, binders, ts, ab) => {
-                    let binders = subst_rename_binders(&bnd.span, ctxt, state, binders, ft, ft);
-                    BndX::Quant(*quant, binders, ftrigs(state, ts), ab.clone())
-                }
-                BndX::Lambda(binders, ts) => {
-                    let binders = subst_rename_binders(&bnd.span, ctxt, state, binders, ft, ft);
-                    BndX::Lambda(binders, ftrigs(state, ts))
-                }
-                BndX::Choose(binders, ts, cond) => {
-                    let binders = subst_rename_binders(&bnd.span, ctxt, state, binders, ft, ft);
-                    let cond = subst_exp_rec(ctxt, state, cond);
-                    BndX::Choose(binders, ftrigs(state, ts), cond)
-                }
-            };
-            let bnd = Spanned::new(bnd.span.clone(), bndx);
-            let e1 = subst_exp_rec(ctxt, state, e1);
-            state.substs.pop_scope();
-            state.free_vars.pop_scope();
-            state.fresh_var_blacklist.pop_scope();
-            SpannedTyped::new(&exp.span, &typ, ExpX::Bind(bnd, e1))
-        }
+                        &|_, t| Ok(subst_typ(ctxt.typ_substs, t)),
+                        &|state, e| Ok(subst_exp_rec(ctxt, state, e)),
+                    )
+                    .expect("map_shallow_exp for subst_exp_rec"),
+        ExpX::Var(x) => {
+                        assert!(state.fresh_var_blacklist.contains_key(x));
+                        match state.substs.get(x) {
+                            None => mk_exp(ExpX::Var(x.clone())),
+                            Some(e) => e.clone(),
+                        }
+                    }
+        ExpX::VarLoc(x) => match state.substs.get(x) {
+                        None => mk_exp(ExpX::VarLoc(x.clone())),
+                        Some(_) => panic!("cannot substitute for VarLoc"),
+                    },
+        ExpX::VarAt(x, a) => match state.substs.get(x) {
+                        None => mk_exp(ExpX::VarAt(x.clone(), *a)),
+                        Some(_) => panic!("cannot substitute for VarAt"),
+                    },
+        ExpX::Bind(bnd, e1) => {
+                        let ftrigs = |state: &mut SubstState, triggers: &Trigs| -> Trigs {
+                            let mut trigs: Vec<Trig> = Vec::new();
+                            for trigger in triggers.iter() {
+                                let mut trig: Vec<Exp> = Vec::new();
+                                for t in trigger.iter() {
+                                    trig.push(subst_exp_rec(ctxt, state, t));
+                                }
+                                trigs.push(Arc::new(trig));
+                            }
+                            Arc::new(trigs)
+                        };
+                        let bndx = match &bnd.x {
+                            BndX::Let(bs) => {
+                                let mut binders: Vec<VarBinder<Exp>> = Vec::new();
+                                for b in bs.iter() {
+                                    binders.push(b.new_a(subst_exp_rec(ctxt, state, &b.a)));
+                                }
+                                let binders = subst_rename_binders(
+                                    &bnd.span,
+                                    ctxt,
+                                    state,
+                                    &Arc::new(binders),
+                                    |e: &Exp| e.clone(),
+                                    |e: &Exp| e.typ.clone(),
+                                );
+                                BndX::Let(binders)
+                            }
+                            BndX::Quant(quant, binders, ts, ab) => {
+                                let binders = subst_rename_binders(&bnd.span, ctxt, state, binders, ft, ft);
+                                BndX::Quant(*quant, binders, ftrigs(state, ts), ab.clone())
+                            }
+                            BndX::Lambda(binders, ts) => {
+                                let binders = subst_rename_binders(&bnd.span, ctxt, state, binders, ft, ft);
+                                BndX::Lambda(binders, ftrigs(state, ts))
+                            }
+                            BndX::Choose(binders, ts, cond) => {
+                                let binders = subst_rename_binders(&bnd.span, ctxt, state, binders, ft, ft);
+                                let cond = subst_exp_rec(ctxt, state, cond);
+                                BndX::Choose(binders, ftrigs(state, ts), cond)
+                            }
+                        };
+                        let bnd = Spanned::new(bnd.span.clone(), bndx);
+                        let e1 = subst_exp_rec(ctxt, state, e1);
+                        state.substs.pop_scope();
+                        state.free_vars.pop_scope();
+                        state.fresh_var_blacklist.pop_scope();
+                        SpannedTyped::new(&exp.span, &typ, ExpX::Bind(bnd, e1))
+                    }
         ExpX::ArrayLiteral(exprs) => {
-            let mut new_exprs: Vec<Exp> = Vec::new();
-            for e in exprs.iter() {
-                new_exprs.push(subst_exp_rec(ctxt, state, e));
-            }
-            mk_exp(ExpX::ArrayLiteral(Arc::new(new_exprs)))
-        }
+                        let mut new_exprs: Vec<Exp> = Vec::new();
+                        for e in exprs.iter() {
+                            new_exprs.push(subst_exp_rec(ctxt, state, e));
+                        }
+                        mk_exp(ExpX::ArrayLiteral(Arc::new(new_exprs)))
+                    }
         ExpX::Interp(_) => {
-            panic!("Found an interpreter expression {:?} outside the interpreter", exp)
-        }
+                        panic!("Found an interpreter expression {:?} outside the interpreter", exp)
+                    }
+        ExpX::Await(spanned_typed) => todo!(),
+        ExpX::Async(spanned_typed) => todo!(),
+        ExpX::FutureView(spanned_typed) => todo!(),
     }
 }
 
@@ -367,323 +370,326 @@ impl ExpX {
         use ExpX::*;
         let (s, inner_precedence) = match &self {
             Const(c) => match c {
-                Constant::Bool(b) => (format!("{}", b), 99),
-                Constant::Int(i) => (format!("{}", i), 99),
-                Constant::StrSlice(s) => (format!("\"{}\"", s), 99),
-                Constant::Char(c) => (format!("'{}'", c), 99),
-            },
+                                        Constant::Bool(b) => (format!("{}", b), 99),
+                                        Constant::Int(i) => (format!("{}", i), 99),
+                                        Constant::StrSlice(s) => (format!("\"{}\"", s), 99),
+                                        Constant::Char(c) => (format!("'{}'", c), 99),
+                                    },
             Var(id) | VarLoc(id) => (format!("{}", user_local_name(id)), 99),
             VarAt(id, _at) => (format!("old({})", user_local_name(id)), 99),
             StaticVar(fun) => (format!("{}", fun.path.segments.last().unwrap()), 99),
             Loc(exp) => {
-                return exp.x.to_string_prec(global, precedence);
-            }
+                                        return exp.x.to_string_prec(global, precedence);
+                                    }
             Call(cf @ (CallFun::Fun(fun, _) | CallFun::Recursive(fun)), _, exps) => {
-                let (zero_args, is_method) = match global.fun_attrs.get(fun) {
-                    Some(attrs) => (attrs.print_zero_args, attrs.print_as_method),
-                    None => (false, false),
-                };
+                                        let (zero_args, is_method) = match global.fun_attrs.get(fun) {
+                                            Some(attrs) => (attrs.print_zero_args, attrs.print_as_method),
+                                            None => (false, false),
+                                        };
 
-                let exps = if matches!(cf, CallFun::Recursive(..)) {
-                    &exps[0..exps.len() - 1]
-                } else {
-                    &exps
-                };
+                                        let exps = if matches!(cf, CallFun::Recursive(..)) {
+                                            &exps[0..exps.len() - 1]
+                                        } else {
+                                            &exps
+                                        };
 
-                let fun_name = fun.path.segments.last().unwrap();
+                                        let fun_name = fun.path.segments.last().unwrap();
 
-                if is_method && exps.len() > 0 {
-                    let receiver = exps[0].x.to_user_string(global);
-                    let args = exps
-                        .iter()
-                        .skip(1)
-                        .map(|e| e.x.to_user_string(global))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    (format!("{}.{}({})", receiver, fun_name, args), 90)
-                } else {
-                    let args = if zero_args {
-                        "".to_string()
-                    } else {
-                        exps.iter()
-                            .map(|e| e.x.to_user_string(global))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    };
-                    (format!("{}({})", fun_name, args), 90)
-                }
-            }
+                                        if is_method && exps.len() > 0 {
+                                            let receiver = exps[0].x.to_user_string(global);
+                                            let args = exps
+                                                .iter()
+                                                .skip(1)
+                                                .map(|e| e.x.to_user_string(global))
+                                                .collect::<Vec<_>>()
+                                                .join(", ");
+                                            (format!("{}.{}({})", receiver, fun_name, args), 90)
+                                        } else {
+                                            let args = if zero_args {
+                                                "".to_string()
+                                            } else {
+                                                exps.iter()
+                                                    .map(|e| e.x.to_user_string(global))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            };
+                                            (format!("{}({})", fun_name, args), 90)
+                                        }
+                                    }
             Call(CallFun::InternalFun(func), _, exps) => {
-                let args =
-                    exps.iter().map(|e| e.x.to_user_string(global)).collect::<Vec<_>>().join(", ");
-                (format!("{:?}({})", func, args), 90)
-            }
+                                        let args =
+                                            exps.iter().map(|e| e.x.to_user_string(global)).collect::<Vec<_>>().join(", ");
+                                        (format!("{:?}({})", func, args), 90)
+                                    }
             ExecFnByName(func) => (format!("{:?}", func), 99),
             NullaryOpr(crate::ast::NullaryOpr::ConstGeneric(c)) => {
-                (format!("const_generic({:?})", c).to_string(), 99)
-            }
+                                        (format!("const_generic({:?})", c).to_string(), 99)
+                                    }
             NullaryOpr(crate::ast::NullaryOpr::TraitBound(..)) => ("".to_string(), 99),
             NullaryOpr(crate::ast::NullaryOpr::TypEqualityBound(..)) => ("".to_string(), 99),
             NullaryOpr(crate::ast::NullaryOpr::ConstTypBound(..)) => ("".to_string(), 99),
             NullaryOpr(crate::ast::NullaryOpr::NoInferSpecForLoopIter) => ("no_in".to_string(), 99),
             Unary(op, exp) => match op {
-                UnaryOp::Not | UnaryOp::BitNot(_) => {
-                    (format!("!{}", exp.x.to_string_prec(global, 99)), 90)
-                }
-                UnaryOp::Clip { .. } => (format!("clip({})", exp.x.to_user_string(global)), 99),
-                UnaryOp::HeightTrigger => {
-                    (format!("height_trigger({})", exp.x.to_user_string(global)), 99)
-                }
-                UnaryOp::StrLen => (format!("{}.len()", exp.x.to_string_prec(global, 99)), 90),
-                UnaryOp::StrIsAscii => {
-                    (format!("{}.is_ascii()", exp.x.to_string_prec(global, 99)), 90)
-                }
-                UnaryOp::Trigger(..)
-                | UnaryOp::CoerceMode { .. }
-                | UnaryOp::MustBeFinalized
-                | UnaryOp::MustBeElaborated => {
-                    return exp.x.to_string_prec(global, precedence);
-                }
-                UnaryOp::InferSpecForLoopIter { .. } => {
-                    (format!("InferSpecForLoopIter({})", exp.x.to_string_prec(global, 99)), 0)
-                }
-                UnaryOp::CastToInteger => {
-                    (format!("{} as int", exp.x.to_user_string(global)), precedence)
-                }
-            },
+                                        UnaryOp::Not | UnaryOp::BitNot(_) => {
+                                            (format!("!{}", exp.x.to_string_prec(global, 99)), 90)
+                                        }
+                                        UnaryOp::Clip { .. } => (format!("clip({})", exp.x.to_user_string(global)), 99),
+                                        UnaryOp::HeightTrigger => {
+                                            (format!("height_trigger({})", exp.x.to_user_string(global)), 99)
+                                        }
+                                        UnaryOp::StrLen => (format!("{}.len()", exp.x.to_string_prec(global, 99)), 90),
+                                        UnaryOp::StrIsAscii => {
+                                            (format!("{}.is_ascii()", exp.x.to_string_prec(global, 99)), 90)
+                                        }
+                                        UnaryOp::Trigger(..)
+                                        | UnaryOp::CoerceMode { .. }
+                                        | UnaryOp::MustBeFinalized
+                                        | UnaryOp::MustBeElaborated => {
+                                            return exp.x.to_string_prec(global, precedence);
+                                        }
+                                        UnaryOp::InferSpecForLoopIter { .. } => {
+                                            (format!("InferSpecForLoopIter({})", exp.x.to_string_prec(global, 99)), 0)
+                                        }
+                                        UnaryOp::CastToInteger => {
+                                            (format!("{} as int", exp.x.to_user_string(global)), precedence)
+                                        }
+                                    },
             UnaryOpr(op, exp) => {
-                use crate::ast::UnaryOpr::*;
-                match op {
-                    Box(_) | Unbox(_) => {
-                        return exp.x.to_string_prec(global, precedence);
-                    }
-                    HasType(t) => {
-                        (format!("has_type({}, {:?})", exp.x.to_user_string(global), t), 99)
-                    }
-                    IntegerTypeBound(IntegerTypeBoundKind::ArchWordBits, _mode) => {
-                        (format!("usize::BITS"), 99)
-                    }
-                    IntegerTypeBound(kind, mode) => {
-                        (format!("{:?}.{:?}({})", kind, mode, exp.x.to_user_string(global)), 99)
-                    }
-                    IsVariant { datatype: _, variant } => {
-                        let (prec_exp, prec_left, _prec_right) = prec_of_in();
-                        (
-                            format!("{} is {}", exp.x.to_string_prec(global, prec_left), variant),
-                            prec_exp,
-                        )
-                    }
-                    Field(field) => {
-                        (format!("{}.{}", exp.x.to_user_string(global), field.field), 99)
-                    }
-                    CustomErr(_msg) => {
-                        (format!("with_diagnostic({})", exp.x.to_user_string(global)), 99)
-                    }
-                }
-            }
+                                        use crate::ast::UnaryOpr::*;
+                                        match op {
+                                            Box(_) | Unbox(_) => {
+                                                return exp.x.to_string_prec(global, precedence);
+                                            }
+                                            HasType(t) => {
+                                                (format!("has_type({}, {:?})", exp.x.to_user_string(global), t), 99)
+                                            }
+                                            IntegerTypeBound(IntegerTypeBoundKind::ArchWordBits, _mode) => {
+                                                (format!("usize::BITS"), 99)
+                                            }
+                                            IntegerTypeBound(kind, mode) => {
+                                                (format!("{:?}.{:?}({})", kind, mode, exp.x.to_user_string(global)), 99)
+                                            }
+                                            IsVariant { datatype: _, variant } => {
+                                                let (prec_exp, prec_left, _prec_right) = prec_of_in();
+                                                (
+                                                    format!("{} is {}", exp.x.to_string_prec(global, prec_left), variant),
+                                                    prec_exp,
+                                                )
+                                            }
+                                            Field(field) => {
+                                                (format!("{}.{}", exp.x.to_user_string(global), field.field), 99)
+                                            }
+                                            CustomErr(_msg) => {
+                                                (format!("with_diagnostic({})", exp.x.to_user_string(global)), 99)
+                                            }
+                                        }
+                                    }
             Binary(op, e1, e2) => {
-                let (prec_exp, prec_left, prec_right) = op.prec_of_binary_op();
-                use ArithOp::*;
-                use BinaryOp::*;
-                use BitwiseOp::*;
-                use InequalityOp::*;
-                let left = e1.x.to_string_prec(global, prec_left);
-                let right = e2.x.to_string_prec(global, prec_right);
-                let op_str = match op {
-                    And => "&&",
-                    Or => "||",
-                    Xor => "^",
-                    Implies => "==>",
-                    HeightCompare { .. } => "",
-                    Eq(_) => "==",
-                    Ne => "!=",
-                    Inequality(o) => match o {
-                        Le => "<=",
-                        Ge => ">=",
-                        Lt => "<",
-                        Gt => ">",
-                    },
-                    Arith(o, _) => match o {
-                        Add => "+",
-                        Sub => "-",
-                        Mul => "*",
-                        EuclideanDiv => "/",
-                        EuclideanMod => "%",
-                    },
-                    Bitwise(o, _) => match o {
-                        BitXor => "^",
-                        BitAnd => "&",
-                        BitOr => "|",
-                        Shr(..) => ">>",
-                        Shl(..) => "<<",
-                    },
-                    StrGetChar => "ignored", // This is a non-inline BinaryOp, so it needs special handling below
-                    ArrayIndex => "ignored", // This is a non-inline BinaryOp, so it needs special handling below
-                };
-                if let BinaryOp::StrGetChar = op {
-                    (format!("{}.get_char({})", left, e2.x.to_user_string(global)), prec_exp)
-                } else if let HeightCompare { .. } = op {
-                    (format!("height_compare({left}, {right})"), prec_exp)
-                } else if let ArrayIndex = op {
-                    (format!("array_index({left}, {right})"), prec_exp)
-                } else {
-                    (format!("{} {} {}", left, op_str, right), prec_exp)
-                }
-            }
+                                        let (prec_exp, prec_left, prec_right) = op.prec_of_binary_op();
+                                        use ArithOp::*;
+                                        use BinaryOp::*;
+                                        use BitwiseOp::*;
+                                        use InequalityOp::*;
+                                        let left = e1.x.to_string_prec(global, prec_left);
+                                        let right = e2.x.to_string_prec(global, prec_right);
+                                        let op_str = match op {
+                                            And => "&&",
+                                            Or => "||",
+                                            Xor => "^",
+                                            Implies => "==>",
+                                            HeightCompare { .. } => "",
+                                            Eq(_) => "==",
+                                            Ne => "!=",
+                                            Inequality(o) => match o {
+                                                Le => "<=",
+                                                Ge => ">=",
+                                                Lt => "<",
+                                                Gt => ">",
+                                            },
+                                            Arith(o, _) => match o {
+                                                Add => "+",
+                                                Sub => "-",
+                                                Mul => "*",
+                                                EuclideanDiv => "/",
+                                                EuclideanMod => "%",
+                                            },
+                                            Bitwise(o, _) => match o {
+                                                BitXor => "^",
+                                                BitAnd => "&",
+                                                BitOr => "|",
+                                                Shr(..) => ">>",
+                                                Shl(..) => "<<",
+                                            },
+                                            StrGetChar => "ignored", // This is a non-inline BinaryOp, so it needs special handling below
+                                            ArrayIndex => "ignored", // This is a non-inline BinaryOp, so it needs special handling below
+                                        };
+                                        if let BinaryOp::StrGetChar = op {
+                                            (format!("{}.get_char({})", left, e2.x.to_user_string(global)), prec_exp)
+                                        } else if let HeightCompare { .. } = op {
+                                            (format!("height_compare({left}, {right})"), prec_exp)
+                                        } else if let ArrayIndex = op {
+                                            (format!("array_index({left}, {right})"), prec_exp)
+                                        } else {
+                                            (format!("{} {} {}", left, op_str, right), prec_exp)
+                                        }
+                                    }
             BinaryOpr(crate::ast::BinaryOpr::ExtEq(deep, _), e1, e2) => {
-                let (prec_exp, prec_left, prec_right) =
-                    BinaryOp::Eq(Mode::Spec).prec_of_binary_op();
-                let left = e1.x.to_string_prec(global, prec_left);
-                let right = e2.x.to_string_prec(global, prec_right);
-                let op_str = if *deep { "=~~=" } else { "=~=" };
-                (format!("{} {} {}", left, op_str, right), prec_exp)
-            }
+                                        let (prec_exp, prec_left, prec_right) =
+                                            BinaryOp::Eq(Mode::Spec).prec_of_binary_op();
+                                        let left = e1.x.to_string_prec(global, prec_left);
+                                        let right = e2.x.to_string_prec(global, prec_right);
+                                        let op_str = if *deep { "=~~=" } else { "=~=" };
+                                        (format!("{} {} {}", left, op_str, right), prec_exp)
+                                    }
             If(e1, e2, e3) => (
-                format!(
-                    "if {} {{ {} }} else {{ {} }}",
-                    e1.x.to_user_string(global),
-                    e2.x.to_user_string(global),
-                    e3.x.to_user_string(global)
-                ),
-                99,
-            ),
+                                        format!(
+                                            "if {} {{ {} }} else {{ {} }}",
+                                            e1.x.to_user_string(global),
+                                            e2.x.to_user_string(global),
+                                            e3.x.to_user_string(global)
+                                        ),
+                                        99,
+                                    ),
             Bind(bnd, exp) => {
-                let s = match &bnd.x {
-                    BndX::Let(bnds) => {
-                        let assigns = bnds
-                            .iter()
-                            .map(|b| {
-                                format!(
-                                    "{} = {}",
-                                    user_local_name(&b.name),
-                                    b.a.x.to_user_string(global)
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        format!("let {} in {}", assigns, exp.x.to_user_string(global))
-                    }
-                    BndX::Quant(Quant { quant: q, .. }, bnds, _trigs, _) => {
-                        let q_str = match q {
-                            air::ast::Quant::Forall => "forall",
-                            air::ast::Quant::Exists => "exists",
-                        };
-                        let vars = bnds
-                            .iter()
-                            .map(|b| format!("{}", user_local_name(&b.name)))
-                            .collect::<Vec<_>>()
-                            .join(", ");
+                                        let s = match &bnd.x {
+                                            BndX::Let(bnds) => {
+                                                let assigns = bnds
+                                                    .iter()
+                                                    .map(|b| {
+                                                        format!(
+                                                            "{} = {}",
+                                                            user_local_name(&b.name),
+                                                            b.a.x.to_user_string(global)
+                                                        )
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ");
+                                                format!("let {} in {}", assigns, exp.x.to_user_string(global))
+                                            }
+                                            BndX::Quant(Quant { quant: q, .. }, bnds, _trigs, _) => {
+                                                let q_str = match q {
+                                                    air::ast::Quant::Forall => "forall",
+                                                    air::ast::Quant::Exists => "exists",
+                                                };
+                                                let vars = bnds
+                                                    .iter()
+                                                    .map(|b| format!("{}", user_local_name(&b.name)))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ");
 
-                        format!("({} |{}| {})", q_str, vars, exp.x.to_user_string(global))
-                    }
-                    BndX::Lambda(bnds, _trigs) => {
-                        let assigns = bnds
-                            .iter()
-                            .map(|b| format!("{}", user_local_name(&b.name)))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        format!("(|{}| {})", assigns, exp.x.to_user_string(global))
-                    }
-                    BndX::Choose(bnds, _trigs, cond) => {
-                        let vars = bnds
-                            .iter()
-                            .map(|b| format!("{}", user_local_name(&b.name)))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        format!(
-                            "(choose |{}| {}, {})",
-                            vars,
-                            cond.x.to_user_string(global),
-                            exp.x.to_user_string(global)
-                        )
-                    }
-                };
-                (s, 99)
-            }
+                                                format!("({} |{}| {})", q_str, vars, exp.x.to_user_string(global))
+                                            }
+                                            BndX::Lambda(bnds, _trigs) => {
+                                                let assigns = bnds
+                                                    .iter()
+                                                    .map(|b| format!("{}", user_local_name(&b.name)))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ");
+                                                format!("(|{}| {})", assigns, exp.x.to_user_string(global))
+                                            }
+                                            BndX::Choose(bnds, _trigs, cond) => {
+                                                let vars = bnds
+                                                    .iter()
+                                                    .map(|b| format!("{}", user_local_name(&b.name)))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ");
+                                                format!(
+                                                    "(choose |{}| {}, {})",
+                                                    vars,
+                                                    cond.x.to_user_string(global),
+                                                    exp.x.to_user_string(global)
+                                                )
+                                            }
+                                        };
+                                        (s, 99)
+                                    }
             Ctor(dt, variant_id, bnds) => {
-                let style = match dt {
-                    Dt::Path(path) => match global.datatypes.get(path) {
-                        Some((_, variants)) => get_variant(variants, variant_id).ctor_style,
-                        _ => CtorPrintStyle::Braces,
-                    },
-                    Dt::Tuple(_) => CtorPrintStyle::Tuple,
-                };
-                match style {
-                    CtorPrintStyle::Parens | CtorPrintStyle::Tuple => {
-                        match sst_unpack_tuple_style_ctor(self) {
-                            Some(es) => {
-                                let args = es
-                                    .iter()
-                                    .map(|e| e.x.to_user_string(global))
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                let variant = if matches!(style, CtorPrintStyle::Parens) {
-                                    &variant_id
-                                } else {
-                                    ""
-                                };
-                                (format!("{}({})", variant, args), 99)
-                            }
-                            None => {
-                                // This probably shouldn't happen; if it does, fall back
-                                // on the brace style
-                                let args = bnds
-                                    .iter()
-                                    .map(|b| {
-                                        format!("{}: {}", b.name, b.a.x.to_user_string(global))
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                (format!("{} {} {} {}", variant_id, "{", args, "}"), 99)
-                            }
-                        }
-                    }
-                    CtorPrintStyle::Const => (format!("{}", variant_id), 99),
-                    CtorPrintStyle::Braces => {
-                        let args = bnds
-                            .iter()
-                            .map(|b| format!("{}: {}", b.name, b.a.x.to_user_string(global)))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        (format!("{} {} {} {}", variant_id, "{", args, "}"), 99)
-                    }
-                }
-            }
+                                        let style = match dt {
+                                            Dt::Path(path) => match global.datatypes.get(path) {
+                                                Some((_, variants)) => get_variant(variants, variant_id).ctor_style,
+                                                _ => CtorPrintStyle::Braces,
+                                            },
+                                            Dt::Tuple(_) => CtorPrintStyle::Tuple,
+                                        };
+                                        match style {
+                                            CtorPrintStyle::Parens | CtorPrintStyle::Tuple => {
+                                                match sst_unpack_tuple_style_ctor(self) {
+                                                    Some(es) => {
+                                                        let args = es
+                                                            .iter()
+                                                            .map(|e| e.x.to_user_string(global))
+                                                            .collect::<Vec<_>>()
+                                                            .join(", ");
+                                                        let variant = if matches!(style, CtorPrintStyle::Parens) {
+                                                            &variant_id
+                                                        } else {
+                                                            ""
+                                                        };
+                                                        (format!("{}({})", variant, args), 99)
+                                                    }
+                                                    None => {
+                                                        // This probably shouldn't happen; if it does, fall back
+                                                        // on the brace style
+                                                        let args = bnds
+                                                            .iter()
+                                                            .map(|b| {
+                                                                format!("{}: {}", b.name, b.a.x.to_user_string(global))
+                                                            })
+                                                            .collect::<Vec<_>>()
+                                                            .join(", ");
+                                                        (format!("{} {} {} {}", variant_id, "{", args, "}"), 99)
+                                                    }
+                                                }
+                                            }
+                                            CtorPrintStyle::Const => (format!("{}", variant_id), 99),
+                                            CtorPrintStyle::Braces => {
+                                                let args = bnds
+                                                    .iter()
+                                                    .map(|b| format!("{}: {}", b.name, b.a.x.to_user_string(global)))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ");
+                                                (format!("{} {} {} {}", variant_id, "{", args, "}"), 99)
+                                            }
+                                        }
+                                    }
             CallLambda(e, args) => {
-                let args =
-                    args.iter().map(|e| e.x.to_user_string(global)).collect::<Vec<_>>().join(", ");
-                (format!("{}({})", e.x.to_user_string(global), args), 99)
-            }
+                                        let args =
+                                            args.iter().map(|e| e.x.to_user_string(global)).collect::<Vec<_>>().join(", ");
+                                        (format!("{}({})", e.x.to_user_string(global), args), 99)
+                                    }
             ArrayLiteral(es) => {
-                let v =
-                    es.iter().map(|e| e.x.to_user_string(global)).collect::<Vec<_>>().join(", ");
-                (format!("[{}]", v), 99)
-            }
+                                        let v =
+                                            es.iter().map(|e| e.x.to_user_string(global)).collect::<Vec<_>>().join(", ");
+                                        (format!("[{}]", v), 99)
+                                    }
             Interp(e) => {
-                use InterpExp::*;
-                match e {
-                    FreeVar(id) => (format!("{}", user_local_name(id)), 99),
-                    Seq(s) => {
-                        let v = s
-                            .iter()
-                            .map(|e| e.x.to_user_string(global))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        (format!("[{}]", v), 99)
-                    }
-                    Closure(e, _ctx) => (format!("{}", e.x.to_user_string(global)), 99),
-                    Array(s) => {
-                        let v = s
-                            .iter()
-                            .map(|e| e.x.to_user_string(global))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        (format!("[{}]", v), 99)
-                    }
-                }
-            }
+                                        use InterpExp::*;
+                                        match e {
+                                            FreeVar(id) => (format!("{}", user_local_name(id)), 99),
+                                            Seq(s) => {
+                                                let v = s
+                                                    .iter()
+                                                    .map(|e| e.x.to_user_string(global))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ");
+                                                (format!("[{}]", v), 99)
+                                            }
+                                            Closure(e, _ctx) => (format!("{}", e.x.to_user_string(global)), 99),
+                                            Array(s) => {
+                                                let v = s
+                                                    .iter()
+                                                    .map(|e| e.x.to_user_string(global))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ");
+                                                (format!("[{}]", v), 99)
+                                            }
+                                        }
+                                    }
             FuelConst(i) => (format!("fuel({i:})"), 99),
-            Old(..) | WithTriggers(..) => ("".to_string(), 99), // We don't show the user these internal expressions
+            Old(..) | WithTriggers(..) => ("".to_string(), 99),
+            Await(spanned_typed) => todo!(),
+            Async(spanned_typed) => todo!(),
+            FutureView(spanned_typed) => todo!(),
         };
         if precedence <= inner_precedence { s } else { format!("({})", s) }
     }

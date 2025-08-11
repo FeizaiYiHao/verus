@@ -50,72 +50,75 @@ fn expr_get_early_exits_rec(
     expr_visitor_dfs::<(), _>(expr, scope_map, &mut |scope_map, expr| {
         match &expr.x {
             ExprX::Const(..)
-            | ExprX::Var(..)
-            | ExprX::VarLoc(..)
-            | ExprX::VarAt(..)
-            | ExprX::ConstVar(..)
-            | ExprX::StaticVar(..)
-            | ExprX::Loc(..)
-            | ExprX::Call(CallTarget::Fun(..), _)
-            | ExprX::Call(CallTarget::FnSpec(..), _)
-            | ExprX::Call(CallTarget::BuiltinSpecFun(..), _)
-            | ExprX::ArrayLiteral(..)
-            | ExprX::Ctor(..)
-            | ExprX::NullaryOpr(..)
-            | ExprX::Unary(..)
-            | ExprX::UnaryOpr(..)
-            | ExprX::Binary(..)
-            | ExprX::BinaryOpr(..)
-            | ExprX::Multi(..)
-            | ExprX::Assign { .. }
-            | ExprX::If(..)
-            | ExprX::Match(..)
-            | ExprX::Ghost { .. }
-            | ExprX::ProofInSpec(..)
-            | ExprX::NeverToAny { .. }
-            | ExprX::Nondeterministic { .. }
-            | ExprX::Block(..) => VisitorControlFlow::Recurse,
+                    | ExprX::Var(..)
+                    | ExprX::VarLoc(..)
+                    | ExprX::VarAt(..)
+                    | ExprX::ConstVar(..)
+                    | ExprX::StaticVar(..)
+                    | ExprX::Loc(..)
+                    | ExprX::Call(CallTarget::Fun(..), _)
+                    | ExprX::Call(CallTarget::FnSpec(..), _)
+                    | ExprX::Call(CallTarget::BuiltinSpecFun(..), _)
+                    | ExprX::ArrayLiteral(..)
+                    | ExprX::Ctor(..)
+                    | ExprX::NullaryOpr(..)
+                    | ExprX::Unary(..)
+                    | ExprX::UnaryOpr(..)
+                    | ExprX::Binary(..)
+                    | ExprX::BinaryOpr(..)
+                    | ExprX::Multi(..)
+                    | ExprX::Assign { .. }
+                    | ExprX::If(..)
+                    | ExprX::Match(..)
+                    | ExprX::Ghost { .. }
+                    | ExprX::ProofInSpec(..)
+                    | ExprX::NeverToAny { .. }
+                    | ExprX::Nondeterministic { .. }
+                    | ExprX::Block(..) => VisitorControlFlow::Recurse,
+            ExprX::AsyncBlock{..} => VisitorControlFlow::Recurse,
+            ExprX::Await(..) => VisitorControlFlow::Return,
             ExprX::Quant(..)
-            | ExprX::Closure(..)
-            | ExprX::NonSpecClosure { .. }
-            | ExprX::ExecFnByName { .. }
-            | ExprX::Choose { .. }
-            | ExprX::WithTriggers { .. }
-            | ExprX::AssertCompute(..)
-            | ExprX::Fuel(..)
-            | ExprX::Header(..)
-            | ExprX::AssertAssume { .. }
-            | ExprX::AssertAssumeUserDefinedTypeInvariant { .. }
-            | ExprX::AssertBy { .. }
-            | ExprX::RevealString(_)
-            | ExprX::AirStmt(_) => VisitorControlFlow::Return,
+                    | ExprX::Closure(..)
+                    | ExprX::NonSpecClosure { .. }
+                    | ExprX::ExecFnByName { .. }
+                    | ExprX::Choose { .. }
+                    | ExprX::WithTriggers { .. }
+                    | ExprX::AssertCompute(..)
+                    | ExprX::Fuel(..)
+                    | ExprX::Header(..)
+                    | ExprX::AssertAssume { .. }
+                    | ExprX::AssertAssumeUserDefinedTypeInvariant { .. }
+                    | ExprX::AssertBy { .. }
+                    | ExprX::RevealString(_)
+                    | ExprX::AirStmt(_) => VisitorControlFlow::Return,
             ExprX::AssertQuery { .. } => VisitorControlFlow::Return,
             ExprX::Loop { cond, body, .. } => {
-                if let Some(cond) = cond {
-                    expr_get_early_exits_rec(cond, in_loop, scope_map, results);
-                }
-                expr_get_early_exits_rec(body, true, scope_map, results);
-                VisitorControlFlow::Return
-            }
+                        if let Some(cond) = cond {
+                            expr_get_early_exits_rec(cond, in_loop, scope_map, results);
+                        }
+                        expr_get_early_exits_rec(body, true, scope_map, results);
+                        VisitorControlFlow::Return
+                    }
             ExprX::Return(_) => {
-                results.push(EarlyExitInst {
-                    span: expr.span.clone(),
-                    _statement: StatementType::Return,
-                });
-                VisitorControlFlow::Recurse
-            }
+                        results.push(EarlyExitInst {
+                            span: expr.span.clone(),
+                            _statement: StatementType::Return,
+                        });
+                        VisitorControlFlow::Recurse
+                    }
             ExprX::BreakOrContinue { label, .. } => {
-                results.push(EarlyExitInst {
-                    span: expr.span.clone(),
-                    _statement: StatementType::BreakOrContinue { _label: label.clone() },
-                });
-                VisitorControlFlow::Recurse
-            }
+                        results.push(EarlyExitInst {
+                            span: expr.span.clone(),
+                            _statement: StatementType::BreakOrContinue { _label: label.clone() },
+                        });
+                        VisitorControlFlow::Recurse
+                    }
             ExprX::OpenInvariant(inv, _binder, _body, _atomicity) => {
-                expr_get_early_exits_rec(inv, in_loop, scope_map, results);
-                // Skip checking nested loops to avoid quadratic behavior:
-                VisitorControlFlow::Return
-            }
+                        expr_get_early_exits_rec(inv, in_loop, scope_map, results);
+                        // Skip checking nested loops to avoid quadratic behavior:
+                        VisitorControlFlow::Return
+                    }
+            ExprX::FutureView(spanned_typed) => VisitorControlFlow::Return,
         }
     });
 }
