@@ -1710,6 +1710,10 @@ fn check_expr_handle_mut_arg(
         ExprX::Nondeterministic => {
             panic!("Nondeterministic is not created by user code right now");
         }
+        ExprX::Await(e) => {
+            let mode = check_expr(ctxt, record, typing, outer_mode, e)?;
+            Ok(mode)
+        }
         ExprX::BorrowMutPhaseOne(_) | ExprX::BorrowMutPhaseTwo(_, _) => {
             panic!("BorrowmutPhaseOne / BorrowMutPhaseTwo should not exist yet");
         }
@@ -1892,6 +1896,14 @@ fn check_function(
     if function.x.ens_has_return {
         ens_typing.insert(&function.x.ret.x.name, function.x.ret.x.mode);
     }
+
+    if function.x.attrs.is_async {
+        if let Some(bindings) = &function.x.async_params_mode_binding {
+            for binding in bindings.iter() {
+                ens_typing.insert(&binding.0, binding.1);
+            }
+        }
+    }
     for expr in function.x.ensure.0.iter().chain(function.x.ensure.1.iter()) {
         let mut ens_typing = ens_typing.push_block_ghostness(Ghost::Ghost);
         let mut ens_typing = ens_typing.push_allow_prophecy_dependence(true);
@@ -1956,6 +1968,13 @@ fn check_function(
     if let Some(body) = &function.x.body {
         let mut body_typing = fun_typing.push_ret_mode(ret_mode);
         let mut body_typing = body_typing.push_block_ghostness(Ghost::of_mode(function.x.mode));
+        if function.x.attrs.is_async {
+            if let Some(bindings) = &function.x.async_params_mode_binding {
+                for binding in bindings.iter() {
+                    body_typing.insert(&binding.0, binding.1);
+                }
+            }
+        }
         assert!(record.infer_spec_for_loop_iter_modes.is_none());
         record.infer_spec_for_loop_iter_modes = Some(Vec::new());
         check_expr_has_mode(

@@ -24,9 +24,9 @@ use air::ast_util::str_ident;
 use rustc_ast::LitKind;
 use rustc_hir::def::{CtorKind, DefKind, Res};
 use rustc_hir::{
-    AssignOpKind, BinOpKind, Block, Closure, Destination, Expr, ExprKind, HirId, ItemKind, LetExpr,
-    LetStmt, Lit, LoopSource, Node, Pat, PatExpr, PatExprKind, PatKind, QPath, Stmt, StmtKind,
-    StructTailExpr, UnOp,
+    AssignOpKind, BinOpKind, Block, Closure, Destination, Expr, ExprKind, HirId, ItemKind,
+    LangItem, LetExpr, LetStmt, Lit, LoopSource, Node, Pat, PatExpr, PatExprKind, PatKind, QPath,
+    Stmt, StmtKind, StructTailExpr, UnOp,
 };
 use rustc_hir::{Attribute, BindingMode, BorrowKind, ByRef, Mutability};
 use rustc_middle::ty::adjustment::{
@@ -52,6 +52,7 @@ use vir::ast_util::{
 };
 use vir::def::{field_ident_from_rust, positional_field_ident};
 
+#[derive(Debug)]
 pub(crate) enum ExprOrPlace {
     Expr(vir::ast::Expr),
     Place(Place),
@@ -2307,6 +2308,27 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     mk_expr(ExprX::If(vir_cond, vir_lhs, vir_rhs))
                 }
             }
+        }
+        // This a desugered `await` expression
+        ExprKind::Match(
+            Expr {
+                hir_id: _,
+                kind:
+                    ExprKind::Call(
+                        Expr {
+                            hir_id: _,
+                            kind: ExprKind::Path(QPath::LangItem(LangItem::IntoFutureIntoFuture, _)),
+                            span: _,
+                        },
+                        call_args,
+                    ),
+                span: _,
+            },
+            _arms,
+            _match_source,
+        ) => {
+            let vir_expr = expr_to_vir_consume(bctx, &call_args[0], modifier)?;
+            mk_expr(ExprX::Await(vir_expr))
         }
         ExprKind::Match(expr, arms, _match_source) => {
             let vir_place = expr_to_vir(bctx, expr, modifier)?.to_place();

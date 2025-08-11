@@ -536,6 +536,7 @@ fn hash_exp<H: Hasher>(state: &mut H, exp: &Exp) {
         FuelConst(i) => {
             dohash!(19, i);
         }
+        Await(e) => dohash!(20; hash_exp(e)),
     }
 }
 
@@ -1738,10 +1739,10 @@ fn eval_expr_internal(ctx: &Ctx, state: &mut State, exp: &Exp) -> Result<Exp, Vi
             InterpExp::Closure(_, _) => ok,
             InterpExp::Array(_) => ok,
         },
-        // Ignored by the interpreter at present (i.e., treated as symbolic)
         VarAt(..) | VarLoc(..) | Loc(..) | Old(..) | WithTriggers(..) | StaticVar(..) => ok,
         ExecFnByName(_) => ok,
         FuelConst(_) => ok,
+        Await(spanned_typed) => todo!(),
     };
     let res = r?;
     state.depth -= 1;

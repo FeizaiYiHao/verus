@@ -84,7 +84,7 @@ pub(crate) struct State<'a> {
     pub mask: Option<MaskSet>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum ReturnValue {
     Some(Exp),
     ImplicitUnit(Span),
@@ -1661,7 +1661,7 @@ pub(crate) fn expr_to_stm_opt(
 
             if skip {
                 state.diagnostics.report(&warning(
-                    &expr.span, "this reveal/fuel statement has no effect because no verification condition in this module depends on this function").to_any());
+                                &expr.span, "this reveal/fuel statement has no effect because no verification condition in this module depends on this function").to_any());
             }
 
             let stms = if skip {
@@ -2088,7 +2088,7 @@ pub(crate) fn expr_to_stm_opt(
                     .unwrap_or(false)
             {
                 return Err(error(&expr.span, "loop must have a decreases clause")
-                    .help("to disable this check, use #[verifier::exec_allows_no_decreases_clause] on the function"));
+                                .help("to disable this check, use #[verifier::exec_allows_no_decreases_clause] on the function"));
             }
 
             let (mut stms1, _e1) = expr_to_stm_opt(ctx, state, body)?;
@@ -2406,6 +2406,9 @@ pub(crate) fn expr_to_stm_opt(
                 state.declare_temp_var_stm(&expr.span, &expr.typ, LocalDeclKind::Nondeterministic);
             let stm = assume_has_typ(&var_ident, &expr.typ, &expr.span);
             Ok((vec![stm], ReturnValue::Some(exp)))
+        }
+        ExprX::Await(_) => {
+            panic!("Await should have been removed in async rewrite")
         }
         ExprX::BorrowMut(_place) => {
             panic!("BorrowMut should have been removed in simplify");

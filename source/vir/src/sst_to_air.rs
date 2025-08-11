@@ -1396,6 +1396,9 @@ pub(crate) fn exp_to_expr(ctx: &Ctx, exp: &Exp, expr_ctxt: &ExprCtxt) -> Result<
         ExpX::Interp(_) => {
             panic!("Found an interpreter expression {:?} outside the interpreter", exp)
         }
+        ExpX::Await(_) => {
+            panic!("Found an Await expression {:?} after async function rewrite", exp)
+        }
     };
     Ok(result)
 }
@@ -2030,6 +2033,7 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
 
                     let mut stmts =
                         stm_to_stmts(ctx, state, &assume_var(&stm.span, &dest_id, ret_exp))?;
+                    // println!("ret stmts {:#?}", stmts);
                     if is_in_opaque_func {
                         let ret = ret_op.as_ref().expect("opaque function has no return type");
                         let ret_expr_typs = typ_to_ids(&ret_exp.typ);

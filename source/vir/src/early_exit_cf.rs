@@ -122,6 +122,7 @@ fn expr_get_early_exits_rec(
                 // Skip checking nested loops to avoid quadratic behavior:
                 VisitorControlFlow::Return
             }
+            ExprX::Await(_) => panic!("Found an Await Expression after async function rewrite"),
         }
     });
 }

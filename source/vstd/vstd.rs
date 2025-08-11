@@ -32,6 +32,8 @@ pub mod cell;
 pub mod compute;
 pub mod float;
 pub mod function;
+#[cfg(feature = "std")]
+pub mod future;
 #[cfg(all(feature = "alloc", feature = "std"))]
 pub mod hash_map;
 #[cfg(all(feature = "alloc", feature = "std"))]

@@ -93,6 +93,7 @@ pub enum ExpX {
     // only used internally by the interpreter; should never be seen outside it
     Interp(InterpExp),
     FuelConst(usize),
+    Await(Exp),
 }
 
 #[derive(Debug, Clone, Copy, ToDebugSNode)]
