@@ -1376,14 +1376,14 @@ pub type Datatypes = Vec<Datatype>;
 
 /// Opaque type constructors
 #[derive(Clone, Debug, Serialize, Deserialize, ToDebugSNode)]
-pub struct OpaquetypeX {
+pub struct OpaqueTypeX {
     pub name: Path,
     pub typ_params: Typs,
     pub typ_bounds: GenericBounds,
 }
 
-pub type Opaquetype = Arc<Spanned<OpaquetypeX>>;
-pub type Opaquetypes = Vec<Opaquetype>;
+pub type OpaqueType = Arc<Spanned<OpaqueTypeX>>;
+pub type OpaqueTypes = Vec<OpaqueType>;
 
 pub type Trait = Arc<Spanned<TraitX>>;
 #[derive(Clone, Debug, Serialize, Deserialize, ToDebugSNode)]
@@ -1490,5 +1490,5 @@ pub struct KrateX {
     /// Arch info
     pub arch: Arch,
     /// All opaque type constructors
-    pub opaque_types: Vec<Opaquetype>,
+    pub opaque_types: OpaqueTypes,
 }
