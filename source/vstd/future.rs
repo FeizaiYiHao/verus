@@ -20,6 +20,7 @@ pub trait FutureAdditionalSpecFns<T>: Future<Output = T> {
         ensures
             self.awaited() == true,
             ret == self@,
+        opens_invariants none
     ;
 }
 

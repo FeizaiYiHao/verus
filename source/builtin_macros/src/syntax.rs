@@ -841,6 +841,10 @@ impl Visitor {
             stmts.push(stmt);
         }
 
+        if let Some(stmt) = check_async_fn_open_invariants(sig) {
+            stmts.push(stmt);
+        }
+
         match (vis, &sig.publish, &sig.mode, &semi_token, self.erase_ghost.erase()) {
             (Some(Visibility::Inherited), _, _, _, _) => {}
             (
@@ -5463,6 +5467,34 @@ fn check_verus_return_ident(
         }
     }
     None
+}
+
+///
+fn check_async_fn_open_invariants(
+    sig: &mut Signature
+)-> Option<Stmt> {
+    if sig.asyncness.is_none() {
+        return None;
+    }
+    match &sig.spec.invariants{
+        Some(invs) => {
+            if matches!(invs.set, InvariantNameSet::Any(..) | InvariantNameSet::Set(..) | InvariantNameSet::List(..)){
+                return Some(stmt_with_semi!(
+                    invs.span() =>
+                    compile_error!("async functions cannot open any invariants")
+                ));
+            }else{
+                return None;
+            }
+        },
+        None => {
+            sig.spec.invariants = Some(SignatureInvariants{ 
+                token: Token![opens_invariants](sig.asyncness.span()),  
+                set: InvariantNameSet::None(verus_syn::InvariantNameSetNone{token: Token![none](sig.asyncness.span())})
+            });
+            return None;
+        },
+    }
 }
 
 /// 
