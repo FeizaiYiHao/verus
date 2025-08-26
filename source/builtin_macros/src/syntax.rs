@@ -529,8 +529,6 @@ impl Visitor {
 
         let ensures = merge_default_ensures(ensures, default_ensures);
 
-        println!("ensures {:#?}", ensures);
-
         let mut spec_stmts = Vec::new();
         // TODO: wrap specs inside ghost blocks
         if let Some(Requires { token, mut exprs }) = requires {
