@@ -731,6 +731,10 @@ fn visit_exp(ctx: &Ctx, state: &mut State, exp: &Exp) -> Exp {
         }
         ExpX::Interp(_) => panic!("unexpected ExpX::Interp"),
         ExpX::FuelConst(_) => exp.clone(),
+        ExpX::Await(e) => {
+            let e = visit_exp(ctx, state, e);
+            mk_exp_typ(&exp.clone().typ, ExpX::Await(e))
+        }
     }
 }
 

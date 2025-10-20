@@ -1396,6 +1396,9 @@ pub(crate) fn exp_to_expr(ctx: &Ctx, exp: &Exp, expr_ctxt: &ExprCtxt) -> Result<
         ExpX::Interp(_) => {
             panic!("Found an interpreter expression {:?} outside the interpreter", exp)
         }
+        ExpX::Await(_) => {
+            panic!("Found an Await expression {:?} after async function rewrite", exp)
+        }
     };
     Ok(result)
 }

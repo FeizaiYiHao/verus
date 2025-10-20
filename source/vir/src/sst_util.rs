@@ -258,6 +258,8 @@ fn subst_exp_rec(ctxt: &SubstCtxt, state: &mut SubstState, exp: &Exp) -> Exp {
         ExpX::Interp(_) => {
             panic!("Found an interpreter expression {:?} outside the interpreter", exp)
         }
+        ExpX::Await(_) => 
+            panic!("Found an Await expression {:?} after rewrite async functions ", exp),
     }
 }
 
@@ -698,6 +700,7 @@ impl ExpX {
             }
             FuelConst(i) => (format!("fuel({i:})"), 99),
             Old(..) | WithTriggers(..) => ("".to_string(), 99), // We don't show the user these internal expressions
+            Await(spanned_typed) => todo!(),
         };
         if precedence <= inner_precedence { s } else { format!("({})", s) }
     }

@@ -366,6 +366,10 @@ pub(crate) trait Visitor<R: Returner, Err, Scope: Scoper> {
                 R::ret(|| exp_new(ExpX::ArrayLiteral(R::get_vec_a(es))))
             }
             ExpX::Interp(_) => R::ret(|| exp_new(exp.x.clone())),
+            ExpX::Await(e) => {
+                let e = self.visit_exp(e)?;
+                R::ret(|| exp_new(ExpX::Await(R::get(e))))
+            }
         }
     }
 

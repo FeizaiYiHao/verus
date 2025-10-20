@@ -329,6 +329,9 @@ fn check_trigger_expr(
             ExpX::FuelConst(_) => {
                 panic!("Found FuelConst expression during trigger selection")
             }
+            ExpX::Await(_) => {
+                panic!("Found an Await expression during trigger selection")
+            }
         },
     )
 }
