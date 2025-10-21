@@ -2314,11 +2314,11 @@ fn rewrite_async_func<'tcx>(
             }
             let ret_op = if let Some(ret) = ret_op { Some(mk_call_expr(ret)) } else { None };
             println!("old body {:#?}", body);
-            body = Some(SpannedTyped::new(
-                &body_expr.span,
-                &mk_typ(body_expr),
-                ExprX::Block(Arc::new(rewriten_stmts), ret_op),
-            ));
+            // body = Some(SpannedTyped::new(
+            //     &body_expr.span,
+            //     &mk_typ(body_expr),
+            //     ExprX::Block(Arc::new(rewriten_stmts), ret_op),
+            // ));
             println!("rewritten body {:#?}", body);
         }
     }
