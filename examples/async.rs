@@ -3,15 +3,28 @@ use vstd::*;
 use vstd::future::*;
 
 verus! {
-    pub async fn foo() -> (ret: usize)
+    trait DummyTrait{
+        spec fn s(&self) -> bool;
+    }
+    impl DummyTrait for bool{
+        spec fn s(&self) -> bool{
+            true
+        }
+    }
+    // fn return_opaque_variable() -> impl DummyTrait{
+    //     true
+    // }
+
+
+    async fn foo() -> (ret: impl DummyTrait)
         ensures
-            ret.awaited() ==> ret@ == 1,
+            ret.awaited() ==> ret@.s(),
     {
         if true{
-            return 2;
-            1
+            return true;
+            true
         }else{
-            2
+            true
         }
     }
 }
