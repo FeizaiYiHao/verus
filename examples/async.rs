@@ -7,7 +7,12 @@ verus! {
         ensures
             ret.awaited() ==> ret@ == 1,
     {
-        1
+        if true{
+            return 2;
+            1
+        }else{
+            2
+        }
     }
 }
 
