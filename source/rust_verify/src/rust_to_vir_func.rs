@@ -269,9 +269,9 @@ pub(crate) fn async_body_to_vir<'tcx>(
 
     let async_body_expr = match body.value.kind {
         rustc_hir::ExprKind::Closure(cls) => {
-            println!("async func body {:#?}", body);
+            // println!("async func body {:#?}", body);
             let closure_body = crate::rust_to_vir_func::find_body(ctxt, &cls.body);
-            println!("async func closure_body {:#?}", closure_body);
+            // println!("async func closure_body {:#?}", closure_body);
             match closure_body.value.kind {
                 rustc_hir::ExprKind::Block(block, ..) => {
                     let expr = block.expr.expect("async closure expr");
@@ -2313,13 +2313,13 @@ fn rewrite_async_func<'tcx>(
                 rewriten_stmts.push(rewrite_async_func_stmt(&bctx, stmt)?);
             }
             let ret_op = if let Some(ret) = ret_op { Some(mk_call_expr(ret)) } else { None };
-            println!("old body {:#?}", body);
+            // println!("old body {:#?}", body);
             // body = Some(SpannedTyped::new(
             //     &body_expr.span,
             //     &mk_typ(body_expr),
             //     ExprX::Block(Arc::new(rewriten_stmts), ret_op),
             // ));
-            println!("rewritten body {:#?}", body);
+            // println!("rewritten body {:#?}", body);
         }
     }
 

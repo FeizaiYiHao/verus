@@ -80,6 +80,7 @@ pub fn opaque_types_to_air(ctx: &Ctx, opaque_types: &Vec<OpaqueType>) -> Command
                 Arc::new(BindX::Quant(air::ast::Quant::Forall, Arc::new(binders), triggers, qid))
             };
             let mut bound_exprs: Vec<air::ast::Expr> = Vec::new();
+            println!("opaque_type.x.typ_bounds {:#?}", opaque_type.x.typ_bounds);
             for bound in opaque_type.x.typ_bounds.iter() {
                 match &**bound {
                     GenericBoundX::Trait(path, typ_args) => {
@@ -101,6 +102,7 @@ pub fn opaque_types_to_air(ctx: &Ctx, opaque_types: &Vec<OpaqueType>) -> Command
             let axiom = mk_unnamed_axiom(forall);
             commands.push(Arc::new(CommandX::Global(axiom)));
         } else {
+            println!("opaque_type.x.typ_bounds {:#?}", opaque_type.x.typ_bounds);
             let mut bound_exprs: Vec<air::ast::Expr> = Vec::new();
             for bound in opaque_type.x.typ_bounds.iter() {
                 match &**bound {
@@ -109,9 +111,11 @@ pub fn opaque_types_to_air(ctx: &Ctx, opaque_types: &Vec<OpaqueType>) -> Command
                         {
                             bound_exprs.push(bound);
                         }
+                        println!("Trait! {:#?}", bound_exprs);
                     }
                     GenericBoundX::TypEquality(path, typ_args, name, typ) => {
                         bound_exprs.push(typ_equality_bound_to_air(ctx, path, typ_args, name, typ));
+                        println!("TypEquality! {:#?}", bound_exprs);
                     }
                     GenericBoundX::ConstTyp(c, t) => {
                         bound_exprs.push(const_typ_bound_to_air(ctx, c, t));

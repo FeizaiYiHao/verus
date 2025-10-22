@@ -16,16 +16,11 @@ verus! {
     // }
 
 
-    async fn foo() -> (ret: impl DummyTrait)
+    async fn foo() -> (ret: (impl DummyTrait, impl DummyTrait))
         ensures
-            ret.awaited() ==> ret@.s(),
+            ret.awaited() ==> ret@.0.s(),
     {
-        if true{
-            return true;
-            true
-        }else{
-            true
-        }
+        (true, true)
     }
 }
 

@@ -2020,15 +2020,58 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
                     let ret_exp: &Arc<SpannedTyped<ExpX>> =
                         ret_exp.as_ref().expect("if dest is provided, expr must be provided");
 
-                    let mut stmts =
-                        stm_to_stmts(ctx, state, &assume_var(&stm.span, &dest_id, ret_exp))?;
-
-                    // if return value exists, check if we need to emit additional assumes for nested opaque types
-                    let ret_op = ctx
+                    let mut ret_op = ctx
                         .fun
                         .as_ref()
                         .and_then(|f| ctx.func_sst_map.get(&f.current_fun))
                         .map_or(None, |fun| Some(fun.x.ret.x.typ.clone()));
+                    let is_async_fn = ctx
+                        .fun
+                        .as_ref()
+                        .and_then(|f| ctx.func_sst_map.get(&f.current_fun))
+                        .map_or(false, |fun| {
+                            fun.x.attrs.is_async
+                        });
+
+                    let mut stmts = if is_async_fn == false{
+                        stm_to_stmts(ctx, state, &assume_var(&stm.span, &dest_id, ret_exp))?
+                    }else{
+                        let ret = ret_op.as_ref().expect("async function has no return type");
+                        println!("ret {:#?}", ret);
+                        let call = ExpX::Call(
+                            CallFun::Fun(Arc::new(crate::ast::FunX{path: Arc::new(PathX { krate:Some(Arc::new("vstd".to_string())), 
+                            segments: Arc::new(
+                                vec![
+                                    Arc::new("future".to_string()),
+                                    Arc::new("FutureAdditionalSpecFns".to_string()),
+                                    Arc::new("view".to_string()),
+                                ]
+                            ) })}), None),
+                            Arc::new(vec![ret.clone(), ret_exp.typ.clone()]),
+                            Arc::new(vec![SpannedTyped::new(&stm.span, &ret, ExpX::Var(dest_id.clone()))])
+                        );
+                        let eq = ExprX::Binary(
+                            air::ast::BinaryOp::Eq,
+                            exp_to_expr(ctx, ret_exp, expr_ctxt)?,
+                            exp_to_expr(ctx, &SpannedTyped::new(&stm.span, &ret,call), expr_ctxt)?,
+                        );
+                        ret_op = Some(Arc::new(TypX::Projection { trait_typ_args: Arc::new(vec![ret.clone()]), 
+                            trait_path: 
+                            Arc::new(PathX { 
+                                krate:Some(Arc::new("core".to_string())), 
+                                segments: Arc::new(
+                                    vec![
+                                        Arc::new("future".to_string()),
+                                        Arc::new("future".to_string()),
+                                        Arc::new("Future".to_string()),
+                                    ]
+                                )}), 
+                                name: Arc::new("Output".to_string()) }));
+                        vec![Arc::new(StmtX::Assume(eq.into()))]
+                    };
+                    
+
+                    // if return value exists, check if we need to emit additional assumes for nested opaque types
                     if ret_op.is_some() {
                         stmts.extend(opaque_ty_additional_stmts(
                             ctx,
@@ -3130,6 +3173,7 @@ fn opaque_ty_additional_stmts(
     ret_exp_typ: &Typ,
     ret_typ: &Typ,
 ) -> Result<Vec<Stmt>, VirErr> {
+    println!("ret_exp_typ {:#?} ret_typ {:#?}", ret_exp_typ, ret_typ);
     let mut stmts = vec![];
     match &**ret_typ {
         TypX::Datatype(dt_ret_typ, items_ret_typ, _impl_paths) => {
@@ -3163,6 +3207,24 @@ fn opaque_ty_additional_stmts(
             }
         }
         TypX::Opaque { .. } => {
+            let ret_expr_typs = typ_to_ids(ctx, &ret_exp_typ);
+            let ret_value_typs = typ_to_ids(ctx, &ret_typ);
+            let decr = ExprX::Binary(
+                air::ast::BinaryOp::Eq,
+                ret_expr_typs[0].clone(),
+                ret_value_typs[0].clone(),
+            );
+            let assume_decr = Arc::new(StmtX::Assume(Arc::new(decr)));
+            let typ = ExprX::Binary(
+                air::ast::BinaryOp::Eq,
+                ret_expr_typs[1].clone(),
+                ret_value_typs[1].clone(),
+            );
+            let assume_typ = Arc::new(StmtX::Assume(Arc::new(typ)));
+            stmts.push(assume_decr);
+            stmts.push(assume_typ);
+        }
+        TypX::Projection { .. } => {
             let ret_expr_typs = typ_to_ids(ctx, &ret_exp_typ);
             let ret_value_typs = typ_to_ids(ctx, &ret_typ);
             let decr = ExprX::Binary(
