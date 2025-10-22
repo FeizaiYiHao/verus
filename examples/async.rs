@@ -20,7 +20,10 @@ verus! {
         ensures
             ret.awaited() ==> ret@.0.s(),
     {
-        (true, true)
+        let ret = (true, true);
+
+        assert(ret.0.s());
+        ret
     }
 }
 

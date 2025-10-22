@@ -2308,10 +2308,10 @@ fn rewrite_async_func<'tcx>(
                 );
                 SpannedTyped::new(&x.span, &mk_typ(x), call)
             };
-            let mut rewriten_stmts = vec![];
-            for stmt in stmts.iter() {
-                rewriten_stmts.push(rewrite_async_func_stmt(&bctx, stmt)?);
-            }
+            // let mut rewriten_stmts = vec![];
+            // for stmt in stmts.iter() {
+            //     rewriten_stmts.push(rewrite_async_func_stmt(&bctx, stmt)?);
+            // }
             let ret_op = if let Some(ret) = ret_op { Some(mk_call_expr(ret)) } else { None };
             // println!("old body {:#?}", body);
             // body = Some(SpannedTyped::new(

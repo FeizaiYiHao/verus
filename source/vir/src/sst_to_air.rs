@@ -2030,6 +2030,7 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
                         .as_ref()
                         .and_then(|f| ctx.func_sst_map.get(&f.current_fun))
                         .map_or(false, |fun| {
+                            println!("fun.spec {:#?}", fun.x.exec_proof_check);
                             fun.x.attrs.is_async
                         });
 
@@ -2055,7 +2056,7 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
                             exp_to_expr(ctx, ret_exp, expr_ctxt)?,
                             exp_to_expr(ctx, &SpannedTyped::new(&stm.span, &ret,call), expr_ctxt)?,
                         );
-                        ret_op = Some(Arc::new(TypX::Projection { trait_typ_args: Arc::new(vec![ret.clone()]), 
+                        let proj_typ = Arc::new(TypX::Projection { trait_typ_args: Arc::new(vec![ret.clone()]), 
                             trait_path: 
                             Arc::new(PathX { 
                                 krate:Some(Arc::new("core".to_string())), 
@@ -2066,21 +2067,33 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
                                         Arc::new("Future".to_string()),
                                     ]
                                 )}), 
-                                name: Arc::new("Output".to_string()) }));
-                        vec![Arc::new(StmtX::Assume(eq.into()))]
+                                name: Arc::new("Output".to_string()) });
+                        let proj_typ_ids = typ_to_ids(&proj_typ);
+                        let ret_exp_ids = typ_to_ids(&ret_exp.typ);
+                        let assume_dcr = ExprX::Binary(
+                            air::ast::BinaryOp::Eq,
+                            proj_typ_ids[0].clone(),
+                            ret_exp_ids[0].clone(),
+                        ); 
+                        let assume_typ = ExprX::Binary(
+                            air::ast::BinaryOp::Eq,
+                            proj_typ_ids[1].clone(),
+                            ret_exp_ids[1].clone(),
+                        );
+                        vec![Arc::new(StmtX::Assume(eq.into())), Arc::new(StmtX::Assume(assume_dcr.into())), Arc::new(StmtX::Assume(assume_typ.into()))]
                     };
                     
 
-                    // if return value exists, check if we need to emit additional assumes for nested opaque types
-                    if ret_op.is_some() {
-                        stmts.extend(opaque_ty_additional_stmts(
-                            ctx,
-                            state,
-                            &ret_exp.span,
-                            &ret_exp.typ,
-                            &ret_op.unwrap(),
-                        )?);
-                    }
+                    // // if return value exists, check if we need to emit additional assumes for nested opaque types
+                    // if ret_op.is_some() {
+                    //     stmts.extend(opaque_ty_additional_stmts(
+                    //         ctx,
+                    //         state,
+                    //         &ret_exp.span,
+                    //         &ret_exp.typ,
+                    //         &ret_op.unwrap(),
+                    //     )?);
+                    // }
 
                     stmts
                 } else {
