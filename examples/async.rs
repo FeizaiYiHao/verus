@@ -24,6 +24,7 @@ verus! {
 
         assert(ret.0.s());
         ret
+        // (true, true)
     }
 }
 

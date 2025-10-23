@@ -531,6 +531,7 @@ pub fn inherit_default_bodies(krate: &Krate) -> Result<Krate, VirErr> {
                     body: None,
                     extra_dependencies: vec![],
                     async_params_mode_binding: None,
+                    async_body_return_typ: None,
                 };
                 kratex.functions.push(default_function.new_x(inherit_functionx));
             }

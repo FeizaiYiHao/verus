@@ -2025,20 +2025,23 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
                         .as_ref()
                         .and_then(|f| ctx.func_sst_map.get(&f.current_fun))
                         .map_or(None, |fun| Some(fun.x.ret.x.typ.clone()));
-                    let is_async_fn = ctx
+                    let (is_async_fn, async_body_return_type) = ctx
                         .fun
                         .as_ref()
                         .and_then(|f| ctx.func_sst_map.get(&f.current_fun))
-                        .map_or(false, |fun| {
+                        .map_or((false, None), |fun| {
                             println!("fun.spec {:#?}", fun.x.exec_proof_check);
-                            fun.x.attrs.is_async
+                            (fun.x.attrs.is_async, fun.x.async_body_return_typ.clone())
                         });
 
-                    let mut stmts = if is_async_fn == false{
+                    let mut stmts = if is_async_fn == false {
                         stm_to_stmts(ctx, state, &assume_var(&stm.span, &dest_id, ret_exp))?
                     }else{
                         let ret = ret_op.as_ref().expect("async function has no return type");
+                        let async_body_return_type = async_body_return_type.as_ref().expect("async function has no return type");
                         println!("ret {:#?}", ret);
+                        println!("async_body_return_type {:#?}", async_body_return_type);
+                        println!("ret_exp {:#?}", ret_exp);
                         let call = ExpX::Call(
                             CallFun::Fun(Arc::new(crate::ast::FunX{path: Arc::new(PathX { krate:Some(Arc::new("vstd".to_string())), 
                             segments: Arc::new(
@@ -2080,20 +2083,21 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
                             proj_typ_ids[1].clone(),
                             ret_exp_ids[1].clone(),
                         );
+                        ret_op = Some(async_body_return_type.clone());
                         vec![Arc::new(StmtX::Assume(eq.into())), Arc::new(StmtX::Assume(assume_dcr.into())), Arc::new(StmtX::Assume(assume_typ.into()))]
                     };
                     
 
-                    // // if return value exists, check if we need to emit additional assumes for nested opaque types
-                    // if ret_op.is_some() {
-                    //     stmts.extend(opaque_ty_additional_stmts(
-                    //         ctx,
-                    //         state,
-                    //         &ret_exp.span,
-                    //         &ret_exp.typ,
-                    //         &ret_op.unwrap(),
-                    //     )?);
-                    // }
+                    // if return value exists, check if we need to emit additional assumes for nested opaque types
+                    if ret_op.is_some() {
+                        stmts.extend(opaque_ty_additional_stmts(
+                            ctx,
+                            state,
+                            &ret_exp.span,
+                            &ret_exp.typ,
+                            &ret_op.unwrap(),
+                        )?);
+                    }
 
                     stmts
                 } else {
@@ -3187,6 +3191,11 @@ fn opaque_ty_additional_stmts(
     ret_typ: &Typ,
 ) -> Result<Vec<Stmt>, VirErr> {
     println!("ret_exp_typ {:#?} ret_typ {:#?}", ret_exp_typ, ret_typ);
+
+    if let TypX::Boxed(typ) = &**ret_exp_typ {
+        return opaque_ty_additional_stmts(ctx, state, span, typ, ret_typ);
+    }
+
     let mut stmts = vec![];
     match &**ret_typ {
         TypX::Datatype(dt_ret_typ, items_ret_typ, _impl_paths) => {

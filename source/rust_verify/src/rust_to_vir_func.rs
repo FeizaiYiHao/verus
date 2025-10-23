@@ -198,6 +198,7 @@ fn handle_autospec<'tcx>(
                 body: Some(ret_clause.clone()),
                 extra_dependencies: functionx.extra_dependencies.clone(),
                 async_params_mode_binding: functionx.async_params_mode_binding.clone(),
+                async_body_return_typ: functionx.async_body_return_typ.clone(),
             },
         );
 
@@ -1781,6 +1782,7 @@ pub(crate) fn check_item_fn<'tcx>(
         body: body_with_mut_redecls,
         extra_dependencies: header.extra_dependencies,
         async_params_mode_binding: async_mode_binding,
+        async_body_return_typ: None,
     };
 
     if vattrs.external_fn_specification {
@@ -1880,6 +1882,7 @@ fn fix_external_fn_specification_trait_method_decl_typs(
             body,
             extra_dependencies,
             async_params_mode_binding,
+            async_body_return_typ,
         } = func;
 
         unsupported_err_unless!(typ_params.len() == 1, span, "type params");
@@ -1978,6 +1981,7 @@ fn fix_external_fn_specification_trait_method_decl_typs(
             body,
             extra_dependencies,
             async_params_mode_binding,
+            async_body_return_typ: None,
         })
     } else {
         Ok(func)
@@ -2218,6 +2222,7 @@ fn rewrite_async_func<'tcx>(
         mut body,
         extra_dependencies,
         async_params_mode_binding,
+        mut async_body_return_typ,
     } = func;
 
     let async_body_bindings = match body_hir.value.kind {
@@ -2272,6 +2277,10 @@ fn rewrite_async_func<'tcx>(
     params = Arc::new(rewitten_params);
     if let Some(body_expr) = &body {
         // body = Some(rewrite_async_func_expr(&bctx, &body_expr, &ret.x.typ)?);
+ 
+        async_body_return_typ = Some(body_expr.typ.clone());
+        println!("async body return type {:#?}", async_body_return_typ);
+        println!("async body  {:#?}", body);
         let mk_typ = |x: &Expr| {
             Arc::new(TypX::Opaque {
                 def_path: Arc::new(PathX {
@@ -2319,6 +2328,7 @@ fn rewrite_async_func<'tcx>(
             //     &mk_typ(body_expr),
             //     ExprX::Block(Arc::new(rewriten_stmts), ret_op),
             // ));
+
             // println!("rewritten body {:#?}", body);
         }
     }
@@ -2351,6 +2361,7 @@ fn rewrite_async_func<'tcx>(
         body,
         extra_dependencies,
         async_params_mode_binding,
+        async_body_return_typ,
     })
 }
 
@@ -2883,6 +2894,7 @@ pub(crate) fn check_item_const_or_static<'tcx>(
         body: if vattrs.external_body { None } else { Some(vir_body) },
         extra_dependencies: vec![],
         async_params_mode_binding: None,
+        async_body_return_typ: None,
     };
 
     let autospec = handle_autospec(ctxt, span, id, &vattrs, &functionx)?;
@@ -2998,6 +3010,7 @@ pub(crate) fn check_foreign_item_fn<'tcx>(
         body: None,
         extra_dependencies: vec![],
         async_params_mode_binding: None,
+        async_body_return_typ: None,
     };
     let function = ctxt.spanned_new(span, func);
     vir.functions.push(function);

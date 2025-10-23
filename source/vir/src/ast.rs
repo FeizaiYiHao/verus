@@ -1338,6 +1338,8 @@ pub struct FunctionX {
     ///
     ///
     pub async_params_mode_binding: Option<Arc<Vec<(VarIdent, Mode)>>>,
+    ///
+    pub async_body_return_typ: Option<Typ>,
 }
 
 pub type RevealGroup = Arc<Spanned<RevealGroupX>>;

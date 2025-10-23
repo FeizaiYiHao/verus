@@ -484,6 +484,7 @@ fn make_trait_decl(method: &Function, spec_method: &Function) -> Result<Function
         body: _,
         extra_dependencies,
         async_params_mode_binding: _,
+        async_body_return_typ: _,
     } = spec_method.x.clone();
     let mut methodx = method.x.clone();
     while typ_bounds.len() > methodx.typ_bounds.len() {
