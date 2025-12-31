@@ -1034,6 +1034,8 @@ fn visit_func_decl_sst(
         inv_masks,
         unwind_condition,
         fndef_axioms,
+        // async_ens_pars,
+        // async_enss,
     } = function;
 
     state.types.push_scope(true);
@@ -1059,6 +1061,8 @@ fn visit_func_decl_sst(
         inv_masks,
         unwind_condition,
         fndef_axioms,
+        // async_ens_pars: async_ens_pars.clone(),
+        // async_enss: async_enss.clone(),
     }
 }
 
@@ -1207,6 +1211,7 @@ fn visit_function(ctx: &Ctx, function: &FunctionSst) -> FunctionSst {
         ref exec_proof_check,
         ref recommends_check,
         ref safe_api_check,
+        ref async_ret,
     } = &function.x;
 
     if attrs.is_decrease_by {
@@ -1315,6 +1320,7 @@ fn visit_function(ctx: &Ctx, function: &FunctionSst) -> FunctionSst {
         exec_proof_check,
         recommends_check,
         safe_api_check,
+        async_ret: async_ret.clone(),
     };
     Spanned::new(function.span.clone(), functionx)
 }
