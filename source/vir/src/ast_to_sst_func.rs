@@ -959,5 +959,8 @@ pub fn function_to_sst(
         recommends_check,
         safe_api_check,
     };
+    if *function.x.name.path.last_segment() == "adddddd" {
+        println!("functionx sst {:#?}", functionx);
+    }
     Ok(function.new_x(functionx))
 }

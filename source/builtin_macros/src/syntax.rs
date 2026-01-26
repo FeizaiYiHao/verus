@@ -527,6 +527,7 @@ impl Visitor {
         ident: impl ToTokens, // function name.
         generics: Option<impl ToTokens>,
         inputs: (Option<impl ToTokens>, impl ToTokens), // optional self and args
+        external_fn_path: Option<Path>,
     ) -> Vec<Stmt> {
         let requires = self.take_ghost(&mut spec.requires);
         let recommends = self.take_ghost(&mut spec.recommends);
@@ -802,6 +803,7 @@ impl Visitor {
         semi_token: Option<Token![;]>,
         is_trait: bool,
         is_impl_fn: bool,
+        external_fn_path: Option<Path>,
     ) -> Vec<Stmt> {
         let mut stmts: Vec<Stmt> = Vec::new();
         let mut unwrap_ghost_tracked: Vec<Stmt> = Vec::new();
@@ -1025,6 +1027,7 @@ impl Visitor {
             sig.ident.clone(),
             verus_generic_to_tokens(&sig.generics),
             verus_inputs_to_tokens(&sig.inputs),
+            external_fn_path,
         );
         if !self.erase_ghost.erase() {
             stmts.extend(spec_stmts);
@@ -1653,6 +1656,10 @@ impl Visitor {
         } = assume_specification.clone();
         let ex_ident = get_ex_ident_mangle_path(&qself, &path);
 
+        println!("qself {:#?}", qself);
+        println!("path {:#?}", path);
+        println!("ex_ident {:#?}", ex_ident);
+
         let (is_const, paren_token, inputs) = match inputs {
             None => (true, token::Paren { span: into_spans(span) }, Punctuated::new()),
             Some((paren_token, inputs)) => (false, paren_token, inputs),
@@ -1724,6 +1731,7 @@ impl Visitor {
             Some(semi),
             false,
             false,
+            Some(path.clone()),
         );
 
         if self.rustdoc && matches!(vstd_kind(), VstdKind::IsVstd) {
@@ -3940,6 +3948,7 @@ impl VisitMut for Visitor {
             fun.semi_token,
             false,
             false,
+            None,
         );
         fun.block.stmts.splice(0..0, stmts);
         fun.semi_token = None;
@@ -3965,6 +3974,7 @@ impl VisitMut for Visitor {
             method.semi_token,
             false,
             true,
+            None,
         );
         method.block.stmts.splice(0..0, stmts);
         method.semi_token = None;
@@ -3981,7 +3991,7 @@ impl VisitMut for Visitor {
     fn visit_trait_item_fn_mut(&mut self, method: &mut TraitItemFn) {
         let is_spec_method = method.sig.ident.to_string().starts_with(VERUS_SPEC);
         let mut stmts =
-            self.visit_fn(&mut method.attrs, None, &mut method.sig, method.semi_token, true, true);
+            self.visit_fn(&mut method.attrs, None, &mut method.sig, method.semi_token, true, true, None);
         if let Some(block) = &mut method.default {
             block.stmts.splice(0..0, stmts);
         } else if self.erase_ghost.keep() && is_spec_method {
@@ -4965,6 +4975,7 @@ pub(crate) fn sig_specs_attr(
         sig.ident.clone(),
         generic_to_tokens(&sig.generics),
         inputs_to_tokens(&sig.inputs),
+        None,
     ));
     spec_stmts
 }
