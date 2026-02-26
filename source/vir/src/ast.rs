@@ -1414,6 +1414,9 @@ pub struct FunctionAttrsX {
     pub exec_allows_no_decreases_clause: bool,
     /// Is this only for the new_mut_ref experiment
     pub ignore_outside_new_mut_ref: bool,
+
+    pub veriflat_push: bool,
+    pub veriflat_pull: bool,
 }
 
 /// Function specification of its invariant mask

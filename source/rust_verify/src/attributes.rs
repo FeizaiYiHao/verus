@@ -354,6 +354,9 @@ pub(crate) enum Attr {
     StructuralConstWrapper,
     IgnoreOutsideNewMutRefExperiment,
     MigratePostconditionsWithMutRefs(bool),
+
+    VeriFlatPush,
+    VeriFlatPull,
 }
 
 fn get_trigger_arg(span: Span, attr_tree: &AttrTree) -> Result<u64, VirErr> {
@@ -674,6 +677,12 @@ pub(crate) fn parse_attrs(
                 }
                 AttrTree::Fun(_, arg, None) if arg == "exec_allows_no_decreases_clause" => {
                     v.push(Attr::ExecAllowNoDecreasesClause);
+                }
+                AttrTree::Fun(_, arg, None) if arg == "veriflat_push" => {
+                    v.push(Attr::VeriFlatPush);
+                }
+                AttrTree::Fun(_, arg, None) if arg == "veriflat_pull" => {
+                    v.push(Attr::VeriFlatPull);
                 }
                 _ => return err_span(span, "unrecognized verifier attribute"),
             },
@@ -1111,6 +1120,9 @@ pub(crate) struct VerifierAttrs {
     pub(crate) encoded_static: bool,
     pub(crate) structural_const_wrapper: bool,
     pub(crate) ignore_outside_new_mut_ref_experiment: bool,
+
+    pub(crate) veriflat_push: bool,
+    pub(crate) veriflat_pull: bool,
 }
 
 // Check for the `get_field_many_variants` attribute
@@ -1283,6 +1295,8 @@ pub(crate) fn get_verifier_attrs_maybe_check(
         encoded_static: false,
         structural_const_wrapper: false,
         ignore_outside_new_mut_ref_experiment: false,
+        veriflat_push: false,
+        veriflat_pull: false,
     };
     let mut unsupported_rustc_attr: Option<(String, Span)> = None;
     for attr in parse_attrs(attrs, diagnostics)? {

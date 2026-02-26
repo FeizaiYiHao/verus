@@ -118,6 +118,7 @@ pub(crate) fn rewrite_verus_attribute(
     const VERIFY_ATTRS: [&str; 3] = ["rlimit", "spinoff_prover", "external_derive"];
     const DUAL_ATTR: &str = "dual_spec";
     const IGNORE_VERIFY_ATTRS: [&str; 2] = ["external", "external_body"];
+    const VERIFLAT_FUNC_ATTRS: [&str; 2] = ["veriflat_push", "veriflat_pull"];
 
     for arg in &args {
         let path = arg.path().get_ident().expect("Invalid verus verifier attribute");
@@ -154,6 +155,8 @@ pub(crate) fn rewrite_verus_attribute(
                 attributes
                     .push(quote_spanned!(arg.span() => #[verifier::when_used_as_spec(#ident)]));
             }
+        } else if VERIFLAT_FUNC_ATTRS.contains(&path.to_string().as_str()) {
+            attributes.push(quote_spanned!(arg.span() => #[verifier::#arg]));
         } else {
             let span = arg.span();
             return proc_macro::TokenStream::from(quote_spanned!(span =>
