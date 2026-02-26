@@ -357,6 +357,7 @@ pub(crate) enum Attr {
 
     VeriFlatPush,
     VeriFlatPull,
+    VeriFlatSyscall,
 }
 
 fn get_trigger_arg(span: Span, attr_tree: &AttrTree) -> Result<u64, VirErr> {
@@ -682,6 +683,9 @@ pub(crate) fn parse_attrs(
                     v.push(Attr::VeriFlatPush);
                 }
                 AttrTree::Fun(_, arg, None) if arg == "veriflat_pull" => {
+                    v.push(Attr::VeriFlatPull);
+                }
+                AttrTree::Fun(_, arg, None) if arg == "veriflat_syscall" => {
                     v.push(Attr::VeriFlatPull);
                 }
                 _ => return err_span(span, "unrecognized verifier attribute"),
@@ -1123,6 +1127,7 @@ pub(crate) struct VerifierAttrs {
 
     pub(crate) veriflat_push: bool,
     pub(crate) veriflat_pull: bool,
+    pub(crate) veriflat_syscall: bool,
 }
 
 // Check for the `get_field_many_variants` attribute
@@ -1297,6 +1302,7 @@ pub(crate) fn get_verifier_attrs_maybe_check(
         ignore_outside_new_mut_ref_experiment: false,
         veriflat_push: false,
         veriflat_pull: false,
+        veriflat_syscall: false,
     };
     let mut unsupported_rustc_attr: Option<(String, Span)> = None;
     for attr in parse_attrs(attrs, diagnostics)? {

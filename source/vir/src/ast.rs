@@ -1417,6 +1417,7 @@ pub struct FunctionAttrsX {
 
     pub veriflat_push: bool,
     pub veriflat_pull: bool,
+    pub veriflat_syscall: bool,
 }
 
 /// Function specification of its invariant mask

@@ -3,7 +3,7 @@ use verus_builtin_macros::*;
 
 verus! {
 
-#[verifier::veriflat_push]
+#[verifier::veriflat_syscall]
 fn foo(){}
 
 fn main() {
