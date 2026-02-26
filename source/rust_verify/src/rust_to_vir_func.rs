@@ -260,6 +260,7 @@ fn handle_autospec<'tcx>(
                     veriflat_push: functionx.attrs.veriflat_push,
                     veriflat_pull: functionx.attrs.veriflat_pull,
                     veriflat_syscall: functionx.attrs.veriflat_syscall,
+                    veriflat_kernel_level: functionx.attrs.veriflat_kernel_level,
                 }),
                 body: Some(ret_clause.clone()),
                 extra_dependencies: functionx.extra_dependencies.clone(),
@@ -1130,6 +1131,7 @@ fn make_attributes<'tcx>(
         veriflat_push: vattrs.veriflat_push,
         veriflat_pull: vattrs.veriflat_pull,
         veriflat_syscall: vattrs.veriflat_syscall,
+        veriflat_kernel_level: vattrs.veriflat_kernel_level,
     };
     Ok(Arc::new(fattrs))
 }

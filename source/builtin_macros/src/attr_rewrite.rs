@@ -118,7 +118,7 @@ pub(crate) fn rewrite_verus_attribute(
     const VERIFY_ATTRS: [&str; 3] = ["rlimit", "spinoff_prover", "external_derive"];
     const DUAL_ATTR: &str = "dual_spec";
     const IGNORE_VERIFY_ATTRS: [&str; 2] = ["external", "external_body"];
-    const VERIFLAT_FUNC_ATTRS: [&str; 3] = ["veriflat_push", "veriflat_pull", "veriflat_syscall"];
+    const VERIFLAT_FUNC_ATTRS: [&str; 4] = ["veriflat_push", "veriflat_pull", "veriflat_syscall", "veriflat_kernel_level"];
 
     for arg in &args {
         let path = arg.path().get_ident().expect("Invalid verus verifier attribute");
