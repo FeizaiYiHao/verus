@@ -1,9 +1,5 @@
 use crate::ast::{
-    AutospecUsage, BinaryOp, ByRef, CallTarget, CallTargetKind, CtorUpdateTail, Datatype,
-    DeclProph, Dt, Expr, ExprX, FieldOpr, Fun, Function, FunctionKind, InvAtomicity, ItemKind,
-    Krate, Mode, ModeCoercion, MultiOp, MutRefFutureSourceName, OverflowBehavior, Path, Pattern,
-    PatternBinding, PatternX, Place, PlaceX, ReadKind, SpannedTyped, Stmt, StmtX, Typ,
-    TypDecoration, TypX, UnaryOp, UnaryOpr, UnfinalizedReadKind, UnwindSpec, VarIdent, VirErr,
+    AutospecUsage, BinaryOp, ByRef, CallTarget, CallTargetKind, CtorUpdateTail, Datatype, DeclProph, Dt, Expr, ExprX, FieldOpr, Fun, Function, FunctionAttrs, FunctionKind, InvAtomicity, ItemKind, Krate, Mode, ModeCoercion, MultiOp, MutRefFutureSourceName, OverflowBehavior, Path, Pattern, PatternBinding, PatternX, Place, PlaceX, ReadKind, SpannedTyped, Stmt, StmtX, Typ, TypDecoration, TypX, UnaryOp, UnaryOpr, UnfinalizedReadKind, UnwindSpec, VarIdent, VirErr
 };
 use crate::ast_util::{get_field, is_unit, path_as_vstd_name, typ_to_diagnostic_str};
 use crate::def::user_local_name;
@@ -3337,6 +3333,153 @@ fn check_stmt(
     }
 }
 
+fn check_veriflat_stmt(
+    function_attrs: &HashMap<Fun, FunctionAttrs>,
+    function: & Function, 
+    stmt: &Stmt
+)-> Result<(), VirErr> {
+    let caller_attrs = &function.x.attrs;
+
+    let return_veriflat_push_error = |span:&Span| -> Result<(), VirErr>{
+        return Err(error(
+                span,
+                format!("calls a `push` function when the caller function is not marked as push or kernel level"),
+            ));
+    };
+
+    let return_veriflat_pull_error = |span:&Span| -> Result<(), VirErr>{
+        return Err(error(
+                span,
+                format!("calls a `pull` function when the caller function is not marked as pull or kernel level"),
+            ));
+    };
+
+    match &stmt.x{
+        StmtX::Expr(expr) => {
+            check_veriflat_expr(function_attrs, function, expr)?;
+        },
+        // StmtX::Decl { pattern, mode, init, els } => todo!(),
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn check_veriflat_expr(
+    function_attrs: &HashMap<Fun, FunctionAttrs>,
+    function: & Function, 
+    expr: &Expr
+)-> Result<(), VirErr> {
+
+    let caller_attrs = &function.x.attrs;
+
+    let return_veriflat_push_error = |span:&Span| -> Result<(), VirErr>{
+        return Err(error(
+                span,
+                format!("calls a `push` function when the caller function is not marked as push or kernel level"),
+            ));
+    };
+
+    let return_veriflat_pull_error = |span:&Span| -> Result<(), VirErr>{
+        return Err(error(
+                span,
+                format!("calls a `pull` function when the caller function is not marked as pull or kernel level"),
+            ));
+    };
+
+    match &expr.x {
+        ExprX::Call(CallTarget::Fun(_, fun, _, _, _, _), _spanned_typeds, _spanned_typed) => {
+            let callee_attrs = &function_attrs[fun];
+
+            if callee_attrs.veriflat_push && (!caller_attrs.veriflat_push && !caller_attrs.veriflat_kernel_level) {
+                return return_veriflat_push_error(&expr.span);
+            }
+            if callee_attrs.veriflat_pull && (!caller_attrs.veriflat_pull && !caller_attrs.veriflat_kernel_level) {
+                return return_veriflat_pull_error(&expr.span);
+            }
+
+            Ok(())
+        },
+        ExprX::Block(stmts, expr) => {
+            for stmt in stmts.iter(){
+                check_veriflat_stmt(function_attrs, function, stmt)?;
+            }
+            if let Some(expr) = expr.as_ref(){
+                check_veriflat_expr(function_attrs, function, expr)?;
+            }
+            Ok(())
+        },
+        // ExprX::Const(constant) => todo!(),
+        // ExprX::Var(var_ident) => todo!(),
+        // ExprX::VarLoc(var_ident) => todo!(),
+        // ExprX::VarAt(var_ident, var_at) => todo!(),
+        // ExprX::ConstVar(fun_x, autospec_usage) => todo!(),
+        // ExprX::StaticVar(fun_x) => todo!(),
+        // ExprX::Loc(spanned_typed) => todo!(),
+        // ExprX::Ctor(dt, _, items, ctor_update_tail) => todo!(),
+        // ExprX::NullaryOpr(nullary_opr) => todo!(),
+        // ExprX::Unary(unary_op, spanned_typed) => todo!(),
+        // ExprX::UnaryOpr(unary_opr, spanned_typed) => todo!(),
+        // ExprX::Binary(binary_op, spanned_typed, spanned_typed1) => todo!(),
+        // ExprX::BinaryOpr(binary_opr, spanned_typed, spanned_typed1) => todo!(),
+        // ExprX::Multi(multi_op, spanned_typeds) => todo!(),
+        // ExprX::Quant(quant, items, spanned_typed) => todo!(),
+        // ExprX::Closure(items, spanned_typed) => todo!(),
+        // ExprX::NonSpecClosure { params, proof_fn_modes, body, requires, ensures, ret, external_spec } => todo!(),
+        // ExprX::ArrayLiteral(spanned_typeds) => todo!(),
+        // ExprX::ExecFnByName(fun_x) => todo!(),
+        // ExprX::Choose { params, cond, body } => todo!(),
+        // ExprX::WithTriggers { triggers, body } => todo!(),
+        // ExprX::Assign { lhs, rhs, op } => todo!(),
+        // ExprX::AssignToPlace { place, rhs, op, resolve } => todo!(),
+        // ExprX::Fuel(fun_x, _, _) => todo!(),
+        // ExprX::RevealString(_) => todo!(),
+        // ExprX::Header(header_expr_x) => todo!(),
+        // ExprX::AssertAssume { is_assume, expr, msg } => todo!(),
+        // ExprX::AssertAssumeUserDefinedTypeInvariant { is_assume, expr, fun } => todo!(),
+        // ExprX::AssertBy { vars, require, ensure, proof } => todo!(),
+        // ExprX::AssertQuery { requires, ensures, proof, mode } => todo!(),
+        // ExprX::AssertCompute(spanned_typed, compute_mode) => todo!(),
+        // ExprX::If(spanned_typed, spanned_typed1, spanned_typed2) => todo!(),
+        // ExprX::Match(spanned_typed, spanneds) => todo!(),
+        // ExprX::Loop { loop_isolation, allow_complex_invariants, is_for_loop, label, cond, body, invs, decrease } => todo!(),
+        // ExprX::OpenInvariant(spanned_typed, var_binder_x, spanned_typed1, inv_atomicity) => todo!(),
+        // ExprX::Return(spanned_typed) => todo!(),
+        // ExprX::BreakOrContinue { label, is_break } => todo!(),
+        // ExprX::Ghost { alloc_wrapper, tracked, expr } => todo!(),
+        // ExprX::ProofInSpec(spanned_typed) => todo!(),
+        // ExprX::AirStmt(_) => todo!(),
+        // ExprX::NeverToAny(spanned_typed) => todo!(),
+        // ExprX::Nondeterministic => todo!(),
+        // ExprX::BorrowMut(spanned_typed) => todo!(),
+        // ExprX::TwoPhaseBorrowMut(spanned_typed) => todo!(),
+        // ExprX::ImplicitReborrowOrSpecRead(spanned_typed, _, span) => todo!(),
+        // ExprX::ReadPlace(spanned_typed, unfinalized_read_kind) => todo!(),
+        // ExprX::EvalAndResolve(spanned_typed, spanned_typed1) => todo!(),
+        // ExprX::Old(spanned_typed) => todo!(),
+        _ => Ok(())
+    }
+
+}
+fn check_veriflat_function(
+    function_attrs: &HashMap<Fun, FunctionAttrs>,
+    function: &Function)
+    -> Result<(), VirErr> {
+    
+    if function.x.body.is_none(){
+        return Ok(());
+    }
+
+    let body = function.x.body.as_ref().unwrap();
+
+    // println!("{:#?}", function.x.attrs);
+    // if function.x.attrs.veriflat_syscall{
+        // println!("{:#?}", body);
+    // }
+
+    return check_veriflat_expr(function_attrs, function, body);
+}
+
 fn check_function(
     ctxt: &Ctxt,
     record: &mut Record,
@@ -3669,6 +3812,7 @@ fn check_function(
     }
     drop(fun_typing);
     typing.assert_zero_scopes();
+
     Ok(())
 }
 
@@ -3735,5 +3879,15 @@ pub fn check_crate(
             check_function(&ctxt, &mut record, &mut typing, function, new_mut_ref)?;
         }
     }
+
+    let mut map_fun_to_attr = HashMap::new();
+    for function in kratex.functions.iter() {
+        map_fun_to_attr.insert(function.x.name.clone(), function.x.attrs.clone());
+    }
+    for function in kratex.functions.iter() {
+        check_veriflat_function(&map_fun_to_attr, function)?;
+    }
+
+
     Ok((Arc::new(kratex), record.erasure_modes, record.read_kind_finals))
 }

@@ -1391,6 +1391,10 @@ pub(crate) fn get_verifier_attrs_maybe_check(
             Attr::IgnoreOutsideNewMutRefExperiment => {
                 vs.ignore_outside_new_mut_ref_experiment = true
             }
+            Attr::VeriFlatPull => {vs.veriflat_pull = true}
+            Attr::VeriFlatPush => {vs.veriflat_push = true}
+            Attr::VeriFlatKernelLevel => {vs.veriflat_kernel_level = true}
+            Attr::VeriFlatSyscall => {vs.veriflat_syscall = true}
             _ => {}
         }
     }
