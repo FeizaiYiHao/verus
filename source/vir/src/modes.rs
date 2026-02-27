@@ -3333,30 +3333,28 @@ fn check_stmt(
     }
 }
 
+#[derive(PartialEq)]
+pub struct VeriFlatFuncState{
+    pub pulling: bool,
+    pub pushing: bool,
+}
+
+impl VeriFlatFuncState{
+    pub fn push_or_pull(&self) -> bool{
+        self.pulling || self.pushing
+    }
+}
+
 fn check_veriflat_stmt(
     function_attrs: &HashMap<Fun, FunctionAttrs>,
     function: & Function, 
+    state: &mut VeriFlatFuncState,
     stmt: &Stmt
 )-> Result<(), VirErr> {
-    let caller_attrs = &function.x.attrs;
-
-    let return_veriflat_push_error = |span:&Span| -> Result<(), VirErr>{
-        return Err(error(
-                span,
-                format!("calls a `push` function when the caller function is not marked as push or kernel level"),
-            ));
-    };
-
-    let return_veriflat_pull_error = |span:&Span| -> Result<(), VirErr>{
-        return Err(error(
-                span,
-                format!("calls a `pull` function when the caller function is not marked as pull or kernel level"),
-            ));
-    };
 
     match &stmt.x{
         StmtX::Expr(expr) => {
-            check_veriflat_expr(function_attrs, function, expr)?;
+            check_veriflat_expr(function_attrs, function,state, expr)?;
         },
         // StmtX::Decl { pattern, mode, init, els } => todo!(),
         _ => {}
@@ -3367,7 +3365,8 @@ fn check_veriflat_stmt(
 
 fn check_veriflat_expr(
     function_attrs: &HashMap<Fun, FunctionAttrs>,
-    function: & Function, 
+    function: &Function, 
+    state: &mut VeriFlatFuncState,
     expr: &Expr
 )-> Result<(), VirErr> {
 
@@ -3387,9 +3386,28 @@ fn check_veriflat_expr(
             ));
     };
 
+    
+    let return_veriflat_state_error = |span:&Span| -> Result<(), VirErr>{
+        return Err(error(
+                span,
+                format!("Does not return to kernel level when the function has possibly executed a `push` or `pull` operation"),
+            ));
+    };
+
+
     match &expr.x {
         ExprX::Call(CallTarget::Fun(_, fun, _, _, _, _), _spanned_typeds, _spanned_typed) => {
+            if state.push_or_pull(){
+                return return_veriflat_state_error(&expr.span);
+            }
+
             let callee_attrs = &function_attrs[fun];
+            if callee_attrs.veriflat_push{
+                state.pushing = true;
+            }            
+            if callee_attrs.veriflat_pull{
+                state.pulling = true;
+            }
 
             if callee_attrs.veriflat_push && (!caller_attrs.veriflat_push && !caller_attrs.veriflat_kernel_level) {
                 return return_veriflat_push_error(&expr.span);
@@ -3402,10 +3420,10 @@ fn check_veriflat_expr(
         },
         ExprX::Block(stmts, expr) => {
             for stmt in stmts.iter(){
-                check_veriflat_stmt(function_attrs, function, stmt)?;
+                check_veriflat_stmt(function_attrs, function, state, stmt)?;
             }
             if let Some(expr) = expr.as_ref(){
-                check_veriflat_expr(function_attrs, function, expr)?;
+                check_veriflat_expr(function_attrs, function, state, expr)?;
             }
             Ok(())
         },
@@ -3477,7 +3495,7 @@ fn check_veriflat_function(
         // println!("{:#?}", body);
     // }
 
-    return check_veriflat_expr(function_attrs, function, body);
+    return check_veriflat_expr(function_attrs, function, &mut VeriFlatFuncState{ pulling: false, pushing: false }, body);
 }
 
 fn check_function(
