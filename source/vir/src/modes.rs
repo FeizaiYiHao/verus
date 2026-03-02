@@ -3396,7 +3396,7 @@ fn check_veriflat_expr(
 
 
     match &expr.x {
-        ExprX::Call(CallTarget::Fun(_, fun, _, _, _, _), _spanned_typeds, _spanned_typed) => {
+        ExprX::Call(CallTarget::Fun(_, fun, exprs, _, _, _), _spanned_typeds, _spanned_typed) => {
             if state.push_or_pull(){
                 return return_veriflat_state_error(&expr.span);
             }
