@@ -1069,7 +1069,13 @@ pub enum ExprX {
     /// lower to a Call node instead.)
     ///
     /// Used only when new-mut-refs is enabled.
-    AssignToPlace { place: Place, rhs: Expr, op: Option<BinaryOp>, typ: Typ, resolve: bool },
+    AssignToPlace {
+        place: Place,
+        rhs: Expr,
+        op: Option<BinaryOp>,
+        typ: Typ,
+        resolve: bool,
+    },
     /// Reveal definition of an opaque function with some integer fuel amount
     Fuel(Fun, u32, bool),
     /// Reveal a string
