@@ -647,22 +647,6 @@ pub(crate) trait Visitor<R: Returner, Err, Scope: Scoper> {
         }
         let unwind_condition: <R as Returner>::Opt<Arc<SpannedTyped<ExpX>>> =
             R::map_opt(&func_decl.unwind_condition, &mut |exp| self.visit_exp(exp))?;
-        // let async_ens_pars: <R as Returner>::Opt<Arc<Vec<Arc<Spanned<ParX>>>>> =
-        //     R::map_opt(&func_decl.async_ens_pars, &mut |pars: &Arc<Vec<Arc<Spanned<ParX>>>>|
-        //             R::ret_result(||
-        //             Ok(R::get_vec_a(
-        //                 self.visit_pars(&**pars)?
-        //             ))
-        //             )
-        //         )?;
-        // let async_enss: <R as Returner>::Opt<Arc<Vec<Arc<SpannedTyped<ExpX>>>>> =
-        //     R::map_opt(&func_decl.async_enss, &mut |enss: &Arc<Vec<Arc<SpannedTyped<ExpX>>>>|
-        //         R::ret_result(||
-        //             Ok(R::get_vec_a(
-        //                 self.visit_exps(&**enss)?
-        //             ))
-        //             )
-        //     )?;
 
         R::ret(|| FuncDeclSst {
             req_inv_pars: R::get_vec_a(req_inv_pars),
@@ -672,8 +656,6 @@ pub(crate) trait Visitor<R: Returner, Err, Scope: Scoper> {
             inv_masks: R::get_vec_a(inv_masks),
             unwind_condition: R::get_opt(unwind_condition),
             fndef_axioms: R::get_vec_a(fndef_axioms),
-            // async_ens_pars: R::get_opt(async_ens_pars),
-            // async_enss: R::get_opt(async_enss),
         })
     }
 

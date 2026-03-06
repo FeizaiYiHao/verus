@@ -380,6 +380,7 @@ fn visit_and_insert_binders(
     Arc::new(new_bs)
 }
 
+#[derive(Debug)]
 enum InsertPars {
     Native,
     Poly,
@@ -1034,8 +1035,6 @@ fn visit_func_decl_sst(
         inv_masks,
         unwind_condition,
         fndef_axioms,
-        // async_ens_pars,
-        // async_enss,
     } = function;
 
     state.types.push_scope(true);
@@ -1061,8 +1060,6 @@ fn visit_func_decl_sst(
         inv_masks,
         unwind_condition,
         fndef_axioms,
-        // async_ens_pars: async_ens_pars.clone(),
-        // async_enss: async_enss.clone(),
     }
 }
 

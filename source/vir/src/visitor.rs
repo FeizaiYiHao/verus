@@ -27,7 +27,6 @@ pub(crate) trait Returner {
         f: &mut impl FnMut(&A) -> Result<Self::Ret<B>, Err>,
     ) -> Result<Self::Opt<B>, Err>;
     fn ret<A, Err>(f: impl FnOnce() -> A) -> Result<Self::Ret<A>, Err>;
-    fn ret_result<A, Err>(f: impl FnOnce() -> Result<A, Err>) -> Result<Self::Ret<A>, Err>;
 }
 
 pub(crate) struct Walk;
@@ -92,12 +91,6 @@ impl Returner for Walk {
     fn ret<A, Err>(_: impl FnOnce() -> A) -> Result<Self::Ret<A>, Err> {
         Ok(())
     }
-    fn ret_result<A, Err>(f: impl FnOnce() -> Result<A, Err>) -> Result<Self::Ret<A>, Err> {
-        match f() {
-            Ok(_) => Ok(()),
-            Err(err) => Err(err),
-        }
-    }
 }
 
 impl Returner for Rewrite {
@@ -160,13 +153,6 @@ impl Returner for Rewrite {
     }
     fn ret<A, Err>(f: impl FnOnce() -> A) -> Result<Self::Ret<A>, Err> {
         Ok(f())
-    }
-
-    fn ret_result<A, Err>(f: impl FnOnce() -> Result<A, Err>) -> Result<Self::Ret<A>, Err> {
-        match f() {
-            Ok(v) => Ok(v),
-            Err(err) => Err(err),
-        }
     }
 }
 

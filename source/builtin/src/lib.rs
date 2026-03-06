@@ -248,9 +248,9 @@ pub fn constrain_type<T>(_x: T, _y: T) -> bool {
 }
 
 #[cfg(verus_keep_ghost)]
-#[rustc_diagnostic_item = "verus::verus_builtin::get_future_type"]
+#[rustc_diagnostic_item = "verus::verus_builtin::get_future_output_type"]
 #[verifier::spec]
-pub fn get_future_type<T>(_x: impl Future<Output = T>) -> T {
+pub fn get_future_output_type<T>(_x: impl Future<Output = T>) -> T {
     unimplemented!()
 }
 

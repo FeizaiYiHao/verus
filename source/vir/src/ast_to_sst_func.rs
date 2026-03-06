@@ -10,7 +10,6 @@ use crate::ast_to_sst::{
     expr_to_stm_or_error, stms_to_one_stm,
 };
 use crate::ast_util::{is_body_visible_to, unit_typ};
-use crate::ast_visitor;
 use crate::context::{Ctx, FunctionCtx};
 use crate::def::{Spanned, unique_local};
 use crate::inv_masks::MaskSet;
@@ -22,6 +21,7 @@ use crate::sst::{
 };
 use crate::sst_util::subst_exp;
 use crate::util::vec_map;
+use crate::{ast_visitor, fun};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -287,16 +287,7 @@ fn rewrite_async_ens_vir(function: &Function, specs: &Vec<Expr>) -> Result<Vec<E
             ExprX::Call(
                 CallTarget::Fun(
                     crate::ast::CallTargetKind::DynamicResolved {
-                        resolved: Arc::new(FunX {
-                            path: Arc::new(crate::ast::PathX {
-                                krate: Some(Arc::new("vstd".to_string())),
-                                segments: Arc::new(vec![
-                                    Arc::new("future".to_string()),
-                                    Arc::new("impl&%0".to_string()),
-                                    Arc::new("awaited".to_string()),
-                                ]),
-                            }),
-                        }),
+                        resolved: fun!("vstd" => "future", "impl&%0", "awaited"),
                         typs: Arc::new(vec![
                             function.x.ret.x.typ.clone(),
                             function
@@ -311,16 +302,7 @@ fn rewrite_async_ens_vir(function: &Function, specs: &Vec<Expr>) -> Result<Vec<E
                         impl_paths: Arc::new(vec![]),
                         is_trait_default: false,
                     },
-                    Arc::new(FunX {
-                        path: Arc::new(crate::ast::PathX {
-                            krate: Some(Arc::new("vstd".to_string())),
-                            segments: Arc::new(vec![
-                                Arc::new("future".to_string()),
-                                Arc::new("FutureAdditionalSpecFns".to_string()),
-                                Arc::new("awaited".to_string()),
-                            ]),
-                        }),
-                    }),
+                    fun!("vstd" => "future", "FutureAdditionalSpecFns", "awaited"),
                     Arc::new(vec![
                         function
                             .x
@@ -628,8 +610,6 @@ pub fn func_decl_to_sst(
         inv_masks: Arc::new(inv_masks),
         unwind_condition,
         fndef_axioms: Arc::new(fndef_axiom_exps),
-        // async_ens_pars: None,
-        // async_enss: None,
     })
 }
 

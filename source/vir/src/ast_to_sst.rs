@@ -1,7 +1,7 @@
 use crate::ast::{
     ArithOp, AssertQueryMode, AutospecUsage, BinaryOp, BitshiftBehavior, BitwiseOp, BoundsCheck,
-    ByRef, CallTarget, ComputeMode, Constant, Div0Behavior, Expr, ExprX, FieldOpr, Fun, FunX,
-    Function, Ident, IntRange, InvAtomicity, LoopInvariantKind, MaskSpec, Mode, OverflowBehavior,
+    ByRef, CallTarget, ComputeMode, Constant, Div0Behavior, Expr, ExprX, FieldOpr, Fun, Function,
+    Ident, IntRange, InvAtomicity, LoopInvariantKind, MaskSpec, Mode, OverflowBehavior,
     PatternBinding, PatternX, Place, PlaceX, SpannedTyped, Stmt, StmtX, Typ, TypX, Typs, UnaryOp,
     UnaryOpr, UnwindSpec, VarAt, VarBinder, VarBinderX, VarBinders, VarIdent, VarIdentDisambiguate,
     VariantCheck, VirErr,
@@ -10,6 +10,7 @@ use crate::ast::{BuiltinSpecFun, Exprs};
 use crate::ast_util::{QUANT_FORALL, bool_typ, types_equal, undecorate_typ, unit_typ};
 use crate::context::Ctx;
 use crate::def::{Spanned, unique_local};
+use crate::fun;
 use crate::inv_masks::MaskSet;
 use crate::messages::{Span, ToAny, error, error_with_secondary_label, internal_error, warning};
 use crate::sst::{
@@ -2827,40 +2828,16 @@ pub(crate) fn expr_to_stm_opt(
                 ExprX::Call(
                     CallTarget::Fun(
                         crate::ast::CallTargetKind::DynamicResolved {
-                            resolved: Arc::new(FunX {
-                                path: Arc::new(crate::ast::PathX {
-                                    krate: Some(Arc::new("vstd".to_string())),
-                                    segments: Arc::new(vec![
-                                        Arc::new("future".to_string()),
-                                        Arc::new("impl&%0".to_string()),
-                                        Arc::new("exec_await".to_string()),
-                                    ]),
-                                }),
-                            }),
+                            resolved: fun!("vstd" => "future", "impl&%0", "exec_await"),
                             typs: Arc::new(vec![expr.typ.clone(), e.typ.clone()]),
                             impl_paths: Arc::new(vec![]),
                             is_trait_default: false,
                         },
-                        Arc::new(FunX {
-                            path: Arc::new(crate::ast::PathX {
-                                krate: Some(Arc::new("vstd".to_string())),
-                                segments: Arc::new(vec![
-                                    Arc::new("future".to_string()),
-                                    Arc::new("FutureAdditionalSpecFns".to_string()),
-                                    Arc::new("exec_await".to_string()),
-                                ]),
-                            }),
-                        }),
+                        fun!("vstd" => "future", "FutureAdditionalSpecFns", "exec_await"),
                         Arc::new(vec![e.typ.clone(), expr.typ.clone()]),
-                        Arc::new(vec![crate::ast::ImplPath::TraitImplPath(Arc::new(
-                            crate::ast::PathX {
-                                krate: Some(Arc::new("vstd".to_string())),
-                                segments: Arc::new(vec![
-                                    Arc::new("future".to_string()),
-                                    Arc::new("impl&%0".to_string()),
-                                ]),
-                            },
-                        ))]),
+                        Arc::new(vec![crate::ast::ImplPath::TraitImplPath(
+                            crate::def::prefix_spec_fn_type(0),
+                        )]),
                         AutospecUsage::Final,
                         false,
                     ),
@@ -2871,57 +2848,6 @@ pub(crate) fn expr_to_stm_opt(
             let rewritten = expr_to_stm_opt(ctx, state, &call_expr)?;
             Ok(rewritten)
         }
-        // ExprX::Await(e) => {
-        //     let call_expr = SpannedTyped::new(
-        //         &expr.span,
-        //         &expr.typ,
-        //         ExprX::Call(
-        //             CallTarget::Fun(
-        //                 crate::ast::CallTargetKind::DynamicResolved {
-        //                     resolved: Arc::new(FunX {
-        //                         path: Arc::new(crate::ast::PathX {
-        //                             krate: Some(Arc::new("vstd".to_string())),
-        //                             segments: Arc::new(vec![
-        //                                 Arc::new("future".to_string()),
-        //                                 Arc::new("impl&%0".to_string()),
-        //                                 Arc::new("exec_await".to_string()),
-        //                             ]),
-        //                         }),
-        //                     }),
-        //                     typs: Arc::new(vec![expr.typ.clone(), e.typ.clone()]),
-        //                     impl_paths: Arc::new(vec![]),
-        //                     is_trait_default: false,
-        //                 },
-        //                 Arc::new(FunX {
-        //                     path: Arc::new(crate::ast::PathX {
-        //                         krate: Some(Arc::new("vstd".to_string())),
-        //                         segments: Arc::new(vec![
-        //                             Arc::new("future".to_string()),
-        //                             Arc::new("FutureAdditionalSpecFns".to_string()),
-        //                             Arc::new("exec_await".to_string()),
-        //                         ]),
-        //                     }),
-        //                 }),
-        //                 Arc::new(vec![e.typ.clone(), expr.typ.clone()]),
-        //                 Arc::new(vec![crate::ast::ImplPath::TraitImplPath(Arc::new(
-        //                     crate::ast::PathX {
-        //                         krate: Some(Arc::new("vstd".to_string())),
-        //                         segments: Arc::new(vec![
-        //                             Arc::new("future".to_string()),
-        //                             Arc::new("impl&%0".to_string()),
-        //                         ]),
-        //                     },
-        //                 ))]),
-        //                 AutospecUsage::Final,
-        //                 false,
-        //             ),
-        //             Arc::new(vec![e.clone()]),
-        //             None,
-        //         ),
-        //     );
-        //     let rewritten = expr_to_stm_opt(ctx, state, &call_expr)?;
-        //     Ok(rewritten)
-        // }
         ExprX::BorrowMut(_place) => {
             let (mut stms, bor_sst) = borrow_mut_to_sst(ctx, state, expr)?;
             match bor_sst {

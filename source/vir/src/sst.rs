@@ -321,8 +321,6 @@ pub struct FuncDeclSst {
     pub reqs: Exps,
     /// (regular ensures, trait-default ensures)
     pub enss: (Exps, Exps),
-    // pub async_ens_pars: Option<Pars>,
-    // pub async_enss: Option<Exps>,
     pub inv_masks: Arc<Vec<Exps>>,
     pub unwind_condition: Option<Exp>,
     pub fndef_axioms: Exps,

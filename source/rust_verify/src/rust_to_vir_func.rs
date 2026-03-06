@@ -3,20 +3,19 @@ use crate::automatic_derive::AutomaticDeriveAction;
 use crate::config::Vstd;
 use crate::context::{BodyCtxt, Context, ContextX, HeaderSetting};
 use crate::resolve_traits::{ResolutionResult, ResolvedItem};
-use crate::rust_to_vir_base::mk_visibility;
 use crate::rust_to_vir_base::{
-    check_fn_opaque_ty, check_generics_bounds_no_polarity, def_id_to_vir_path, no_body_param_to_var,
+    check_fn_opaque_ty, check_generics_bounds_no_polarity, def_id_to_vir_path, local_to_var,
+    no_body_param_to_var,
 };
-use crate::rust_to_vir_expr::{
-    ExprModifier, expr_to_vir_consume, pat_to_mut_var, place_to_loc, stmts_to_vir,
-};
+use crate::rust_to_vir_base::{mk_visibility, qpath_to_ident};
+use crate::rust_to_vir_expr::{ExprModifier, expr_to_vir_consume, pat_to_mut_var};
 use crate::rust_to_vir_impl::ExternalInfo;
 use crate::util::{err_span, err_span_bare};
 use crate::verus_items::{BuiltinTypeItem, VerusItem};
 use crate::{unsupported_err, unsupported_err_unless};
 use rustc_hir::{
-    Attribute, Body, BodyId, Crate, ExprKind, FnDecl, FnHeader, FnSig, Generics, HeaderSafety,
-    HirId, MaybeOwner, Param, Safety,
+    Attribute, Body, BodyId, Crate, Expr, ExprKind, FnDecl, FnHeader, FnSig, Generics,
+    HeaderSafety, HirId, MaybeOwner, Param, Safety,
 };
 use rustc_middle::ty::{
     AdtDef, BoundRegion, BoundRegionKind, BoundVar, Clause, ClauseKind, ConstKind, GenericArg,
@@ -31,9 +30,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::vec;
 use vir::ast::{
-    BodyVisibility, ExprX, Fun, FunX, FunctionAttrsX, FunctionKind, FunctionX, GenericBoundX,
-    ItemKind, KrateX, Mode, OpaqueTypes, Opaqueness, ParamX, Path, PatternX, SpannedTyped, StmtX,
-    Typ, TypDecoration, TypX, VarIdent, VirErr, Visibility, PlaceX,
+    BodyVisibility, Fun, FunX, FunctionAttrsX, FunctionKind, FunctionX, GenericBoundX, ItemKind,
+    KrateX, Mode, OpaqueTypes, Opaqueness, ParamX, Path, Typ, TypDecoration, TypX, VarIdent,
+    VirErr, Visibility,
 };
 use vir::ast_util::{air_unique_var, unit_typ};
 use vir::def::{RETURN_VALUE, Spanned, VERUS_SPEC};
@@ -338,12 +337,54 @@ fn body_to_vir<'tcx>(
     }
 }
 
-// pub (crate) fn get_desugared_async_body(
-//     body: &Body<'tcx>,
-// ) -> Result<vir::ast::Expr, VirErr>
-// {
+pub(crate) fn extract_desugared_async_body<'tcx>(
+    ctxt: &Context<'tcx>,
+    body: &Body<'tcx>,
+) -> Result<&'tcx rustc_hir::Expr<'tcx>, VirErr> {
+    let async_body_expr = match body.value.kind {
+        rustc_hir::ExprKind::Closure(cls)
+            if cls.kind
+                == rustc_hir::ClosureKind::Coroutine(rustc_hir::CoroutineKind::Desugared(
+                    rustc_hir::CoroutineDesugaring::Async,
+                    rustc_hir::CoroutineSource::Fn,
+                )) =>
+        {
+            let closure_body = crate::rust_to_vir_func::find_body(ctxt, &cls.body);
+            match closure_body.value.kind {
+                rustc_hir::ExprKind::Block(block, ..) => {
+                    let expr = block.expr.expect("async function block has no expression");
+                    match expr.kind {
+                        rustc_hir::ExprKind::DropTemps(expr) => expr,
+                        _ => {
+                            return err_span(
+                                body.value.span,
+                                format!(
+                                    "internal error: async function desugered closure expression is not `DropTemps`"
+                                ),
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    return err_span(
+                        body.value.span,
+                        format!(
+                            "internal error: async function desugered closure doesn't have a block"
+                        ),
+                    );
+                }
+            }
+        }
+        _ => {
+            return err_span(
+                body.value.span,
+                format!("internal error: async function desugered body is not a closure"),
+            );
+        }
+    };
 
-// }
+    Ok(async_body_expr)
+}
 
 pub(crate) fn async_body_to_vir<'tcx>(
     ctxt: &Context<'tcx>,
@@ -380,41 +421,7 @@ pub(crate) fn async_body_to_vir<'tcx>(
         external_opaque_type_map,
     };
 
-    let async_body_expr = match body.value.kind {
-        rustc_hir::ExprKind::Closure(cls) => {
-            let closure_body = crate::rust_to_vir_func::find_body(ctxt, &cls.body);
-            match closure_body.value.kind {
-                rustc_hir::ExprKind::Block(block, ..) => {
-                    let expr = block.expr.expect("async function block has no expression");
-                    match expr.kind {
-                        rustc_hir::ExprKind::DropTemps(expr) => expr,
-                        _ => {
-                            return err_span(
-                                body.value.span,
-                                format!(
-                                    "internal error: async function desugered closure expression is not `DropTemps`"
-                                ),
-                            );
-                        }
-                    }
-                }
-                _ => {
-                    return err_span(
-                        body.value.span,
-                        format!(
-                            "internal error: async function desugered closure doesn't have a block"
-                        ),
-                    );
-                }
-            }
-        }
-        _ => {
-            return err_span(
-                body.value.span,
-                format!("internal error: async function desugered body is not a closure"),
-            );
-        }
-    };
+    let async_body_expr = extract_desugared_async_body(&bctx.ctxt, body)?;
 
     let e = crate::rust_to_vir_expr::expr_to_vir_consume(
         &bctx,
@@ -1319,6 +1326,7 @@ fn binders_to_string<'tcx>(
     format!("{:}{:}{:}", "for<", v.join(", "), "> ")
 }
 
+#[derive(Debug)]
 pub enum CheckItemFnEither<A, B> {
     BodyId(A),
     ParamNames(B),
@@ -2188,7 +2196,8 @@ pub(crate) fn check_item_fn<'tcx>(
         typ_bounds,
         params,
         ret,
-        ens_has_return,
+        // async function always refer to return value in ensures
+        ens_has_return: is_async || ens_has_return,
         require: if mode == Mode::Spec { Arc::new(recommend) } else { header.require },
         returns,
         ensure,
@@ -2480,6 +2489,15 @@ fn handle_async_func<'tcx>(
         async_ret,
     } = func;
 
+    // Each async function body is desugared into a closure.
+    // At the beginning of the async function
+    // each paramter is re-bound. We need to find thes rebindings and resolve them.
+    // For example fn foo(x:usize){} will have one rebinding:
+    // fn foo(x:usize){
+    //     ||{
+    //         let x = x;
+    //     }
+    // }
     let async_body_bindings = match body_hir.value.kind {
         rustc_hir::ExprKind::Closure(cls) => {
             let closure_body = crate::rust_to_vir_func::find_body(ctxt, &cls.body);
@@ -2501,20 +2519,21 @@ fn handle_async_func<'tcx>(
         }
     };
 
-    let stmts = stmts_to_vir(&bctx, &mut async_body_bindings.iter())?;
     let mut async_body_modes = HashMap::new();
 
-    // println!("async stmts {:#?}", stmts);
-
-    if let Some(stmts) = stmts {
-        for stmt in stmts {
-            if let StmtX::Decl { pattern, mode: _, init, els: _ } = &stmt.x {
-                if let (PatternX::Var(pat), Some(init)) = (&pattern.x, init) {
-                    if let PlaceX::Local(ident) = &init.x{
-                        async_body_modes.insert(ident.clone(), pat.name.clone());
-                    }
-                }
+    for stmt in async_body_bindings.iter() {
+        match stmt.kind {
+            rustc_hir::StmtKind::Let(rustc_hir::LetStmt {
+                pat: rustc_hir::Pat { kind: rustc_hir::PatKind::Binding(_, id, ident, _), .. },
+                init: Some(rustc_hir::Expr { kind: rustc_hir::ExprKind::Path(qpath), .. }),
+                ..
+            }) => {
+                let pat = local_to_var(ident, id.local_id);
+                let init = qpath_to_ident(bctx.ctxt.tcx, &qpath)
+                    .expect("internal error, async closure rebindings has no init value");
+                async_body_modes.insert(init.clone(), pat.clone());
             }
+            _ => {}
         }
     }
 
@@ -2833,8 +2852,7 @@ fn get_external_def_id<'tcx>(
     let tcx = ctxt.tcx;
 
     let err = || {
-
-        let backtrace = std::backtrace::Backtrace::force_capture(); 
+        let backtrace = std::backtrace::Backtrace::force_capture();
         println!("{}", backtrace);
 
         err_span(
@@ -2843,30 +2861,38 @@ fn get_external_def_id<'tcx>(
         )
     };
 
-    // let async_function_err = || {
+    let async_function_err = || {
+        // let backtrace = std::backtrace::Backtrace::force_capture();
+        // println!("{}", backtrace);
 
-    //     let backtrace = std::backtrace::Backtrace::force_capture(); 
-    //     println!("{}", backtrace);
+        err_span(
+            sig.span,
+            format!(
+                "assume_specification encoding error: async function body should end in await to a call expression"
+            ),
+        )
+    };
 
-    //     err_span(
-    //         sig.span,
-    //         format!("assume_specification encoding error: async function body should end in await to a call expression"),
-    //     )
-    // };
-    
-    if sig.asyncness().is_async(){
+    if sig.asyncness().is_async() {
         println!("async sig {:#?}", sig);
     }
 
+    let body_expr = if sig.asyncness().is_async() {
+        extract_desugared_async_body(ctxt, body)?
+        // &body.value
+    } else {
+        &body.value
+    };
+
     // Get the 'body' of this function (skipping over header and unsafe-block if necessary)
-    let expr = match &body.value.kind {
+    let expr = match &body_expr.kind {
         ExprKind::Block(block_body, _) => match &block_body.expr {
             Some(body_value) => body_value,
             None => {
                 return err();
             }
         },
-        _ => &body.value,
+        _ => body_expr,
     };
     let expr = match &expr.kind {
         ExprKind::Block(block_body, _) => match &block_body.expr {
@@ -2878,49 +2904,20 @@ fn get_external_def_id<'tcx>(
         _ => &expr,
     };
 
-    // let expr = if sig.asyncness().is_async(){
-    //     match &expr.kind {
-    //         ExprKind::Match(
-    //             Expr {
-    //                 hir_id: _,
-    //                 kind:
-    //                     ExprKind::Call(
-    //                         Expr {
-    //                             hir_id: _,
-    //                             kind:
-    //                                 ExprKind::Path(QPath::Resolved(
-    //                                     _,
-    //                                     Path {
-    //                                         span: _,
-    //                                         res: Res::Def(DefKind::AssocFn, res_def_id),
-    //                                         segments: _,
-    //                                     },
-    //                                 )),
-    //                             span: _,
-    //                         },
-    //                         call_args,
-    //                     ),
-    //                 span: _,
-    //             },
-    //             _arms,
-    //             _match_source,
-    //         ) if {
-    //             let res_path = bctx.ctxt.def_id_to_vir_path(*res_def_id);
-    //             res_path.krate.as_ref().map_or(false, |krate| {
-    //                 &**krate == "core"
-    //                     && vec!["future", "into_future", "IntoFuture", "into_future"]
-    //                         == res_path.segments.iter().map(|arc| &**arc).collect::<Vec<_>>()
-    //             })
-    //         } => {
-    //             &&call_args[0]
-    //         }
-    //         _ => {
-    //             return async_function_err();
-    //         }
-    //     }
-    // }else{
-    //     expr
-    // };
+    let expr = if sig.asyncness().is_async() {
+        match &expr.kind {
+            ExprKind::Match(
+                Expr { hir_id: _, kind: ExprKind::Call(_expr, call_args), span: _ },
+                _arms,
+                rustc_hir::MatchSource::AwaitDesugar,
+            ) => &call_args[0],
+            _ => {
+                return async_function_err();
+            }
+        }
+    } else {
+        expr
+    };
 
     let types = body_id_to_types(tcx, body_id);
 
@@ -2964,7 +2961,6 @@ fn get_external_def_id<'tcx>(
             }
         }
         _ => {
-            // println!("expr: {:#?}", expr);
             return err();
         }
     };
