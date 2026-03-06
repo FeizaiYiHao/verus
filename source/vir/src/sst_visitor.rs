@@ -750,7 +750,7 @@ pub(crate) trait Visitor<R: Returner, Err, Scope: Scoper> {
                     exec_proof_check: R::get_opt(exec_proof_check).map(|c| Arc::new(c)),
                     recommends_check: R::get_opt(recommends_check).map(|c| Arc::new(c)),
                     safe_api_check: R::get_opt(safe_api_check).map(|c| Arc::new(c)),
-                    async_ret: R::get_opt(async_ret).map(|c| c),
+                    async_ret: R::get_opt(async_ret),
                 },
             )
         })
