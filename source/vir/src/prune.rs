@@ -1004,31 +1004,13 @@ pub fn prune_krate_for_module_or_krate(
                     reach(
                         &mut state.reached_functions,
                         &mut state.worklist_functions,
-                        &Arc::new(crate::ast::FunX {
-                            path: Arc::new(crate::ast::PathX {
-                                krate: Some(Arc::new("vstd".to_string())),
-                                segments: Arc::new(vec![
-                                    Arc::new("future".to_string()),
-                                    Arc::new("FutureAdditionalSpecFns".to_string()),
-                                    Arc::new("view".to_string()),
-                                ]),
-                            }),
-                        }),
+                        &crate::fun!("vstd" => "future", "FutureAdditionalSpecFns", "view"),
                     );
 
                     reach(
                         &mut state.reached_functions,
                         &mut state.worklist_functions,
-                        &Arc::new(crate::ast::FunX {
-                            path: Arc::new(crate::ast::PathX {
-                                krate: Some(Arc::new("vstd".to_string())),
-                                segments: Arc::new(vec![
-                                    Arc::new("future".to_string()),
-                                    Arc::new("FutureAdditionalSpecFns".to_string()),
-                                    Arc::new("exec_await".to_string()),
-                                ]),
-                            }),
-                        }),
+                        &crate::fun!("vstd" => "future", "FutureAdditionalSpecFns", "exec_await"),
                     );
                 }
             }

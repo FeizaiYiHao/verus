@@ -2827,12 +2827,7 @@ pub(crate) fn expr_to_stm_opt(
                 &expr.typ,
                 ExprX::Call(
                     CallTarget::Fun(
-                        crate::ast::CallTargetKind::DynamicResolved {
-                            resolved: fun!("vstd" => "future", "impl&%0", "exec_await"),
-                            typs: Arc::new(vec![expr.typ.clone(), e.typ.clone()]),
-                            impl_paths: Arc::new(vec![]),
-                            is_trait_default: false,
-                        },
+                        crate::ast::CallTargetKind::Dynamic,
                         fun!("vstd" => "future", "FutureAdditionalSpecFns", "exec_await"),
                         Arc::new(vec![e.typ.clone(), expr.typ.clone()]),
                         Arc::new(vec![crate::ast::ImplPath::TraitImplPath(

@@ -1,5 +1,5 @@
 use crate::ast::{
-    AutospecUsage, BinaryOp, CallTarget, DeclProph, Expr, ExprX, Fun, FunX, Function, FunctionKind,
+    AutospecUsage, BinaryOp, CallTarget, DeclProph, Expr, ExprX, Fun, Function, FunctionKind,
     Ident, ItemKind, MaskSpec, Mode, Param, ParamX, Params, Path, PlaceX, SpannedTyped, StmtX, Typ,
     TypX, UnaryOp, UnwindSpec, VarBinder, VarBinderX, VarIdent, VirErr,
 };
@@ -286,22 +286,7 @@ fn rewrite_async_ens_vir(function: &Function, specs: &Vec<Expr>) -> Result<Vec<E
             &Arc::new(TypX::Bool),
             ExprX::Call(
                 CallTarget::Fun(
-                    crate::ast::CallTargetKind::DynamicResolved {
-                        resolved: fun!("vstd" => "future", "impl&%0", "awaited"),
-                        typs: Arc::new(vec![
-                            function.x.ret.x.typ.clone(),
-                            function
-                                .x
-                                .async_ret
-                                .as_ref()
-                                .expect("async function has no return type")
-                                .x
-                                .typ
-                                .clone(),
-                        ]),
-                        impl_paths: Arc::new(vec![]),
-                        is_trait_default: false,
-                    },
+                    crate::ast::CallTargetKind::Dynamic,
                     fun!("vstd" => "future", "FutureAdditionalSpecFns", "awaited"),
                     Arc::new(vec![
                         function
@@ -314,15 +299,9 @@ fn rewrite_async_ens_vir(function: &Function, specs: &Vec<Expr>) -> Result<Vec<E
                             .clone(),
                         function.x.ret.x.typ.clone(),
                     ]),
-                    Arc::new(vec![crate::ast::ImplPath::TraitImplPath(Arc::new(
-                        crate::ast::PathX {
-                            krate: Some(Arc::new("vstd".to_string())),
-                            segments: Arc::new(vec![
-                                Arc::new("future".to_string()),
-                                Arc::new("impl&%0".to_string()),
-                            ]),
-                        },
-                    ))]),
+                    Arc::new(vec![crate::ast::ImplPath::TraitImplPath(
+                        crate::def::prefix_spec_fn_type(0),
+                    )]),
                     AutospecUsage::Final,
                     false,
                 ),
@@ -358,41 +337,8 @@ fn rewrite_async_ens_vir(function: &Function, specs: &Vec<Expr>) -> Result<Vec<E
                 &function.x.ret.x.typ,
                 ExprX::Call(
                     CallTarget::Fun(
-                        crate::ast::CallTargetKind::DynamicResolved {
-                            resolved: Arc::new(FunX {
-                                path: Arc::new(crate::ast::PathX {
-                                    krate: Some(Arc::new("vstd".to_string())),
-                                    segments: Arc::new(vec![
-                                        Arc::new("future".to_string()),
-                                        Arc::new("impl&%0".to_string()),
-                                        Arc::new("view".to_string()),
-                                    ]),
-                                }),
-                            }),
-                            typs: Arc::new(vec![
-                                function.x.ret.x.typ.clone(),
-                                function
-                                    .x
-                                    .async_ret
-                                    .as_ref()
-                                    .expect("async function has no return type")
-                                    .x
-                                    .typ
-                                    .clone(),
-                            ]),
-                            impl_paths: Arc::new(vec![]),
-                            is_trait_default: false,
-                        },
-                        Arc::new(FunX {
-                            path: Arc::new(crate::ast::PathX {
-                                krate: Some(Arc::new("vstd".to_string())),
-                                segments: Arc::new(vec![
-                                    Arc::new("future".to_string()),
-                                    Arc::new("FutureAdditionalSpecFns".to_string()),
-                                    Arc::new("view".to_string()),
-                                ]),
-                            }),
-                        }),
+                        crate::ast::CallTargetKind::Dynamic,
+                        fun!("vstd" => "future", "FutureAdditionalSpecFns", "view"),
                         Arc::new(vec![
                             function
                                 .x
@@ -404,15 +350,9 @@ fn rewrite_async_ens_vir(function: &Function, specs: &Vec<Expr>) -> Result<Vec<E
                                 .clone(),
                             function.x.ret.x.typ.clone(),
                         ]),
-                        Arc::new(vec![crate::ast::ImplPath::TraitImplPath(Arc::new(
-                            crate::ast::PathX {
-                                krate: Some(Arc::new("vstd".to_string())),
-                                segments: Arc::new(vec![
-                                    Arc::new("future".to_string()),
-                                    Arc::new("impl&%0".to_string()),
-                                ]),
-                            },
-                        ))]),
+                        Arc::new(vec![crate::ast::ImplPath::TraitImplPath(
+                            crate::def::prefix_spec_fn_type(0),
+                        )]),
                         AutospecUsage::Final,
                         false,
                     ),
