@@ -328,9 +328,6 @@ pub(crate) enum VstdItem {
     VecIndex,
     VecIndexMut,
     SharedReference,
-    FutureView,
-    Awaited,
-    ExecAwait,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
@@ -611,9 +608,6 @@ fn verus_items_map() -> Vec<(&'static str, VerusItem)> {
         ("verus::vstd::raw_ptr::cast_str_ptr_to_slice_ptr", VerusItem::Vstd(VstdItem::CastStrPtrToSlicePtr, Some(Arc::new("raw_ptr::cast_str_ptr_to_slice_ptr".to_owned())))),
         ("verus::vstd::raw_ptr::cast_ptr_to_usize", VerusItem::Vstd(VstdItem::CastPtrToUsize, Some(Arc::new("raw_ptr::cast_ptr_to_usize".to_owned())))),
         ("verus::vstd::raw_ptr::SharedReference", VerusItem::Vstd(VstdItem::SharedReference, Some(Arc::new("raw_ptr::SharedReference".to_owned())))),
-        ("verus::vstd::Future::FutureAdditionalSpecFns::view", VerusItem::Vstd(VstdItem::FutureView, Some(Arc::new("Future::FutureAdditionalSpecFns::view".to_owned())))),
-        ("verus::vstd::Future::FutureAdditionalSpecFns::awaited", VerusItem::Vstd(VstdItem::Awaited, Some(Arc::new("Future::FutureAdditionalSpecFns::awaited".to_owned())))),
-        ("verus::vstd::Future::FutureAdditionalSpecFns::exec_await", VerusItem::Vstd(VstdItem::ExecAwait, Some(Arc::new("Future::FutureAdditionalSpecFns::exec_await".to_owned())))),
             // SeqFn(vir::interpreter::SeqFn::Last    ))),
 
         ("verus::verus_builtin::Structural",              VerusItem::Marker(MarkerItem::Structural)),
