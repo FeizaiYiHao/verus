@@ -299,6 +299,7 @@ pub struct Verifier {
     pub args: Args,
     pub user_filter: Option<UserFilter>,
     pub(crate) verus_items: Option<Arc<VerusItems>>,
+    solver_reaper: Option<air::smt_process::SmtProcessReaperHandle>,
 
     /// total real time to verify all activated buckets of the crate, including real time for
     /// the parallel bucket verification
@@ -503,6 +504,7 @@ impl Verifier {
             args,
             user_filter: None,
             verus_items: None,
+            solver_reaper: None,
             time_verify_crate: Duration::new(0, 0),
             time_verify_crate_sequential: Duration::new(0, 0),
             time_hir: Duration::new(0, 0),
@@ -551,6 +553,7 @@ impl Verifier {
             args: self.args.clone(),
             user_filter: self.user_filter.clone(),
             verus_items: self.verus_items.clone(),
+            solver_reaper: self.solver_reaper.clone(),
 
             time_verify_crate: Duration::new(0, 0),
             time_verify_crate_sequential: Duration::new(0, 0),
@@ -1140,6 +1143,9 @@ impl Verifier {
             self.args.solver,
             self.args.smt_encoding,
         );
+        if let Some(reaper) = &self.solver_reaper {
+            air_context.set_smt_process_reaper(reaper.clone());
+        }
         air_context.set_ignore_unexpected_smt(self.args.ignore_unexpected_smt);
         if let Some(profile_file_name) = profile_file_name {
             air_context.set_profile_with_logfile_name(
@@ -2095,6 +2101,18 @@ impl Verifier {
         } else {
             std::cmp::min(self.args.num_threads, bucket_ids.len())
         };
+        // A small fixed group keeps process teardown off verification workers without
+        // creating one operating-system thread per solver.
+        const MAX_SOLVER_REAPER_THREADS: usize = 4;
+        let solver_reaper = if self.args.no_verify {
+            None
+        } else {
+            let reaper = air::smt_process::SmtProcessReaper::new(
+                self.num_threads.clamp(1, MAX_SOLVER_REAPER_THREADS),
+            );
+            self.solver_reaper = Some(reaper.handle());
+            Some(reaper)
+        };
         if self.args.num_threads != 1 && self.num_threads >= 1 {
             // create the multiple producers, single consumer queue
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -2513,6 +2531,11 @@ impl Verifier {
         if self.args.no_verify {
             return Ok(());
         }
+        self.solver_reaper = None;
+        solver_reaper
+            .expect("solver reaper is available during verification")
+            .finish()
+            .unwrap_or_else(|error| panic!("smt process exited with error: {:?}", error));
 
         if self.args.profile && self.count_errors == 0 {
             let msg = note_bare(
