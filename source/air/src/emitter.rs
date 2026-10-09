@@ -12,6 +12,8 @@ pub(crate) struct Emitter {
     node_writer: NodeWriter,
     /// buffer for data to be sent across pipe to Z3 process
     pipe_buffer: Option<Vec<u8>>,
+    /// Prefix bytes already streamed to the solver.
+    pipe_sent: usize,
     /// log file
     log: Option<Box<dyn std::io::Write>>,
     /// string of space characters representing current indentation level
@@ -31,6 +33,7 @@ impl Emitter {
             printer: Printer::new_with_encoding(message_interface, print_as_smt, smt_encoding),
             node_writer: NodeWriter::new(),
             pipe_buffer,
+            pipe_sent: 0,
             log: writer,
             current_indent: "".to_string(),
         }
@@ -44,11 +47,24 @@ impl Emitter {
         self.pipe_buffer.is_none() && self.log.is_none()
     }
 
-    /// Return all the data in pipe_buffer, and reset pipe_buffer to Some empty vector
-    pub fn take_pipe_data(&mut self) -> Vec<u8> {
+    /// Takes the current batch and its streamed prefix length.
+    pub fn take_pipe_data(&mut self) -> (Vec<u8>, usize) {
         let data = self.pipe_buffer.take().expect("use_pipe must be set to true to take pipe");
         self.pipe_buffer = Some(Vec::new());
-        data
+        let sent = self.pipe_sent;
+        self.pipe_sent = 0;
+        (data, sent)
+    }
+
+    /// Takes and marks an unsent suffix once it reaches `min_len`.
+    pub fn take_unsent_pipe_data(&mut self, min_len: usize) -> Option<Vec<u8>> {
+        let buffer = self.pipe_buffer.as_ref()?;
+        if buffer.len() - self.pipe_sent < min_len {
+            return None;
+        }
+        let data = buffer[self.pipe_sent..].to_vec();
+        self.pipe_sent = buffer.len();
+        Some(data)
     }
 
     pub fn indent(&mut self) {
@@ -167,5 +183,30 @@ impl Emitter {
         if !self.is_none() {
             self.log_node(&nodes!(eval { expr }));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streamed_prefixes_reconstruct_the_complete_batch() {
+        let messages = std::sync::Arc::new(crate::messages::AirMessageInterface {});
+        let mut emitter = Emitter::new(messages, true, true, None, SmtEncoding::Z3);
+        emitter.log_word("alpha");
+        let first = emitter.take_unsent_pipe_data(1).expect("first chunk");
+        emitter.log_word("beta");
+        let second = emitter.take_unsent_pipe_data(1).expect("second chunk");
+        emitter.log_word("gamma");
+        let (batch, sent) = emitter.take_pipe_data();
+        let mut reconstructed = first;
+        reconstructed.extend(second);
+        reconstructed.extend_from_slice(&batch[sent..]);
+        assert_eq!(reconstructed, batch);
+
+        emitter.log_word("next");
+        let (_, sent) = emitter.take_pipe_data();
+        assert_eq!(sent, 0);
     }
 }

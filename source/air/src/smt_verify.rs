@@ -185,8 +185,8 @@ pub(crate) fn smt_check_assertion<'ctx>(
 
     context.smt_log.log_get_info("version");
     let smt_init_start_time = std::time::Instant::now();
-    let smt_data = context.smt_log.take_pipe_data();
-    let early_smt_output = context.get_smt_process().send_commands(smt_data);
+    let (smt_data, sent) = context.smt_log.take_pipe_data();
+    let early_smt_output = context.get_smt_process().send_commands(smt_data, sent);
     context.time_smt_init += smt_init_start_time.elapsed();
     for line in early_smt_output {
         if let Some(version) = parse_version_response(&line) {
@@ -227,8 +227,8 @@ pub(crate) fn smt_check_assertion<'ctx>(
 
     // Run SMT solver
     let smt_run_start_time = std::time::Instant::now();
-    let smt_data = context.smt_log.take_pipe_data();
-    let commands_handle = context.get_smt_process().send_commands_async(smt_data);
+    let (smt_data, sent) = context.smt_log.take_pipe_data();
+    let commands_handle = context.get_smt_process().send_commands_async(smt_data, sent);
     let smt_output = if let Some((report_threshold, report_fn)) = report_long_running {
         match commands_handle.wait_timeout(*report_threshold) {
             Ok(smt_output) => smt_output,
@@ -290,8 +290,8 @@ pub(crate) fn smt_check_assertion<'ctx>(
         SmtOutput::Sat => ResultDetermination::Undetermined(false),
         SmtOutput::Unknown => {
             context.smt_log.log_get_info("reason-unknown");
-            let smt_data = context.smt_log.take_pipe_data();
-            let smt_output = context.get_smt_process().send_commands(smt_data);
+            let (smt_data, sent) = context.smt_log.take_pipe_data();
+            let smt_output = context.get_smt_process().send_commands(smt_data, sent);
 
             #[derive(PartialEq, Eq)]
             enum SmtReasonUnknown {
@@ -346,8 +346,8 @@ pub(crate) fn smt_check_assertion<'ctx>(
             let usage_info = if context.usage_info_enabled {
                 context.smt_log.log_word("get-unsat-core");
 
-                let smt_data = context.smt_log.take_pipe_data();
-                let smt_output = context.get_smt_process().send_commands(smt_data);
+                let (smt_data, sent) = context.smt_log.take_pipe_data();
+                let smt_output = context.get_smt_process().send_commands(smt_data, sent);
 
                 let mut smt_output = smt_output.into_iter();
                 let unsat_core_str =
@@ -385,8 +385,8 @@ pub(crate) fn smt_get_rlimit_count(context: &mut Context) -> Result<u64, Validit
     assert!(matches!(context.solver, SmtSolver::Z3)); // the CVC5 output format for statistics is different
 
     context.smt_log.log_get_info("all-statistics");
-    let smt_data = context.smt_log.take_pipe_data();
-    let smt_output = context.get_smt_process().send_commands(smt_data);
+    let (smt_data, sent) = context.smt_log.take_pipe_data();
+    let smt_output = context.get_smt_process().send_commands(smt_data, sent);
     let statistics = crate::parser::parse_sexpression(&smt_output);
     let stats_map = statistics
         .as_list()
@@ -437,8 +437,8 @@ fn smt_get_model(
 
     context.smt_log.log_word("get-model");
 
-    let smt_data = context.smt_log.take_pipe_data();
-    let smt_output = context.get_smt_process().send_commands(smt_data);
+    let (smt_data, sent) = context.smt_log.take_pipe_data();
+    let smt_output = context.get_smt_process().send_commands(smt_data, sent);
 
     if smt_output.iter().any(|line| line.contains("model is not available")) {
         // when we don't use incremental solving, sometime the model is not available when the z3 result is unknown
@@ -528,6 +528,7 @@ pub(crate) fn smt_check_query<'ctx>(
             return ValidityResult::TypeError(err);
         }
         smt_add_decl(context, decl);
+        context.stream_pipe_data();
     }
 
     // after lowering, there should be just one assertion
