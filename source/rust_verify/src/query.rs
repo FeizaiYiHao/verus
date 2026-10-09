@@ -6,7 +6,8 @@ use crate::context::Context;
 use crate::rust_to_vir_func::FunctionOrConstInfo;
 use crate::rust_to_vir_func::finish_item;
 use crate::verifier::FuncDetails;
-use air::messages::Diagnostics;
+use air::messages::{ArcDynMessage, Diagnostics};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -55,6 +56,11 @@ pub(crate) struct Query<'r, 'tcx> {
     cache_all_function_stubs: Option<Res<Arc<HashMap<Fun, FunctionStub>>>>,
     /// Pre-check functions, immediately after translation from HIR
     cache_unchecked_functions: HashMap<Fun, Res<Function>>,
+    /// Translations of every function or const, computed ahead of the function queries and
+    /// replayed (taken) by get_unchecked_function, indexed like `PreCrate::infos`
+    prefetched_translations: Vec<Option<PrefetchedTranslation>>,
+    /// Index into `PreCrate::infos` of each stub name, built with `prefetched_translations`
+    prefetched_info_index: HashMap<Fun, usize>,
     /// Completed functions
     cache_checked_functions: HashMap<
         Fun,
@@ -95,6 +101,8 @@ impl<'r, 'tcx> Query<'r, 'tcx> {
             cache_initial_wf_results: None,
             cache_all_function_stubs: None,
             cache_unchecked_functions: HashMap::new(),
+            prefetched_translations: Vec::new(),
+            prefetched_info_index: HashMap::new(),
             cache_checked_functions: HashMap::new(),
             cache_exportable_crate: None,
             cache_merged_crate: None,
@@ -352,8 +360,25 @@ impl<'r, 'tcx> Query<'r, 'tcx> {
         let pre_crate = self.get_pre_crate()?;
         let ctxt = &pre_crate.ctxt;
         let info = &pre_crate.fun_name_to_info[fun];
+        let prefetched = match self.prefetched_info_index.get(fun) {
+            Some(&i) => self.prefetched_translations[i].take(),
+            None => None,
+        };
         let mut new_functions = vec![];
-        let result = finish_item(ctxt, &info, &mut new_functions);
+        let result = match prefetched {
+            // Report exactly what finish_item and the flush below would have reported.
+            Some(PrefetchedTranslation { functions, diagnostics, error }) => {
+                for (msg, level) in diagnostics.iter() {
+                    self.reporter.report_as(msg, *level);
+                }
+                new_functions = functions;
+                match error {
+                    None => Ok(()),
+                    Some(err) => Err(err),
+                }
+            }
+            None => finish_item(ctxt, &info, &mut new_functions),
+        };
         ctxt.flush_diagnostics(self.reporter);
         match result {
             Ok(()) => {
@@ -406,27 +431,36 @@ impl<'r, 'tcx> Query<'r, 'tcx> {
         let function = self.get_unchecked_function(fun)?;
         let lookup = self.get_demote_trait_lookup()?;
         let pre_crate = self.get_pre_crate()?;
-        let ctxt = &pre_crate.ctxt;
 
         // Demote external traits
 
         let function = vir::traits::demote_external_traits_function_calls(&lookup, &function)
             .map_err(|e| self.emit_error(e))?;
 
-        // WF checking
-
         let initial_wf = self.get_initial_wf_results()?;
         let function_stubs = self.get_all_function_stubs()?;
-        let (wf, non_blocking_errors, diags) = vir::well_formed::check_function(
+        let checks = check_demoted_function(
             &pre_crate.krate_without_funs,
-            function_stubs.clone(),
-            initial_wf.lookup.clone(),
+            &function_stubs,
+            &initial_wf.lookup,
             &lookup,
             &function,
             &pre_crate.warning_ctx,
             self.args.no_cheating,
             self.args.no_verify,
         );
+        self.replay_function_checks(&pre_crate.ctxt, fun, checks)
+    }
+
+    /// Reports one function's check outputs exactly as the serial pipeline would.
+    fn replay_function_checks(
+        &mut self,
+        ctxt: &Context<'tcx>,
+        fun: &Fun,
+        checks: FunctionChecks,
+    ) -> Res<(Function, Arc<ErasureModes>, Option<Arc<ResolutionInfo>>, DynCompatabilityChecks)>
+    {
+        let FunctionChecks { wf, non_blocking_errors, diags, modes } = checks;
         self.emit_non_blocking_errors(non_blocking_errors);
         self.emit_diags(diags);
         let wf = wf.map_err(|e| self.handle_wf_error(ctxt, Some(fun.clone()), e))?;
@@ -436,24 +470,121 @@ impl<'r, 'tcx> Query<'r, 'tcx> {
         } = wf;
         self.record_func_failed_proof_notes(fun, func_failed_proof_notes);
 
-        // Autospec
-
-        let function = vir::autospec::resolve_autospec_in_function(&function_stubs, &function)
-            .map_err(|e| self.emit_error(e))?;
-
-        // Mode checking
-
-        let (function, erasure_modes, resolution_info) = vir::modes::check_function(
-            function_stubs.clone(),
-            initial_wf.lookup.clone(),
-            &function,
-            &lookup,
-        )
-        .map_err(|e| self.emit_errors(e))?;
+        let (function, erasure_modes, resolution_info) = modes
+            .expect("mode-check result after well-formedness")
+            .map_err(|e| self.emit_errors(e))?;
         let erasure_modes = Arc::new(erasure_modes);
         let resolution_info = resolution_info.map(Arc::new);
 
         Ok((function, erasure_modes, resolution_info, dyn_compatability_checks))
+    }
+
+    /// Translates every function or const ahead of the function queries, in `infos` order
+    /// (so with the IDs that serial translation assigns), without reporting anything.
+    /// get_unchecked_function replays each translation where the serial pipeline would have
+    /// run it. If a translation panics, it and the later ones are left to
+    /// get_unchecked_function, which reproduces the panic at the serial point.
+    fn prefetch_translations(&mut self) {
+        let Ok(pre_crate) = self.get_pre_crate() else { return };
+        // Items whose translation has already run keep the serial order: only prefetch if
+        // none has.
+        if !self.prefetched_info_index.is_empty() || !self.cache_unchecked_functions.is_empty() {
+            return;
+        }
+        let ctxt = &pre_crate.ctxt;
+        for (i, info) in pre_crate.infos.iter().enumerate() {
+            let translate = || {
+                let mut functions = vec![];
+                let error = finish_item(ctxt, info, &mut functions).err();
+                let recorded = RecordedDiagnostics::default();
+                ctxt.flush_diagnostics(&recorded);
+                PrefetchedTranslation { functions, diagnostics: recorded.0.into_inner(), error }
+            };
+            let Ok(translation) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(translate))
+            else {
+                break;
+            };
+            for stub in info.iter_stubs() {
+                self.prefetched_info_index.insert(stub.x.name.clone(), i);
+            }
+            self.prefetched_translations.push(Some(translation));
+        }
+    }
+
+    /// The translated function `fun`, if its translation is prefetched, not yet replayed,
+    /// and succeeded.
+    fn peek_prefetched_function(&self, fun: &Fun) -> Option<&Function> {
+        let i = *self.prefetched_info_index.get(fun)?;
+        let out = self.prefetched_translations[i].as_ref()?;
+        if out.error.is_some() {
+            return None;
+        }
+        out.functions.iter().find(|f| &f.x.name == fun)
+    }
+
+    /// Translates all functions, runs their VIR-only checks on worker threads, and then, in
+    /// function order, replays each function's translation output (via
+    /// get_unchecked_function) followed by its check diagnostics, errors, and cache entry,
+    /// which is the order of the serial per-function pipeline.
+    fn precompute_checked_functions(&mut self) {
+        let Ok(pre_crate) = self.get_pre_crate() else { return };
+        self.prefetch_translations();
+        let mut pending: Vec<Function> = vec![];
+        for stub in pre_crate.infos.iter().flat_map(|info| info.iter_stubs()) {
+            if self.cache_checked_functions.contains_key(&stub.x.name) {
+                continue;
+            }
+            if let Some(function) = self.peek_prefetched_function(&stub.x.name) {
+                pending.push(function.clone());
+            }
+        }
+        if pending.is_empty() {
+            return;
+        }
+        // Errors in these shared inputs are cached and reported by get_checked_function.
+        let Ok(lookup) = self.get_demote_trait_lookup() else { return };
+        let Ok(initial_wf) = self.get_initial_wf_results() else { return };
+        let Ok(function_stubs) = self.get_all_function_stubs() else { return };
+        let (krate, warning_ctx) = (&pre_crate.krate_without_funs, &pre_crate.warning_ctx);
+        let (no_cheating, no_verify) = (self.args.no_cheating, self.args.no_verify);
+        let results = vir::util::par_map_init(
+            &pending,
+            || (),
+            |_, function| {
+                let function =
+                    vir::traits::demote_external_traits_function_calls(&lookup, function)?;
+                Ok(check_demoted_function(
+                    krate,
+                    &function_stubs,
+                    &initial_wf.lookup,
+                    &lookup,
+                    &function,
+                    warning_ctx,
+                    no_cheating,
+                    no_verify,
+                ))
+            },
+        );
+        let mut results: HashMap<Fun, Result<FunctionChecks, VirErr>> =
+            pending.iter().map(|f| f.x.name.clone()).zip(results).collect();
+        for stub in pre_crate.infos.iter().flat_map(|info| info.iter_stubs()) {
+            let fun = &stub.x.name;
+            let Some(result) = results.remove(fun) else {
+                // Not checked ahead (already checked, or its translation failed): replay
+                // its translation output here, as get_checked_function would.
+                if !self.cache_checked_functions.contains_key(fun) {
+                    let _ = self.get_unchecked_function(fun);
+                }
+                continue;
+            };
+            let unchecked = self.get_unchecked_function(fun);
+            assert!(unchecked.is_ok(), "prefetched translation succeeded");
+            let res = match result {
+                Err(e) => Err(self.emit_error(e)),
+                Ok(checks) => self.replay_function_checks(&pre_crate.ctxt, fun, checks),
+            };
+            self.cache_checked_functions.insert(fun.clone(), res);
+        }
     }
 
     //// Getting the completed krate
@@ -469,6 +600,7 @@ impl<'r, 'tcx> Query<'r, 'tcx> {
     pub fn _compute_exportable_crate(&mut self) -> Res<Krate> {
         let initial_wf_results = self.get_initial_wf_results()?;
         let _ = self.get_initial_wf_results()?;
+        self.precompute_checked_functions();
         let pre_crate = self.get_pre_crate()?;
         let mut cratex = (*pre_crate.krate_without_funs).clone();
         let mut found_err = None;
@@ -614,4 +746,81 @@ impl<'r, 'tcx> Query<'r, 'tcx> {
         }
         Ok(Arc::new(e))
     }
+}
+
+/// A function or const translated ahead of time: what get_unchecked_function would have
+/// produced and reported for it.
+struct PrefetchedTranslation {
+    functions: Vec<Function>,
+    /// Calls to `report_as` made by flushing the context's diagnostics after translation.
+    diagnostics: Vec<(ArcDynMessage, MessageLevel)>,
+    error: Option<VirErr>,
+}
+
+/// Records `report_as` calls (the only kind the context's diagnostics flush makes) to replay
+/// them later.
+#[derive(Default)]
+struct RecordedDiagnostics(RefCell<Vec<(ArcDynMessage, MessageLevel)>>);
+
+impl Diagnostics for RecordedDiagnostics {
+    fn report(&self, _msg: &ArcDynMessage) {
+        unreachable!("diagnostics flush only calls report_as")
+    }
+
+    fn report_now(&self, _msg: &ArcDynMessage) {
+        unreachable!("diagnostics flush only calls report_as")
+    }
+
+    fn report_as(&self, msg: &ArcDynMessage, msg_as: MessageLevel) {
+        self.0.borrow_mut().push((msg.clone(), msg_as));
+    }
+
+    fn report_as_now(&self, _msg: &ArcDynMessage, _msg_as: MessageLevel) {
+        unreachable!("diagnostics flush only calls report_as")
+    }
+}
+
+/// Function-local check outputs that are independent of the query state.
+struct FunctionChecks {
+    wf: Result<vir::well_formed::PerFunctionCheckResults, vir::well_formed::WFErr>,
+    non_blocking_errors: Vec<VirErr>,
+    diags: Vec<VirErrAs>,
+    /// Autospec and mode-check result, present only when well-formedness succeeded.
+    modes: Option<Result<(Function, ErasureModes, Option<ResolutionInfo>), Vec<VirErr>>>,
+}
+
+/// Runs well-formedness, autospec, and mode checking on a trait-demoted function.
+fn check_demoted_function(
+    krate: &Krate,
+    function_stubs: &Arc<HashMap<Fun, FunctionStub>>,
+    wf_lookup: &Arc<vir::well_formed::WfLookup>,
+    lookup: &DemoteTraitLookup,
+    function: &Function,
+    warning_ctx: &WarningCtx,
+    no_cheating: bool,
+    no_verify: bool,
+) -> FunctionChecks {
+    // WF checking
+
+    let (wf, non_blocking_errors, diags) = vir::well_formed::check_function(
+        krate,
+        function_stubs.clone(),
+        wf_lookup.clone(),
+        lookup,
+        function,
+        warning_ctx,
+        no_cheating,
+        no_verify,
+    );
+    let modes = wf.is_ok().then(|| {
+        // Autospec
+
+        let function = vir::autospec::resolve_autospec_in_function(function_stubs, function)
+            .map_err(|e| vec![e])?;
+
+        // Mode checking
+
+        vir::modes::check_function(function_stubs.clone(), wf_lookup.clone(), &function, lookup)
+    });
+    FunctionChecks { wf, non_blocking_errors, diags, modes }
 }
