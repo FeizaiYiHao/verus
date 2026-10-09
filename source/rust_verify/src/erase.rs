@@ -242,16 +242,19 @@ pub(crate) fn setup_verus_ctxt_for_thir_erasure<'tcx>(
     erasure_hints: &ErasureInfo,
     erasure_modes: &ErasureModes,
 ) -> Result<(), VirErr> {
-    let mut local_id_to_hir: HashMap<AstId, Vec<HirId>> = HashMap::new();
+    let mut local_id_to_hir: HashMap<AstId, Vec<HirId>> =
+        HashMap::with_capacity(erasure_hints.local_hir_vir_ids.len());
     for (hir_id, vir_id) in &erasure_hints.local_hir_vir_ids {
         if !local_id_to_hir.contains_key(vir_id) {
             local_id_to_hir.insert(*vir_id, vec![]);
         }
+        // Generated nodes have a known ID but no source HIR targets for erasure.
         if let Some(hir_id) = hir_id {
             local_id_to_hir.get_mut(vir_id).unwrap().push(*hir_id);
         }
     }
-    let mut binder_id_to_hir: HashMap<AstId, Vec<HirId>> = HashMap::new();
+    let mut binder_id_to_hir: HashMap<AstId, Vec<HirId>> =
+        HashMap::with_capacity(erasure_hints.binder_hir_vir_ids.len());
     for (hir_id, vir_id) in &erasure_hints.binder_hir_vir_ids {
         if !binder_id_to_hir.contains_key(vir_id) {
             binder_id_to_hir.insert(*vir_id, vec![]);
@@ -260,7 +263,8 @@ pub(crate) fn setup_verus_ctxt_for_thir_erasure<'tcx>(
             binder_id_to_hir.get_mut(vir_id).unwrap().push(*hir_id);
         }
     }
-    let mut ctor_id_to_hir: HashMap<AstId, Vec<HirId>> = HashMap::new();
+    let mut ctor_id_to_hir: HashMap<AstId, Vec<HirId>> =
+        HashMap::with_capacity(erasure_hints.ctor_hir_vir_ids.len());
     for (hir_id, vir_id) in &erasure_hints.ctor_hir_vir_ids {
         if !ctor_id_to_hir.contains_key(vir_id) {
             ctor_id_to_hir.insert(*vir_id, vec![]);
@@ -270,6 +274,7 @@ pub(crate) fn setup_verus_ctxt_for_thir_erasure<'tcx>(
         }
     }
 
+    let shadow_check: HashSet<HirId> = erasure_hints.shadow_check.iter().copied().collect();
     let mut locals = HashMap::<HirId, VarErasure>::new();
     for (span, (var_mode, mode)) in erasure_modes.local_modes.iter() {
         if crate::spans::from_raw_span(&span.raw_span).is_none() {
@@ -286,7 +291,7 @@ pub(crate) fn setup_verus_ctxt_for_thir_erasure<'tcx>(
         for hir_id in &local_id_to_hir[&span.id] {
             locals.insert(
                 *hir_id,
-                mode_to_var_erase(*var_mode, *mode, erasure_hints.shadow_check.contains(hir_id)),
+                mode_to_var_erase(*var_mode, *mode, shadow_check.contains(hir_id)),
             );
         }
     }
@@ -377,7 +382,8 @@ pub(crate) fn setup_verus_ctxt_for_thir_erasure<'tcx>(
         }
     }
 
-    let mut calls = HashMap::<HirId, (CallErasure, bool)>::new();
+    let mut calls =
+        HashMap::<HirId, (CallErasure, bool)>::with_capacity(erasure_hints.resolved_calls.len());
     let mut loop_erasure = HashMap::<HirId, LoopErasure>::new();
     for (hir_id, span_data, resolved_call, in_ghost) in &erasure_hints.resolved_calls {
         let span = span_data.span();
