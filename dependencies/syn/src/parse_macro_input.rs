@@ -126,3 +126,17 @@ macro_rules! parse_macro_input {
         $crate::parse_macro_input!($tokenstream as _)
     };
 }
+
+/// Parses a proc-macro input after rejoining Verus operators.
+#[macro_export]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "parsing", feature = "proc-macro"))))]
+macro_rules! parse_macro_input_rejoin {
+    ($tokenstream:ident as $ty:ty) => {
+        match $crate::parse_rejoin::<$ty>($tokenstream) {
+            $crate::__private::Ok(data) => data,
+            $crate::__private::Err(err) => {
+                return $crate::__private::TokenStream::from(err.to_compile_error());
+            }
+        }
+    };
+}

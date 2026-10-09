@@ -12,6 +12,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::cell::OnceCell;
 use core::cmp::Ordering;
+use core::fmt::{self, Write as _};
 use core::marker::PhantomData;
 use core::ptr;
 use proc_macro2::extra::DelimSpan;
@@ -21,12 +22,13 @@ use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenS
 /// within a `TokenBuffer`.
 enum Entry {
     // Mimicking types from proc-macro.
-    // Group entries contain the offset to the matching End entry.
-    Group(Group, usize),
+    // Group entries may cache a lazily rebuilt rejoined stream.
+    Group(Group, usize, Option<Box<OnceCell<Group>>>),
     // Identifier and lazily cached text.
     Ident(Ident, OnceCell<Box<str>>),
     Punct(Punct),
-    Literal(Literal),
+    // Rejoined buffers retain the original form of split negative literals.
+    Literal(Literal, Option<Box<Literal>>),
     // End entries contain the offset (negative) to the start of the buffer, and
     // offset (negative) to the matching Group entry.
     End(isize, isize),
@@ -47,7 +49,7 @@ impl TokenBuffer {
             match tt {
                 TokenTree::Ident(ident) => entries.push(Entry::Ident(ident, OnceCell::new())),
                 TokenTree::Punct(punct) => entries.push(Entry::Punct(punct)),
-                TokenTree::Literal(literal) => entries.push(Entry::Literal(literal)),
+                TokenTree::Literal(literal) => entries.push(Entry::Literal(literal, None)),
                 TokenTree::Group(group) => {
                     let group_start_index = entries.len();
                     entries.push(Entry::End(0, 0)); // we replace this below
@@ -58,9 +60,57 @@ impl TokenBuffer {
                         -(group_end_index as isize),
                         -(group_offset as isize),
                     ));
-                    entries[group_start_index] = Entry::Group(group, group_offset);
+                    entries[group_start_index] = Entry::Group(group, group_offset, None);
                 }
             }
+        }
+    }
+
+    // Builds the buffer from rejoined levels while preserving bridge normalization of
+    // group spans and negative numeric literals.
+    fn recursive_new_rejoin(entries: &mut Vec<Entry>, stream: TokenStream) {
+        let mut tokens: Vec<TokenTree> = stream.into_iter().collect();
+        crate::verus::rejoin_level(&mut tokens);
+        entries.reserve(tokens.len() + 1);
+        for tt in tokens {
+            match tt {
+                TokenTree::Ident(ident) => entries.push(Entry::Ident(ident, OnceCell::new())),
+                TokenTree::Punct(punct) => entries.push(Entry::Punct(punct)),
+                TokenTree::Literal(literal) => {
+                    if let Some(positive) = split_negative_literal(&literal) {
+                        let mut minus = Punct::new('-', Spacing::Alone);
+                        minus.set_span(literal.span());
+                        entries.push(Entry::Punct(minus));
+                        entries.push(Entry::Literal(positive, Some(Box::new(literal))));
+                    } else {
+                        entries.push(Entry::Literal(literal, None));
+                    }
+                }
+                TokenTree::Group(mut group) => {
+                    group.set_span(group.span());
+                    let group_start_index = entries.len();
+                    entries.push(Entry::End(0, 0)); // we replace this below
+                    Self::recursive_new_rejoin(entries, group.stream());
+                    let group_end_index = entries.len();
+                    let group_offset = group_end_index - group_start_index;
+                    entries.push(Entry::End(
+                        -(group_end_index as isize),
+                        -(group_offset as isize),
+                    ));
+                    entries[group_start_index] =
+                        Entry::Group(group, group_offset, Some(Box::new(OnceCell::new())));
+                }
+            }
+        }
+    }
+
+    /// Creates a token buffer with Verus operators rejoined during construction.
+    pub(crate) fn new2_rejoin(stream: TokenStream) -> Self {
+        let mut entries = Vec::new();
+        Self::recursive_new_rejoin(&mut entries, stream);
+        entries.push(Entry::End(-(entries.len() as isize), 0));
+        Self {
+            entries: entries.into_boxed_slice(),
         }
     }
 
@@ -174,7 +224,7 @@ impl<'a> Cursor<'a> {
     ///
     /// WARNING: This mutates its argument.
     fn ignore_none(&mut self) {
-        while let Entry::Group(group, _) = self.entry() {
+        while let Entry::Group(group, _, _) = self.entry() {
             if group.delimiter() == Delimiter::None {
                 unsafe { *self = self.bump_ignore_group() };
             } else {
@@ -229,7 +279,9 @@ impl<'a> Cursor<'a> {
     pub fn literal(mut self) -> Option<(Literal, Cursor<'a>)> {
         self.ignore_none();
         match self.entry() {
-            Entry::Literal(literal) => Some((literal.clone(), unsafe { self.bump_ignore_group() })),
+            Entry::Literal(literal, _) => {
+                Some((literal.clone(), unsafe { self.bump_ignore_group() }))
+            }
             _ => None,
         }
     }
@@ -262,7 +314,7 @@ impl<'a> Cursor<'a> {
             self.ignore_none();
         }
 
-        if let Entry::Group(group, end_offset) = self.entry() {
+        if let Entry::Group(group, end_offset, _) = self.entry() {
             if group.delimiter() == delim {
                 let span = group.delim_span();
                 let end_of_group = unsafe { self.ptr.add(*end_offset) };
@@ -278,7 +330,7 @@ impl<'a> Cursor<'a> {
     /// If the cursor is pointing at a `Group`, returns a cursor into the group
     /// and one pointing to the next `TokenTree`.
     pub fn any_group(self) -> Option<(Cursor<'a>, Delimiter, DelimSpan, Cursor<'a>)> {
-        if let Entry::Group(group, end_offset) = self.entry() {
+        if let Entry::Group(group, end_offset, _) = self.entry() {
             let delimiter = group.delimiter();
             let span = group.delim_span();
             let end_of_group = unsafe { self.ptr.add(*end_offset) };
@@ -291,13 +343,71 @@ impl<'a> Cursor<'a> {
     }
 
     pub(crate) fn any_group_token(self) -> Option<(Group, Cursor<'a>)> {
-        if let Entry::Group(group, end_offset) = self.entry() {
+        if let Entry::Group(_, end_offset, _) = self.entry() {
             let end_of_group = unsafe { self.ptr.add(*end_offset) };
             let after_group = unsafe { Cursor::create(end_of_group, self.scope) };
-            return Some((group.clone(), after_group));
+            return Some((self.group_token(), after_group));
         }
 
         None
+    }
+
+    // Returns the stored group or its cached rejoined form.
+    fn group_token(self) -> Group {
+        match self.entry() {
+            Entry::Group(group, _, None) => group.clone(),
+            Entry::Group(group, end_offset, Some(cell)) => cell
+                .get_or_init(|| {
+                    let mut rebuilt = Group::new(group.delimiter(), unsafe {
+                        self.rebuilt_stream(*end_offset)
+                    });
+                    rebuilt.set_span(group.span());
+                    rebuilt
+                })
+                .clone(),
+            _ => unreachable!(),
+        }
+    }
+
+    // Reconstructs a rejoined group stream, restoring negative literal tokens.
+    unsafe fn rebuilt_stream(self, end_offset: usize) -> TokenStream {
+        let end = unsafe { self.ptr.add(end_offset) };
+        let mut trees: Vec<TokenTree> = Vec::new();
+        let mut ptr = unsafe { self.ptr.add(1) };
+        while ptr < end {
+            let cursor = Cursor {
+                ptr,
+                scope: end,
+                marker: PhantomData,
+            };
+            let len = match unsafe { &*ptr } {
+                Entry::Group(_, end_offset, _) => {
+                    trees.push(TokenTree::Group(cursor.group_token()));
+                    *end_offset + 1
+                }
+                Entry::Ident(ident, _) => {
+                    trees.push(TokenTree::Ident(ident.clone()));
+                    1
+                }
+                Entry::Punct(punct) => match unsafe { &*ptr.add(1) } {
+                    Entry::Literal(_, Some(negative)) => {
+                        trees.push(TokenTree::Literal((**negative).clone()));
+                        2
+                    }
+                    _ => {
+                        trees.push(TokenTree::Punct(punct.clone()));
+                        1
+                    }
+                },
+                Entry::Literal(literal, _) => {
+                    trees.push(TokenTree::Literal(literal.clone()));
+                    1
+                }
+                Entry::End(..) => unreachable!(),
+            };
+            ptr = unsafe { ptr.add(len) };
+        }
+        TokenStream::from_iter(trees)
     }
 
     /// Copies all remaining tokens visible from this cursor into a
@@ -321,8 +431,8 @@ impl<'a> Cursor<'a> {
     /// will return a `Group(None, ..)` if the cursor is looking at one.
     pub fn token_tree(self) -> Option<(TokenTree, Cursor<'a>)> {
         let (tree, len) = match self.entry() {
-            Entry::Group(group, end_offset) => (group.clone().into(), *end_offset),
-            Entry::Literal(literal) => (literal.clone().into(), 1),
+            Entry::Group(_, end_offset, _) => (self.group_token().into(), *end_offset),
+            Entry::Literal(literal, _) => (literal.clone().into(), 1),
             Entry::Ident(ident, _) => (ident.clone().into(), 1),
             Entry::Punct(punct) => (punct.clone().into(), 1),
             Entry::End(..) => return None,
@@ -336,13 +446,13 @@ impl<'a> Cursor<'a> {
     /// cursor points to eof.
     pub fn span(mut self) -> Span {
         match self.entry() {
-            Entry::Group(group, _) => group.span(),
-            Entry::Literal(literal) => literal.span(),
+            Entry::Group(group, _, _) => group.span(),
+            Entry::Literal(literal, _) => literal.span(),
             Entry::Ident(ident, _) => ident.span(),
             Entry::Punct(punct) => punct.span(),
             Entry::End(_, offset) => {
                 self.ptr = unsafe { self.ptr.offset(*offset) };
-                if let Entry::Group(group, _) = self.entry() {
+                if let Entry::Group(group, _, _) = self.entry() {
                     group.span_close()
                 } else {
                     Span::call_site()
@@ -379,7 +489,7 @@ impl<'a> Cursor<'a> {
                 }
             }
 
-            Entry::Group(_, end_offset) => *end_offset,
+            Entry::Group(_, end_offset, _) => *end_offset,
             _ => 1,
         };
 
@@ -389,7 +499,7 @@ impl<'a> Cursor<'a> {
     pub(crate) fn scope_delimiter(self) -> Delimiter {
         match unsafe { &*self.scope } {
             Entry::End(_, offset) => match unsafe { &*self.scope.offset(*offset) } {
-                Entry::Group(group, _) => group.delimiter(),
+                Entry::Group(group, _, _) => group.delimiter(),
                 _ => Delimiter::None,
             },
             _ => unreachable!(),
@@ -446,7 +556,59 @@ pub(crate) fn cmp_assuming_same_buffer(a: Cursor, b: Cursor) -> Ordering {
 
 pub(crate) fn open_span_of_group(cursor: Cursor) -> Span {
     match cursor.entry() {
-        Entry::Group(group, _) => group.span_open(),
+        Entry::Group(group, _, _) => group.span_open(),
         _ => cursor.span(),
+    }
+}
+
+// Splits a proc-macro-created negative numeric literal using its original span.
+fn split_negative_literal(literal: &Literal) -> Option<Literal> {
+    struct FirstByte(Option<u8>);
+    impl fmt::Write for FirstByte {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            match s.as_bytes().first() {
+                Some(&b) => {
+                    self.0 = Some(b);
+                    Err(fmt::Error)
+                }
+                None => Ok(()),
+            }
+        }
+    }
+    let mut first = FirstByte(None);
+    let _ = write!(first, "{}", literal);
+    if first.0 != Some(b'-') {
+        return None;
+    }
+    let text = literal.to_string();
+    let mut positive: Literal = text[1..]
+        .parse()
+        .expect("negative literal without a number");
+    positive.set_span(literal.span());
+    Some(positive)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejoin_buffer_splits_negative_literal() {
+        let literal = Literal::i64_unsuffixed(-1);
+        let positive = split_negative_literal(&literal).expect("negative literal");
+        assert_eq!(positive.to_string(), "1");
+        assert_eq!(
+            alloc::format!("{:?}", positive.span()),
+            alloc::format!("{:?}", literal.span())
+        );
+
+        let input = TokenStream::from(TokenTree::Literal(literal));
+        let buffer = TokenBuffer::new2_rejoin(input);
+        let cursor = buffer.begin();
+        let (minus, cursor) = cursor.punct().expect("minus token");
+        assert_eq!(minus.as_char(), '-');
+        let (positive, cursor) = cursor.literal().expect("positive literal");
+        assert_eq!(positive.to_string(), "1");
+        assert!(cursor.eof());
     }
 }

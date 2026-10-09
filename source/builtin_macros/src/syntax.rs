@@ -42,6 +42,7 @@ use verus_syn::{
     Returns, Signature, SignatureDecreases, SignatureInvariants, SignatureSpec, SignatureSpecAttr,
     SignatureUnwind, Stmt, Token, TraitItem, TraitItemFn, Type, TypeFnProof, TypeFnSpec, TypePath,
     TypeReference, UnOp, Visibility, braced, bracketed, parenthesized, parse_macro_input,
+    parse_macro_input_rejoin,
 };
 
 pub(crate) const VERUS_SPEC: &str = "VERUS_SPEC__";
@@ -5610,8 +5611,7 @@ pub(crate) fn rewrite_items(
     erase_ghost: EraseGhost,
     use_spec_traits: bool,
 ) -> proc_macro::TokenStream {
-    let stream = rejoin_tokens(stream);
-    let mut items: Items = parse_macro_input!(stream as Items);
+    let mut items: Items = parse_macro_input_rejoin!(stream as Items);
     rewrite_items_inner(&mut items.items, erase_ghost, use_spec_traits)
 }
 
@@ -5659,8 +5659,7 @@ pub(crate) fn rewrite_impl_items(
     use_spec_traits: bool,
     for_trait: bool,
 ) -> proc_macro::TokenStream {
-    let stream = rejoin_tokens(stream);
-    let mut items: ImplItems = parse_macro_input!(stream as ImplItems);
+    let mut items: ImplItems = parse_macro_input_rejoin!(stream as ImplItems);
     let mut new_stream = TokenStream::new();
     let mut visitor = Visitor {
         erase_ghost,
@@ -5695,8 +5694,7 @@ pub(crate) fn rewrite_expr(
     inside_ghost: bool,
     stream: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let stream = rejoin_tokens(stream);
-    let mut expr: Expr = parse_macro_input!(stream as Expr);
+    let mut expr: Expr = parse_macro_input_rejoin!(stream as Expr);
     let mut new_stream = TokenStream::new();
     let mut visitor = Visitor {
         erase_ghost,
@@ -5729,8 +5727,7 @@ pub(crate) fn rewrite_proof_decl(
     erase_ghost: EraseGhost,
     stream: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let stream = rejoin_tokens(stream);
-    let Stmts(stmts) = parse_macro_input!(stream as Stmts);
+    let Stmts(stmts) = parse_macro_input_rejoin!(stream as Stmts);
     let mut new_stream = TokenStream::new();
     let mut visitor = Visitor {
         erase_ghost,
@@ -6179,8 +6176,7 @@ pub(crate) fn proof_block(
     erase_ghost: EraseGhost,
     stream: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let stream = rejoin_tokens(stream);
-    let mut invoke: Block = parse_macro_input!(stream as Block);
+    let mut invoke: Block = parse_macro_input_rejoin!(stream as Block);
     let mut new_stream = TokenStream::new();
     let mut visitor = Visitor {
         erase_ghost,
@@ -6206,8 +6202,7 @@ pub(crate) fn proof_macro_exprs(
     inside_ghost: bool,
     stream: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let stream = rejoin_tokens(stream);
-    let mut invoke: MacroInvoke = parse_macro_input!(stream as MacroInvoke);
+    let mut invoke: MacroInvoke = parse_macro_input_rejoin!(stream as MacroInvoke);
     let mut new_stream = TokenStream::new();
     let mut visitor = Visitor {
         erase_ghost,
@@ -6239,8 +6234,7 @@ pub(crate) fn inv_au_macro_exprs(
     ghost_override_index: usize,
     stream: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let stream = rejoin_tokens(stream);
-    let mut invoke: MacroInvoke = parse_macro_input!(stream as MacroInvoke);
+    let mut invoke: MacroInvoke = parse_macro_input_rejoin!(stream as MacroInvoke);
     let mut new_stream = TokenStream::new();
     let mut visitor = Visitor {
         erase_ghost,
@@ -6283,8 +6277,8 @@ pub(crate) fn proof_macro_explicit_exprs(
     inside_ghost: bool,
     stream: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let stream = rejoin_tokens(stream);
-    let mut invoke: MacroInvokeExplicitExpr = parse_macro_input!(stream as MacroInvokeExplicitExpr);
+    let mut invoke: MacroInvokeExplicitExpr =
+        parse_macro_input_rejoin!(stream as MacroInvokeExplicitExpr);
     let mut new_stream = TokenStream::new();
     let mut visitor = Visitor {
         erase_ghost,

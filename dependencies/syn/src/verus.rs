@@ -3276,117 +3276,113 @@ impl parse::Parse for WithSpecOnExpr {
     }
 }
 
-pub fn rejoin_tokens(stream: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
-    use proc_macro2::{Group, Punct, Spacing::*, Span, TokenTree};
-    let mut tokens: Vec<TokenTree> = stream.into_iter().collect();
-    let pun = |t: &TokenTree| match t {
-        TokenTree::Punct(p) => Some((p.as_char(), p.spacing(), p.span())),
-        _ => None,
-    };
-    let ident = |t: &TokenTree| match t {
-        TokenTree::Ident(p) => Some((p.to_string(), p.span())),
-        _ => None,
-    };
-    let adjacent = |s1: Span, s2: Span| {
+/// Rejoins Verus operators within one token-tree level.
+///
+/// This restores joint punctuation and folds adjacent `!is` and `!has` tokens. Nested
+/// groups are handled by the caller.
+pub(crate) fn rejoin_level(tokens: &mut Vec<proc_macro2::TokenTree>) {
+    use proc_macro2::{Ident, Punct, Spacing, Spacing::*, Span, TokenTree};
+    fn pun(t: &TokenTree) -> Option<(char, Spacing)> {
+        match t {
+            TokenTree::Punct(p) => Some((p.as_char(), p.spacing())),
+            _ => None,
+        }
+    }
+    fn adjacent(s1: Span, s2: Span) -> bool {
         let l1 = s1.end();
         let l2 = s2.start();
         s1.local_file() == s2.local_file() && l1.eq(&l2)
-    };
-    fn mk_joint_punct(t: Option<(char, proc_macro2::Spacing, Span)>) -> TokenTree {
-        let (op, _, span) = t.unwrap();
-        let mut punct = Punct::new(op, Joint);
-        punct.set_span(span);
-        TokenTree::Punct(punct)
     }
-    let mut i = 0;
-    let mut till = if tokens.len() >= 2 {
-        tokens.len() - 2
-    } else {
-        0
-    };
-    while i < till {
-        let t0 = pun(&tokens[i]);
-        let t1_ident = ident(&tokens[i + 1]);
-        match (t0, t1_ident.as_ref().map(|(a, b)| (a.as_str(), *b))) {
-            (Some(('!', Alone, s1)), Some(("is", s2))) => {
-                if adjacent(s1, s2) {
-                    tokens[i] = TokenTree::Ident(proc_macro2::Ident::new(
-                        "isnt",
-                        s1.join(s2).unwrap_or(s1),
-                    ));
-                    tokens.remove(i + 1);
-                    i += 1;
-                    till -= 1;
-                    continue;
-                }
-            }
-            (Some(('!', Alone, s1)), Some(("has", s2))) => {
-                if adjacent(s1, s2) {
-                    tokens[i] = TokenTree::Ident(proc_macro2::Ident::new(
-                        "hasnt",
-                        s1.join(s2).unwrap_or(s1),
-                    ));
-                    tokens.remove(i + 1);
-                    i += 1;
-                    till -= 1;
-                    continue;
-                }
-            }
-            _ => {}
+    fn make_joint(t: &mut TokenTree) {
+        if let TokenTree::Punct(p) = t {
+            let mut punct = Punct::new(p.as_char(), Joint);
+            punct.set_span(p.span());
+            *t = TokenTree::Punct(punct);
         }
-        let t1_pun = pun(&tokens[i + 1]);
-        let t2 = pun(&tokens[i + 2]);
-        let t3 = if i + 3 < tokens.len() {
-            pun(&tokens[i + 3])
+    }
+    let len = tokens.len();
+    // Original indices of identifiers folded into a preceding `!`.
+    let mut removed: Vec<usize> = Vec::new();
+    let till = if len >= 2 { len - 2 } else { 0 };
+    let mut j = 0;
+    while j < till {
+        let t0 = pun(&tokens[j]);
+        if t0 == Some(('!', Alone)) {
+            if let TokenTree::Ident(id) = &tokens[j + 1] {
+                let joined = match id.to_string().as_str() {
+                    "is" => Some("isnt"),
+                    "has" => Some("hasnt"),
+                    _ => None,
+                };
+                if let Some(joined) = joined {
+                    let s1 = tokens[j].span();
+                    let s2 = id.span();
+                    if adjacent(s1, s2) {
+                        tokens[j] = TokenTree::Ident(Ident::new(joined, s1.join(s2).unwrap_or(s1)));
+                        removed.push(j + 1);
+                        j += 2;
+                        continue;
+                    }
+                }
+            }
+        }
+        let t1 = pun(&tokens[j + 1]);
+        let t2 = pun(&tokens[j + 2]);
+        let t3 = if j + 3 < len {
+            pun(&tokens[j + 3])
         } else {
             None
         };
-        match (t0, t1_pun, t2, t3) {
-            (
-                Some(('<', Joint, _)),
-                Some(('=', Alone, s1)),
-                Some(('=', Joint, s2)),
-                Some(('>', Alone, _)),
-            )
-            | (Some(('=', Joint, _)), Some(('=', Alone, s1)), Some(('=', Alone, s2)), _)
-            | (Some(('!', Joint, _)), Some(('=', Alone, s1)), Some(('=', Alone, s2)), _)
-            | (Some(('=', Joint, _)), Some(('=', Alone, s1)), Some(('>', Alone, s2)), _)
-            | (Some(('<', Joint, _)), Some(('=', Alone, s1)), Some(('=', Alone, s2)), _)
-            | (Some(('&', Joint, _)), Some(('&', Alone, s1)), Some(('&', Alone, s2)), _)
-            | (Some(('|', Joint, _)), Some(('|', Alone, s1)), Some(('|', Alone, s2)), _) => {
-                if adjacent(s1, s2) {
-                    tokens[i + 1] = mk_joint_punct(t1_pun);
+        match (t0, t1, t2, t3) {
+            (Some(('<', Joint)), Some(('=', Alone)), Some(('=', Joint)), Some(('>', Alone)))
+            | (Some(('=', Joint)), Some(('=', Alone)), Some(('=', Alone)), _)
+            | (Some(('!', Joint)), Some(('=', Alone)), Some(('=', Alone)), _)
+            | (Some(('=', Joint)), Some(('=', Alone)), Some(('>', Alone)), _)
+            | (Some(('<', Joint)), Some(('=', Alone)), Some(('=', Alone)), _)
+            | (Some(('&', Joint)), Some(('&', Alone)), Some(('&', Alone)), _)
+            | (Some(('|', Joint)), Some(('|', Alone)), Some(('|', Alone)), _) => {
+                if adjacent(tokens[j + 1].span(), tokens[j + 2].span()) {
+                    make_joint(&mut tokens[j + 1]);
                 }
             }
-            (Some(('=', Alone, _)), Some(('~', Alone, s1)), Some(('=', Alone, s2)), _)
-            | (Some(('!', Alone, _)), Some(('~', Alone, s1)), Some(('=', Alone, s2)), _) => {
-                if adjacent(s1, s2) {
-                    tokens[i] = mk_joint_punct(t0);
-                    tokens[i + 1] = mk_joint_punct(t1_pun);
+            (Some(('=', Alone)), Some(('~', Alone)), Some(('=', Alone)), _)
+            | (Some(('!', Alone)), Some(('~', Alone)), Some(('=', Alone)), _) => {
+                if adjacent(tokens[j + 1].span(), tokens[j + 2].span()) {
+                    make_joint(&mut tokens[j]);
+                    make_joint(&mut tokens[j + 1]);
                 }
             }
-            (
-                Some(('=', Alone, _)),
-                Some(('~', Alone, _)),
-                Some(('~', Alone, s2)),
-                Some(('=', Alone, s3)),
-            )
-            | (
-                Some(('!', Alone, _)),
-                Some(('~', Alone, _)),
-                Some(('~', Alone, s2)),
-                Some(('=', Alone, s3)),
-            ) => {
-                if adjacent(s2, s3) {
-                    tokens[i] = mk_joint_punct(t0);
-                    tokens[i + 1] = mk_joint_punct(t1_pun);
-                    tokens[i + 2] = mk_joint_punct(t2);
+            (Some(('=', Alone)), Some(('~', Alone)), Some(('~', Alone)), Some(('=', Alone)))
+            | (Some(('!', Alone)), Some(('~', Alone)), Some(('~', Alone)), Some(('=', Alone))) => {
+                if adjacent(tokens[j + 2].span(), tokens[j + 3].span()) {
+                    make_joint(&mut tokens[j]);
+                    make_joint(&mut tokens[j + 1]);
+                    make_joint(&mut tokens[j + 2]);
                 }
             }
             _ => {}
         }
-        i += 1;
+        j += 1;
     }
+    if !removed.is_empty() {
+        let mut removed = removed.into_iter().peekable();
+        let mut k = 0;
+        tokens.retain(|_| {
+            let keep = removed.peek() != Some(&k);
+            if !keep {
+                removed.next();
+            }
+            k += 1;
+            keep
+        });
+    }
+}
+
+/// Rejoins Verus operators recursively and normalizes group delimiter spans.
+pub fn rejoin_tokens(stream: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    use proc_macro2::{Group, TokenTree};
+    let mut tokens: Vec<TokenTree> = stream.into_iter().collect();
+    rejoin_level(&mut tokens);
     for tt in &mut tokens {
         match tt {
             TokenTree::Group(group) => {
