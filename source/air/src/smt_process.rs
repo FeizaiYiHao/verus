@@ -31,30 +31,58 @@ impl SolverInfo {
     }
 }
 
+/// A streamed prefix or completed solver command batch.
+pub(crate) enum WriterRequest {
+    Partial(Vec<u8>),
+    Final(Vec<u8>),
+}
+
 pub struct SmtProcess {
-    requests: Option<Sender<Vec<u8>>>,
+    requests: Option<Sender<WriterRequest>>,
     responses_buf_recv:
         Option<(BufReader<ChildStdout>, Receiver<(BufReader<ChildStdout>, Vec<String>)>)>,
     recv_requests: Sender<BufReader<ChildStdout>>,
     child: Child,
     transcript_log: Option<Box<dyn std::io::Write>>,
+    /// Whether a streamed prefix is waiting for its final batch.
+    partial_pending: bool,
 }
 
 const DONE: &str = "<<DONE>>";
 const DONE_QUOTED: &str = "\"<<DONE>>\"";
 
+fn write_request(writer: &mut impl Write, request: WriterRequest) -> std::io::Result<()> {
+    match request {
+        WriterRequest::Partial(data) => writer.write_all(&data),
+        WriterRequest::Final(data) => writer
+            .write_all(&data)
+            .and_then(|_| writeln!(writer))
+            .and_then(|_| writeln!(writer, "(echo \"{}\")", DONE))
+            .and_then(|_| writer.flush()),
+    }
+}
+
+fn log_transcript_query(writer: &mut dyn Write, commands: &[u8]) -> std::io::Result<()> {
+    writeln!(writer, ";;;>>> QUERY")?;
+    writer.write_all(commands)?;
+    writeln!(writer, ";;;<<<")?;
+    writer.flush()
+}
+
 /// A separate thread writes data to the SMT solver over a pipe.
 /// (Rust's documentation says you need a separate thread; otherwise, it lets the pipes deadlock.)
-pub(crate) fn writer_thread(requests: Receiver<Vec<u8>>, mut smt_pipe_stdin: ChildStdin) {
-    while let Ok(req) = requests.recv() {
-        smt_pipe_stdin
-            .write_all(&req)
-            .and_then(|_| writeln!(&smt_pipe_stdin))
-            // Ask the solver to print DONE, so we know when it is done
-            .and_then(|_| writeln!(&smt_pipe_stdin, "(echo \"{}\")", DONE))
-            .and_then(|_| smt_pipe_stdin.flush())
-            // The solver process could die unexpectedly.  In that case, we die too:
-            .expect("IO error: failure when sending data to solver process across pipe");
+pub(crate) fn writer_thread(requests: Receiver<WriterRequest>, mut smt_pipe_stdin: ChildStdin) {
+    while let Ok(request) = requests.recv() {
+        let final_request = matches!(&request, WriterRequest::Final(_));
+        if let Err(error) = write_request(&mut smt_pipe_stdin, request) {
+            if final_request {
+                panic!(
+                    "IO error: failure when sending data to solver process across pipe: {:?}",
+                    error
+                );
+            }
+            return;
+        }
     }
     // Exit when the other side closes the channel
 }
@@ -149,8 +177,9 @@ impl SmtProcess {
             requests: Some(requests_sender),
             responses_buf_recv: Some((smt_pipe_stdout, responses_receiver)),
             recv_requests: recv_responses_sender,
-            child: child,
+            child,
             transcript_log,
+            partial_pending: false,
         }
     }
 
@@ -158,24 +187,39 @@ impl SmtProcess {
         self.transcript_log = Some(writer);
     }
 
-    /// Send commands to the solver, wait for acknowledgement, and return responses
-    pub(crate) fn send_commands(&mut self, commands: Vec<u8>) -> Vec<String> {
-        self.send_commands_async(commands).wait()
-    }
-
-    /// Send commands to the solver
-    pub(crate) fn send_commands_async<'a>(&'a mut self, commands: Vec<u8>) -> CommandsHandle<'a> {
-        // Send request to writer thread
-        if let Some(writer) = &mut self.transcript_log {
-            writeln!(writer, ";;;>>> QUERY").unwrap();
-            writer.write_all(&commands).unwrap();
-            writeln!(writer, ";;;<<<").unwrap();
-            writer.flush().unwrap();
-        }
+    /// Streams a prefix of the next command batch without waiting for a response.
+    pub(crate) fn send_partial(&mut self, data: Vec<u8>) {
+        self.partial_pending = true;
         self.requests
             .as_mut()
             .unwrap()
-            .send(commands)
+            .send(WriterRequest::Partial(data))
+            .expect("internal error: failed to send to writer thread");
+    }
+
+    /// Sends a completed command batch and waits for solver responses.
+    pub(crate) fn send_commands(&mut self, commands: Vec<u8>, already_sent: usize) -> Vec<String> {
+        self.send_commands_async(commands, already_sent).wait()
+    }
+
+    /// Send commands to Z3
+    pub(crate) fn send_commands_async<'a>(
+        &'a mut self,
+        mut commands: Vec<u8>,
+        already_sent: usize,
+    ) -> CommandsHandle<'a> {
+        // Send request to writer thread
+        if let Some(writer) = &mut self.transcript_log {
+            log_transcript_query(writer.as_mut(), &commands).unwrap();
+        }
+        if already_sent > 0 {
+            commands.drain(..already_sent);
+        }
+        self.partial_pending = false;
+        self.requests
+            .as_mut()
+            .unwrap()
+            .send(WriterRequest::Final(commands))
             .expect("internal error: failed to send to writer thread");
 
         let (smt_pipe_stdout, receiver) = self
@@ -236,8 +280,80 @@ impl Drop for SmtProcess {
     fn drop(&mut self) {
         // send EOF to stdin
         std::mem::drop(self.requests.take());
+        if self.partial_pending {
+            let _ = self.child.kill();
+        }
         if let Err(e) = self.child.wait() {
             panic!("smt process exited with error: {:?}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const CHILD_ENV: &str = "VERUS_AIR_QUERY_FREE_CHILD";
+
+    #[test]
+    fn streamed_requests_preserve_solver_input() {
+        let mut output = Vec::new();
+        write_request(&mut output, WriterRequest::Partial(b"alpha\n".to_vec())).unwrap();
+        write_request(&mut output, WriterRequest::Partial(b"beta\n".to_vec())).unwrap();
+        write_request(&mut output, WriterRequest::Final(b"gamma".to_vec())).unwrap();
+        assert_eq!(output, b"alpha\nbeta\ngamma\n(echo \"<<DONE>>\")\n");
+    }
+
+    #[test]
+    fn transcript_records_the_complete_batch() {
+        let commands = b"alpha\nbeta\ngamma";
+        let mut output = Vec::new();
+        log_transcript_query(&mut output, commands).unwrap();
+        assert_eq!(output, b";;;>>> QUERY\nalpha\nbeta\ngamma;;;<<<\n");
+    }
+
+    #[test]
+    fn query_free_partial_stops_the_solver() {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "smt_process::tests::query_free_child", "--nocapture"])
+            .env(CHILD_ENV, "1")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut stdout = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            assert!(stdout.read_line(&mut line).unwrap() != 0, "child exited before ready");
+            if line.contains("QUERY_FREE_CHILD_READY") {
+                break;
+            }
+            line.truncate(0);
+        }
+        let (_responses_sender, responses_receiver) = channel();
+        let (recv_requests, _recv_requests_receiver) = channel();
+        let process = SmtProcess {
+            requests: None,
+            responses_buf_recv: Some((stdout, responses_receiver)),
+            recv_requests,
+            child,
+            transcript_log: None,
+            partial_pending: true,
+        };
+        let start = Instant::now();
+        drop(process);
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn query_free_child() {
+        if std::env::var_os(CHILD_ENV).is_none() {
+            return;
+        }
+        println!("QUERY_FREE_CHILD_READY");
+        std::io::stdout().flush().unwrap();
+        std::thread::sleep(Duration::from_secs(30));
     }
 }

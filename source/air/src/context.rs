@@ -481,7 +481,20 @@ impl Context {
         }
         crate::typecheck::add_decl(self, &decl, true)?;
         crate::smt_verify::smt_add_decl(self, &decl);
+        self.stream_pipe_data();
         Ok(())
+    }
+
+    /// Streams complete SMT chunks while later declarations are translated.
+    pub(crate) fn stream_pipe_data(&mut self) {
+        // Amortizes pipe traffic while exposing solver parsing overlap.
+        const SMT_STREAM_CHUNK_LEN: usize = 16 * 1024;
+        if self.profile_logfile_name.is_some() {
+            return;
+        }
+        if let Some(data) = self.smt_log.take_unsent_pipe_data(SMT_STREAM_CHUNK_LEN) {
+            self.get_smt_process().send_partial(data);
+        }
     }
 
     pub fn check_valid(
@@ -558,8 +571,8 @@ impl Context {
 
     pub fn eval_expr(&mut self, expr: sise::TreeNode) -> String {
         self.smt_log.log_eval(expr);
-        let smt_data = self.smt_log.take_pipe_data();
-        let smt_output = self.get_smt_process().send_commands(smt_data);
+        let (smt_data, sent) = self.smt_log.take_pipe_data();
+        let smt_output = self.get_smt_process().send_commands(smt_data, sent);
         if smt_output.len() != 1 {
             panic!("unexpected output from SMT eval {:?}", smt_output);
         }
