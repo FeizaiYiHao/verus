@@ -1340,6 +1340,22 @@ pub(crate) fn parse_scoped<F: Parser>(f: F, scope: Span, tokens: TokenStream) ->
     f.__parse_scoped(scope, tokens)
 }
 
+/// Parses tokens after rejoining Verus operators during buffer construction.
+pub(crate) fn parse2_rejoin<F, T>(f: F, tokens: TokenStream) -> Result<T>
+where
+    F: FnOnce(ParseStream) -> Result<T>,
+{
+    let buf = TokenBuffer::new2_rejoin(tokens);
+    let state = tokens_to_parse_buffer(&buf);
+    let node = f(&state)?;
+    state.check_unexpected()?;
+    if let Some((unexpected_span, delimiter)) = span_of_unexpected_ignoring_nones(state.cursor()) {
+        Err(err_unexpected_token(unexpected_span, delimiter))
+    } else {
+        Ok(node)
+    }
+}
+
 fn err_unexpected_token(span: Span, delimiter: Delimiter) -> Error {
     let msg = match delimiter {
         Delimiter::Parenthesis => "unexpected token, expected `)`",

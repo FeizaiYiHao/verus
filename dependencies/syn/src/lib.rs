@@ -945,6 +945,12 @@ pub fn parse<T: parse::Parse>(tokens: proc_macro::TokenStream) -> Result<T> {
 pub fn parse2<T: parse::Parse>(tokens: proc_macro2::TokenStream) -> Result<T> {
     parse::Parser::parse2(T::parse, tokens)
 }
+/// Parses a proc-macro token stream after rejoining Verus operators.
+#[cfg(all(feature = "parsing", feature = "proc-macro"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "parsing", feature = "proc-macro"))))]
+pub fn parse_rejoin<T: parse::Parse>(tokens: proc_macro::TokenStream) -> Result<T> {
+    parse::parse2_rejoin(T::parse, proc_macro2::TokenStream::from(tokens))
+}
 
 /// Parse a string of Rust code into the chosen syntax tree node.
 ///
