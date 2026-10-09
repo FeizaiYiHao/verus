@@ -885,9 +885,9 @@ pub(crate) mod parsing {
                     return Ok((Lit::new(lit), rest));
                 }
 
-                if let Some((ident, rest)) = cursor.ident() {
-                    let value = ident == "true";
-                    if value || ident == "false" {
+                if let Some((ident, text, rest)) = cursor.ident_str() {
+                    let value = text == "true";
+                    if value || text == "false" {
                         let lit_bool = LitBool {
                             value,
                             span: ident.span(),
@@ -1037,6 +1037,13 @@ pub(crate) mod parsing {
     }
 
     fn peek_impl(cursor: Cursor, peek: fn(ParseStream) -> bool) -> bool {
+        // `Lit::parse` can only accept these token kinds.
+        let maybe_lit = cursor.literal().is_some()
+            || matches!(cursor.ident_str(), Some((_, "true" | "false", _)))
+            || matches!(cursor.punct(), Some((punct, _)) if punct.as_char() == '-');
+        if !maybe_lit {
+            return false;
+        }
         let scope = Span::call_site();
         let unexpected = Rc::new(Cell::new(Unexpected::None));
         let buffer = crate::parse::new_parse_buffer(scope, cursor, unexpected);

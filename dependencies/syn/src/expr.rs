@@ -1426,11 +1426,10 @@ pub(crate) mod parsing {
             if input.peek(Token![&&&]) || input.peek(Token![|||]) {
                 break;
             }
-            let ahead = input.fork();
             if let Expr::Range(_) = lhs {
                 // A range cannot be the left-hand side of another binary operator.
                 break;
-            } else if let Ok(op) = ahead.parse::<BinOp>() {
+            } else if let Some((op, ahead)) = speculative_binop(input) {
                 let precedence = Precedence::of_binop(&op);
                 if precedence < base {
                     break;
@@ -1539,6 +1538,18 @@ pub(crate) mod parsing {
         Ok(lhs)
     }
 
+    // Avoids forking when the next token cannot begin a binary operator.
+    fn speculative_binop<'a>(input: ParseStream<'a>) -> Option<(BinOp, ParseBuffer<'a>)> {
+        if !crate::op::parsing::peek_binop_start(input.cursor()) {
+            return None;
+        }
+        let ahead = input.fork();
+        match ahead.parse::<BinOp>() {
+            Ok(op) => Some((op, ahead)),
+            Err(_) => None,
+        }
+    }
+
     #[cfg(not(feature = "full"))]
     fn parse_expr(input: ParseStream, mut lhs: Expr, base: Precedence) -> Result<Expr> {
         loop {
@@ -1628,7 +1639,7 @@ pub(crate) mod parsing {
             || input.peek(Token![matches])
         {
             Precedence::HasIsMatches
-        } else if let Ok(op) = input.fork().parse() {
+        } else if let Some((op, _)) = speculative_binop(input) {
             Precedence::of_binop(&op)
         } else if input.peek(Token![=]) && !input.peek(Token![=>]) {
             Precedence::Assign

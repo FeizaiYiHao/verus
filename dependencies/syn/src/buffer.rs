@@ -8,7 +8,9 @@
 use crate::ext::TokenStreamExt as _;
 use crate::Lifetime;
 use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::vec::Vec;
+use core::cell::OnceCell;
 use core::cmp::Ordering;
 use core::marker::PhantomData;
 use core::ptr;
@@ -21,7 +23,8 @@ enum Entry {
     // Mimicking types from proc-macro.
     // Group entries contain the offset to the matching End entry.
     Group(Group, usize),
-    Ident(Ident),
+    // Identifier and lazily cached text.
+    Ident(Ident, OnceCell<Box<str>>),
     Punct(Punct),
     Literal(Literal),
     // End entries contain the offset (negative) to the start of the buffer, and
@@ -42,7 +45,7 @@ impl TokenBuffer {
     fn recursive_new(entries: &mut Vec<Entry>, stream: TokenStream) {
         for tt in stream {
             match tt {
-                TokenTree::Ident(ident) => entries.push(Entry::Ident(ident)),
+                TokenTree::Ident(ident) => entries.push(Entry::Ident(ident, OnceCell::new())),
                 TokenTree::Punct(punct) => entries.push(Entry::Punct(punct)),
                 TokenTree::Literal(literal) => entries.push(Entry::Literal(literal)),
                 TokenTree::Group(group) => {
@@ -192,7 +195,19 @@ impl<'a> Cursor<'a> {
     pub fn ident(mut self) -> Option<(Ident, Cursor<'a>)> {
         self.ignore_none();
         match self.entry() {
-            Entry::Ident(ident) => Some((ident.clone(), unsafe { self.bump_ignore_group() })),
+            Entry::Ident(ident, _) => Some((ident.clone(), unsafe { self.bump_ignore_group() })),
+            _ => None,
+        }
+    }
+
+    /// Returns the identifier, its cached text, and the next cursor.
+    pub(crate) fn ident_str(mut self) -> Option<(&'a Ident, &'a str, Cursor<'a>)> {
+        self.ignore_none();
+        match self.entry() {
+            Entry::Ident(ident, text) => {
+                let text = text.get_or_init(|| ident.to_string().into_boxed_str());
+                Some((ident, text, unsafe { self.bump_ignore_group() }))
+            }
             _ => None,
         }
     }
@@ -308,7 +323,7 @@ impl<'a> Cursor<'a> {
         let (tree, len) = match self.entry() {
             Entry::Group(group, end_offset) => (group.clone().into(), *end_offset),
             Entry::Literal(literal) => (literal.clone().into(), 1),
-            Entry::Ident(ident) => (ident.clone().into(), 1),
+            Entry::Ident(ident, _) => (ident.clone().into(), 1),
             Entry::Punct(punct) => (punct.clone().into(), 1),
             Entry::End(..) => return None,
         };
@@ -323,7 +338,7 @@ impl<'a> Cursor<'a> {
         match self.entry() {
             Entry::Group(group, _) => group.span(),
             Entry::Literal(literal) => literal.span(),
-            Entry::Ident(ident) => ident.span(),
+            Entry::Ident(ident, _) => ident.span(),
             Entry::Punct(punct) => punct.span(),
             Entry::End(_, offset) => {
                 self.ptr = unsafe { self.ptr.offset(*offset) };
@@ -359,7 +374,7 @@ impl<'a> Cursor<'a> {
             // Treat lifetimes as a single tt for the purposes of 'skip'.
             Entry::Punct(punct) if punct.as_char() == '\'' && punct.spacing() == Spacing::Joint => {
                 match unsafe { &*self.ptr.add(1) } {
-                    Entry::Ident(_) => 2,
+                    Entry::Ident(..) => 2,
                     _ => 1,
                 }
             }
