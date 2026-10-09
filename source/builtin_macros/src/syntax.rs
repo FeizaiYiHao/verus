@@ -964,7 +964,6 @@ impl Visitor {
         spec: &mut SignatureSpec,
         ret_pat: Option<&Pat>,
         ret_ty: Option<&TType>,
-        _span: Span,
         // is the function a ImplItemFn or TraitImplFn
         is_impl_fn: bool,
         // some closures also use this function to handle
@@ -1477,8 +1476,6 @@ impl Visitor {
 
         self.inside_ghost += 1; // for requires, ensures, etc.
 
-        let sig_span = sig.span().clone();
-
         if let Some(pat) = &ret_pat {
             if let Some(err_stmt) = check_verus_return_idents(pat, &sig.inputs) {
                 stmts.push(err_stmt);
@@ -1497,7 +1494,6 @@ impl Visitor {
             &mut sig.spec,
             ret_pat.as_ref(),
             ret_ty.as_ref(),
-            sig_span,
             is_impl_fn,
             false,
             &sig.ident,
@@ -1814,7 +1810,7 @@ impl Visitor {
             stmts.push(Stmt::Expr(mk_proof_block(block), Some(Semi { spans: [span] })));
             (false, stmts)
         } else {
-            let tmp = Ident::new("verus_tmp", Span::mixed_site().located_at(local.span()));
+            let tmp = Ident::new("verus_tmp", Span::mixed_site().located_at(span));
             let tmp_decl = if local.tracked.is_some() {
                 parse_quote_spanned!(span => #[verus::internal(proof)] #[verus::internal(unwrapped_binding)] let #tmp;)
             } else {
@@ -1865,10 +1861,10 @@ impl Visitor {
     }
 
     fn visit_stmt_extend(&mut self, stmt: &mut Stmt) -> (bool, Vec<Stmt>) {
-        let span = stmt.span();
         match stmt {
             Stmt::Local(local) => self.visit_local_extend(local),
             Stmt::Item(Item::BroadcastUse(broadcast_use)) => {
+                let span = broadcast_use.span();
                 let BroadcastUse { attrs, paths, .. } = broadcast_use;
                 if self.erase_ghost.erase() {
                     (true, vec![])
@@ -1945,7 +1941,6 @@ impl Visitor {
         // - For erased non-pub Fn and Const item x, leave a stub "fn x()" with the same conditional presence
         // - Leave Struct and Enum as-is (REVIEW: we could leave stubs with PhantomData fields)
         for item in items.iter_mut() {
-            let span = item.span();
             match item {
                 Item::Fn(fun) => match (&fun.vis, &fun.sig.mode) {
                     (
@@ -1955,6 +1950,7 @@ impl Visitor {
                         | FnMode::Proof(_)
                         | FnMode::ProofAxiom(_),
                     ) if erase_ghost => {
+                        let span = fun.span();
                         // replace body with panic!()
                         let expr: Expr = Expr::Verbatim(quote_spanned! {
                             span => { ::core::panic!() }
@@ -2008,6 +2004,7 @@ impl Visitor {
                 _ => None,
             };
             if let Some((name, vis, mut attrs)) = erase_fn {
+                let span = item.span();
                 let mut item_fn: ItemFn = parse_quote_spanned! {
                     span => #[allow(unused_imports)] #vis fn #name() { ::core::unimplemented!() }
                 };
@@ -2479,7 +2476,6 @@ impl Visitor {
             _ => true,
         });
         for item in items.iter_mut() {
-            let span = item.span();
             match item {
                 ImplItem::Fn(fun) => match ((&fun.vis, for_trait), &fun.sig.mode) {
                     (
@@ -2489,6 +2485,7 @@ impl Visitor {
                         | FnMode::Proof(_)
                         | FnMode::ProofAxiom(_),
                     ) if erase_ghost => {
+                        let span = fun.span();
                         // replace body with panic!()
                         let expr: Expr = Expr::Verbatim(quote_spanned! {
                             span => { ::core::panic!() }
@@ -2501,6 +2498,7 @@ impl Visitor {
                     _ => {}
                 },
                 ImplItem::BroadcastGroup(item_broadcast_group) => {
+                    let span = item_broadcast_group.span();
                     *item =
                         ImplItem::Verbatim(self.handle_broadcast_group(item_broadcast_group, span));
                 }
@@ -2545,6 +2543,116 @@ impl Visitor {
         }
         items.append(&mut spec_items);
     }
+}
+
+// Computes `ItemImpl::span` from the first printed token and the brace delimiter.
+fn item_impl_span(imp: &ItemImpl) -> Span {
+    let first = if let Some(attr) =
+        imp.attrs.iter().find(|a| matches!(a.style, verus_syn::AttrStyle::Outer))
+    {
+        attr.pound_token.spans[0]
+    } else if let Some(t) = &imp.defaultness {
+        t.span
+    } else if let Some(t) = &imp.unsafety {
+        t.span
+    } else if let Some(t) = &imp.constness {
+        t.span
+    } else {
+        imp.impl_token.span
+    };
+    let last = imp.brace_token.span.join();
+    first.join(last).unwrap_or(first)
+}
+
+// Structural fast paths for expression spans. Unsupported printer shapes fall back to
+// `Spanned::span`.
+
+/// Span of the first token that `e.to_tokens()` prints.
+fn first_token_span(e: &Expr) -> Option<Span> {
+    match e {
+        Expr::Verbatim(ts) => ts.clone().into_iter().next().map(|tt| tt.span()),
+        Expr::Path(p) if p.attrs.is_empty() && p.qself.is_none() => {
+            if let Some(colon) = &p.path.leading_colon {
+                Some(colon.spans[0])
+            } else {
+                p.path.segments.first().map(|seg| Ident::span(&seg.ident))
+            }
+        }
+        Expr::Lit(l) if l.attrs.is_empty() => Some(Lit::span(&l.lit)),
+        Expr::Paren(p) if p.attrs.is_empty() => Some(p.paren_token.span.join()),
+        Expr::Field(f) if f.attrs.is_empty() => first_token_span(&f.base),
+        Expr::MethodCall(m) if m.attrs.is_empty() => first_token_span(&m.receiver),
+        // `ExprCall` parenthesizes a field-access callee: `(x.f)(...)`
+        Expr::Call(c) if c.attrs.is_empty() && !matches!(&*c.func, Expr::Field(_)) => {
+            first_token_span(&c.func)
+        }
+        Expr::Index(i) if i.attrs.is_empty() => first_token_span(&i.expr),
+        _ => None,
+    }
+}
+
+/// Span of the last token that `e.to_tokens()` prints, and whether it is the only token.
+fn last_token_span(e: &Expr) -> Option<(Span, bool)> {
+    match e {
+        Expr::Verbatim(ts) => {
+            let mut n = 0usize;
+            let last = ts.clone().into_iter().inspect(|_| n += 1).last()?;
+            Some((last.span(), n == 1))
+        }
+        Expr::Path(p) if p.attrs.is_empty() && p.qself.is_none() => {
+            let path = &p.path;
+            if path.segments.trailing_punct() {
+                return None;
+            }
+            let seg = path.segments.last()?;
+            match &seg.arguments {
+                PathArguments::None => Some((
+                    Ident::span(&seg.ident),
+                    path.leading_colon.is_none() && path.segments.len() == 1,
+                )),
+                PathArguments::AngleBracketed(args) => Some((args.gt_token.spans[0], false)),
+                PathArguments::Parenthesized(_) => None,
+            }
+        }
+        Expr::Lit(l) if l.attrs.is_empty() => Some((Lit::span(&l.lit), true)),
+        Expr::Paren(p) if p.attrs.is_empty() => Some((p.paren_token.span.join(), true)),
+        Expr::Field(f) if f.attrs.is_empty() => match &f.member {
+            verus_syn::Member::Named(id) => Some((Ident::span(id), false)),
+            verus_syn::Member::Unnamed(idx) => Some((idx.span, false)),
+        },
+        Expr::MethodCall(m) if m.attrs.is_empty() && m.atomically.is_none() => {
+            Some((m.paren_token.span.join(), false))
+        }
+        Expr::Call(c) if c.attrs.is_empty() && c.atomically.is_none() => {
+            Some((c.paren_token.span.join(), false))
+        }
+        Expr::Index(i) if i.attrs.is_empty() => Some((i.bracket_token.span.join(), false)),
+        _ => None,
+    }
+}
+
+/// Computes `e.span()` structurally when possible.
+fn expr_span(e: &Expr) -> Span {
+    if let Expr::Binary(binary) = e {
+        return binary_span(binary);
+    }
+    match (first_token_span(e), last_token_span(e)) {
+        (Some(first), Some((_, true))) => first,
+        (Some(first), Some((last, false))) => first.join(last).unwrap_or(first),
+        _ => e.span(),
+    }
+}
+
+/// Computes `binary.span()` structurally when both operands have unambiguous precedence.
+fn binary_span(binary: &ExprBinary) -> Span {
+    if binary.attrs.is_empty() {
+        if let (Some(first), Some((last, _))) =
+            (first_token_span(&binary.left), last_token_span(&binary.right))
+        {
+            return first.join(last).unwrap_or(first);
+        }
+    }
+    binary.span()
 }
 
 fn chain_count(expr: &Expr) -> u32 {
@@ -2768,11 +2876,13 @@ impl Visitor {
         if let Expr::BigAnd(exprs) = expr {
             let mut new_expr = take_expr(&mut exprs.exprs[0].expr);
             for i in 1..exprs.exprs.len() {
-                let span = exprs.exprs[i].tok.span();
+                let s = exprs.exprs[i].tok.spans;
+                let span = s[0].join(s[2]).unwrap_or(s[0]);
                 let spans = [span, span];
                 let right = take_expr(&mut exprs.exprs[i].expr);
-                let left = Box::new(Expr::Verbatim(quote_spanned!(new_expr.span() => (#new_expr))));
-                let right = Box::new(Expr::Verbatim(quote_spanned!(right.span() => (#right))));
+                let left =
+                    Box::new(Expr::Verbatim(quote_spanned!(expr_span(&new_expr) => (#new_expr))));
+                let right = Box::new(Expr::Verbatim(quote_spanned!(expr_span(&right) => (#right))));
                 let attrs = Vec::new();
                 let op = BinOp::And(verus_syn::token::AndAnd { spans });
                 let bin = ExprBinary { attrs, op, left, right };
@@ -2782,11 +2892,13 @@ impl Visitor {
         } else if let Expr::BigOr(exprs) = expr {
             let mut new_expr = take_expr(&mut exprs.exprs[0].expr);
             for i in 1..exprs.exprs.len() {
-                let span = exprs.exprs[i].tok.span();
+                let s = exprs.exprs[i].tok.spans;
+                let span = s[0].join(s[2]).unwrap_or(s[0]);
                 let spans = [span, span];
                 let right = take_expr(&mut exprs.exprs[i].expr);
-                let left = Box::new(Expr::Verbatim(quote_spanned!(new_expr.span() => (#new_expr))));
-                let right = Box::new(Expr::Verbatim(quote_spanned!(right.span() => (#right))));
+                let left =
+                    Box::new(Expr::Verbatim(quote_spanned!(expr_span(&new_expr) => (#new_expr))));
+                let right = Box::new(Expr::Verbatim(quote_spanned!(expr_span(&right) => (#right))));
                 let attrs = Vec::new();
                 let op = BinOp::Or(verus_syn::token::OrOr { spans });
                 let bin = ExprBinary { attrs, op, left, right };
@@ -2988,7 +3100,6 @@ impl Visitor {
         };
 
         if self.use_spec_traits && self.inside_ghost > 0 {
-            let span = unary.span();
             let attrs = &unary.attrs;
             match &unary.op {
                 UnOp::Neg(_neg) => {
@@ -2996,6 +3107,7 @@ impl Visitor {
                     if let Expr::Lit(..) = &**arg {
                         // leave native Rust literal with native Rust negation
                     } else {
+                        let span = unary.span();
                         *expr = quote_verbatim!(span, attrs => (#arg).spec_neg());
                     }
                 }
@@ -3059,7 +3171,6 @@ impl Visitor {
             unreachable!();
         };
 
-        let span = binary.span();
         let low_prec_op = match binary.op {
             BinOp::Equiv(verus_syn::token::Equiv { spans }) => {
                 let spans = [spans[1], spans[2]];
@@ -3090,6 +3201,7 @@ impl Visitor {
             let bin = ExprBinary { attrs, op, left, right };
             *expr = Expr::Binary(bin);
         } else if let Some(imply) = ply {
+            let span = binary_span(binary);
             let attrs = std::mem::take(&mut binary.attrs);
             let func = Box::new(Expr::Verbatim(
                 quote_spanned_builtin!(verus_builtin, span => #verus_builtin::imply),
@@ -3108,6 +3220,7 @@ impl Visitor {
             let atomically = None;
             *expr = Expr::Call(ExprCall { attrs, func, paren_token, args, atomically });
         } else if verus_eq {
+            let span = binary_span(binary);
             let attrs = std::mem::take(&mut binary.attrs);
             let func = match binary.op {
                 BinOp::BigEq(_) | BinOp::BigNe(_) => Box::new(Expr::Verbatim(
@@ -3138,6 +3251,25 @@ impl Visitor {
                 *expr = Expr::Verbatim(quote_spanned!(span => ! #call));
             }
         } else if self.use_spec_traits && self.inside_ghost > 0 {
+            let span = match binary.op {
+                BinOp::Eq(..)
+                | BinOp::Ne(..)
+                | BinOp::Le(..)
+                | BinOp::Lt(..)
+                | BinOp::Ge(..)
+                | BinOp::Gt(..)
+                | BinOp::Add(..)
+                | BinOp::Sub(..)
+                | BinOp::Mul(..)
+                | BinOp::Div(..)
+                | BinOp::Rem(..)
+                | BinOp::BitAnd(..)
+                | BinOp::BitOr(..)
+                | BinOp::BitXor(..)
+                | BinOp::Shl(..)
+                | BinOp::Shr(..) => binary_span(binary),
+                _ => return true,
+            };
             let attrs = &binary.attrs;
             let left = &binary.left;
             let right = &binary.right;
@@ -4989,6 +5121,9 @@ impl VisitMut for Visitor {
         verus_syn::visit_mut::visit_type_mut(self, ty);
         self.inside_type -= 1;
 
+        if !matches!(ty, Type::FnSpec(_) | Type::FnProof(_)) {
+            return;
+        }
         let span = ty.span();
         let tmp_ty = take_type(ty);
 
@@ -5166,7 +5301,7 @@ impl VisitMut for Visitor {
     fn visit_item_impl_mut(&mut self, imp: &mut ItemImpl) {
         let impl_info = (imp.generics.clone(), imp.self_ty.clone());
         let outer_impl = self.inside_impl.replace(Box::new(impl_info));
-        imp.attrs.push(mk_verus_attr(imp.span(), quote! { verus_macro }));
+        imp.attrs.push(mk_verus_attr(item_impl_span(imp), quote! { verus_macro }));
         self.visit_impl_items_prefilter(&mut imp.items, imp.trait_.is_some());
         self.filter_attrs(&mut imp.attrs);
         verus_syn::visit_mut::visit_item_impl_mut(self, imp);
@@ -5932,12 +6067,10 @@ pub(crate) fn sig_specs_attr(
         }
     }
 
-    let sig_span = sig.span().clone();
     spec_stmts.extend(visitor.take_sig_specs(
         &mut spec,
         ret_pat.as_ref(),
         ret_ty.as_ref(),
-        sig_span,
         is_impl_fn,
         is_closure,
         &sig.ident,
