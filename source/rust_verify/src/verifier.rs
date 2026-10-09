@@ -110,7 +110,7 @@ impl air::messages::Diagnostics for Reporter<'_> {
             if let Some(span) = span {
                 multispan.push_span_label(span, note);
             } else {
-                dbg!(&note, &sp.as_string);
+                dbg!(&note, sp.as_string());
             }
         }
 
@@ -717,7 +717,7 @@ impl Verifier {
             let triggers = &bnd_info.user.as_ref().unwrap().trigs;
             for trigger in triggers.iter() {
                 // HACK: we do not have span info for the verus_builtin crate
-                if !trigger.iter().any(|t| t.span.as_string.contains("verus_builtin")) {
+                if !trigger.iter().any(|t| t.span.as_string().contains("verus_builtin")) {
                     msg = trigger.iter().fold(msg, |m, e| m.primary_span(&e.span));
                 }
             }
@@ -980,7 +980,7 @@ impl Verifier {
                 }
                 ValidityResult::UnexpectedOutput(err) => {
                     util::PANIC_ON_DROP_VEC.store(false, std::sync::atomic::Ordering::SeqCst);
-                    panic!("unexpected output from solver: {} {}", context.span.as_string, err);
+                    panic!("unexpected output from solver: {} {}", context.span.as_string(), err);
                 }
             }
         }
@@ -1086,7 +1086,7 @@ impl Verifier {
         if commands.len() > 0 {
             air_context.blank_line();
             air_context.comment(comment);
-            air_context.comment(&context.span.as_string);
+            air_context.comment(context.span.as_string());
         }
         for command in commands.iter() {
             result = result
@@ -1299,7 +1299,7 @@ impl Verifier {
         )?;
 
         // Write the span of spun-off query
-        air_context.comment(&span.as_string);
+        air_context.comment(span.as_string());
         air_context.blank_line();
         air_context.comment(&format!("query spun off because: {}", spinoff_reason));
 
@@ -2653,7 +2653,7 @@ impl Verifier {
                 raw_span: crate::spans::to_raw_span(no_span),
                 id: 0,
                 data: vec![],
-                as_string: "no location".to_string(),
+                as_string: "no location".to_string().into(),
             })
         };
 
@@ -2776,7 +2776,7 @@ impl Verifier {
                     vir::ast_util::path_as_friendly_rust_name(&imp.x.impl_path),
                     vir::ast_util::path_as_friendly_rust_name(&imp.x.trait_path),
                     ts.join(", "),
-                    imp.span.as_string,
+                    imp.span.as_string(),
                 )
                 .map_err(|e| io_vir_err("log_impl_names".to_string(), e))
                 .map_err(map_err_diagnostics)?;

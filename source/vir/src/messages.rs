@@ -11,14 +11,84 @@ fn empty_raw_span() -> RawSpan {
 pub type RawSpan =
     Arc<dyn std::any::Any + std::marker::Sync + std::marker::Send + std::panic::RefUnwindSafe>;
 pub type AstId = u64;
-#[derive(Clone, Serialize, Deserialize)] // for Debug, see ast_util
+#[derive(Clone, Deserialize)] // for Debug, see ast_util
 pub struct Span {
     #[serde(skip)]
     #[serde(default = "crate::messages::empty_raw_span")]
     pub raw_span: RawSpan,
     pub id: AstId, // arbitrary integer identifier that may be set and used in any way (e.g. as unique id, or just left as 0)
     pub data: Vec<u64>, // arbitrary integers (e.g. for serialization/deserialization)
-    pub as_string: String, // if we can't print (description, raw_span), print as_string instead
+    // Fallback description, optionally computed on first use.
+    pub as_string: SpanString,
+}
+
+/// A printable span description that may be computed on first use.
+#[derive(Clone)]
+pub struct SpanString(Option<String>);
+
+impl SpanString {
+    /// Creates a description resolved through the installed span-string hook.
+    pub fn lazy() -> SpanString {
+        SpanString(None)
+    }
+
+    fn get(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
+impl Default for SpanString {
+    fn default() -> SpanString {
+        String::new().into()
+    }
+}
+
+impl From<String> for SpanString {
+    fn from(s: String) -> SpanString {
+        SpanString(Some(s))
+    }
+}
+
+impl<'de> Deserialize<'de> for SpanString {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<SpanString, D::Error> {
+        String::deserialize(d).map(SpanString::from)
+    }
+}
+
+/// Resolver used to materialize a lazy span description from its raw payload.
+pub type SpanStringHook = Arc<dyn for<'a> Fn(&'a RawSpan) -> Option<&'a str> + Send + Sync>;
+
+static SPAN_STRING_HOOK: std::sync::RwLock<Option<SpanStringHook>> = std::sync::RwLock::new(None);
+
+/// Installs the resolver for lazy span descriptions.
+pub fn set_span_string_hook(hook: SpanStringHook) {
+    *SPAN_STRING_HOOK.write().unwrap() = Some(hook);
+}
+
+impl Span {
+    /// Returns the printable description of this span.
+    pub fn as_string(&self) -> &str {
+        if let Some(s) = self.as_string.get() {
+            return s;
+        }
+        let hook = SPAN_STRING_HOOK.read().unwrap().clone();
+        match hook.and_then(|hook| hook(&self.raw_span)) {
+            Some(s) => s,
+            None => panic!("internal error: no description available for span {:?}", self.data),
+        }
+    }
+}
+
+// Preserves the derived wire format while resolving lazy descriptions.
+impl Serialize for Span {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("Span", 3)?;
+        s.serialize_field("id", &self.id)?;
+        s.serialize_field("data", &self.data)?;
+        s.serialize_field("as_string", self.as_string())?;
+        s.end()
+    }
 }
 
 impl std::fmt::Debug for Span {
@@ -27,7 +97,7 @@ impl std::fmt::Debug for Span {
             .field("raw_span", &"ANY")
             .field("id", &self.id)
             .field("data", &self.data)
-            .field("as_string", &self.as_string)
+            .field("as_string", &self.as_string())
             .finish()
     }
 }
@@ -237,7 +307,7 @@ impl air::messages::MessageInterface for VirMessageInterface {
                 raw_span: Arc::new(()),
                 id: 0,
                 data: Vec::new(),
-                as_string: air_span.to_owned(),
+                as_string: air_span.to_owned().into(),
             },
             note: note.to_owned(),
             is_proof_note: false,

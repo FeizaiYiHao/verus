@@ -978,7 +978,7 @@ impl<X> Spanned<X> {
 
 impl<X: Debug> Debug for Spanned<X> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        f.debug_tuple("Spanned").field(&self.span.as_string).field(&self.x).finish()
+        f.debug_tuple("Spanned").field(&self.span.as_string()).field(&self.x).finish()
     }
 }
 
