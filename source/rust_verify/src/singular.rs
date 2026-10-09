@@ -622,7 +622,7 @@ pub fn check_singular_valid(
     let mut singular_process = singular_manager.launch();
 
     for (query, err) in queries {
-        air::singular_manager::log_singular(context, &query, &func_span.as_string);
+        air::singular_manager::log_singular(context, &query, func_span.as_string());
         let res = singular_process.send_commands(query.as_bytes().to_vec());
         if (res.len() == 1) && (res[0] == "0") {
             // this query is ok (poly reduced to 0)

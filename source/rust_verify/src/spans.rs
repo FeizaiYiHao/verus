@@ -1,7 +1,7 @@
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::StableCrateId;
 use rustc_span::source_map::SourceMap;
-use rustc_span::{BytePos, ExternalSource, FileName, Span, SpanData};
+use rustc_span::{BytePos, ExternalSource, FileName, Pos, Span, SpanData};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -10,8 +10,13 @@ use vir::def::Spanned;
 
 use crate::externs::VerusExterns;
 
+struct RawSpanData {
+    span: SpanData,
+    as_string: std::sync::OnceLock<String>,
+}
+
 pub(crate) fn to_raw_span(span: Span) -> vir::messages::RawSpan {
-    Arc::new(span.data())
+    Arc::new(RawSpanData { span: span.data(), as_string: std::sync::OnceLock::new() })
 }
 
 // Note: this only returns Some for Spans in the local crate
@@ -25,7 +30,7 @@ pub(crate) fn from_raw_span(raw_span: &vir::messages::RawSpan) -> Option<Span> {
         );
     }
     let x = (&(**raw_span)) as &(dyn std::any::Any + Sync + Send); // rust subtyping limitaiton
-    x.downcast_ref::<SpanData>().map(|data| data.span())
+    x.downcast_ref::<RawSpanData>().map(|data| data.span.span())
 }
 
 // Note: this produces a span suitable for reporting immediate errors;
@@ -33,8 +38,51 @@ pub(crate) fn from_raw_span(raw_span: &vir::messages::RawSpan) -> Option<Span> {
 // and cannot be serialized an deserialized.
 pub(crate) fn err_air_span(span: Span) -> vir::messages::Span {
     let raw_span = to_raw_span(span);
-    let as_string = format!("{:?}", span);
+    let as_string = format!("{:?}", span).into();
     vir::messages::Span { raw_span, id: 0, data: vec![], as_string }
+}
+
+// Mirrors rustc's span Debug format without accessing session-local state.
+fn span_data_debug_string(source_map: &SourceMap, data: &SpanData) -> String {
+    use rustc_span::RemapPathScopeComponents;
+    let mut s = String::new();
+    if source_map.files().is_empty() || (data.lo.0 == 0 && data.hi.0 == 0) {
+        s.push_str("no-location");
+    } else {
+        let lo = source_map.lookup_char_pos(data.lo);
+        let hi = source_map.lookup_char_pos(data.hi);
+        use std::fmt::Write;
+        write!(
+            &mut s,
+            "{}:{}:{}: {}:{}",
+            lo.file.name.display(RemapPathScopeComponents::DIAGNOSTICS),
+            lo.line,
+            lo.col.to_usize() + 1,
+            hi.line,
+            hi.col.to_usize() + 1
+        )
+        .unwrap();
+    }
+    s.push_str(&format!(" ({:?})", data.ctxt));
+    s
+}
+
+// Installs lazy formatting only when SourceMap is safe to share with worker threads.
+fn install_span_string_hook() -> bool {
+    let Some(thread_safe) = rustc_data_structures::sync::check_dyn_thread_safe() else {
+        return false;
+    };
+    let source_map =
+        thread_safe.derive(rustc_span::source_map::get_source_map().expect("session source map"));
+    vir::messages::set_span_string_hook(Arc::new(move |raw_span: &vir::messages::RawSpan| {
+        let x = (&(**raw_span)) as &(dyn std::any::Any + Sync + Send);
+        x.downcast_ref::<RawSpanData>().map(|data| {
+            data.as_string
+                .get_or_init(|| span_data_debug_string(source_map.as_ref(), &data.span))
+                .as_str()
+        })
+    }));
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +122,7 @@ pub(crate) struct SpanContextX {
     imported_crates: HashMap<u64, CrateInfo>,
     next_span_id: std::sync::atomic::AtomicU64,
     pub(crate) local_files: HashMap<Vec<u8>, FileStartEndPos>,
+    lazy_span_strings: bool,
 }
 
 impl SpanContextX {
@@ -193,8 +242,15 @@ impl SpanContextX {
             info.files.sort_by_key(|f| f.original_start_pos);
         }
 
+        let lazy_span_strings = install_span_string_hook();
         let next_span_id = std::sync::atomic::AtomicU64::new(1);
-        Arc::new(SpanContextX { local_crate, imported_crates, next_span_id, local_files })
+        Arc::new(SpanContextX {
+            local_crate,
+            imported_crates,
+            next_span_id,
+            local_files,
+            lazy_span_strings,
+        })
     }
 
     fn pos_to_extern_source_file(
@@ -305,7 +361,11 @@ impl SpanContextX {
     pub(crate) fn to_air_span_with_id(&self, span: Span, id: u64) -> vir::messages::Span {
         let raw_span = to_raw_span(span);
         let data = self.pack_span(span);
-        let as_string = format!("{:?}", span);
+        let as_string = if self.lazy_span_strings {
+            vir::messages::SpanString::lazy()
+        } else {
+            format!("{:?}", span).into()
+        };
         vir::messages::Span { raw_span, id, data, as_string }
     }
 
