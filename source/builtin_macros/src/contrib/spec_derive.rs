@@ -175,6 +175,9 @@ fn validate_excluded_fields(data: &Data, excluded_fields: &HashSet<String>) -> R
         Data::Union(_) => {}
     }
 
+    // Check in name order so the reported field does not depend on HashSet iteration order.
+    let mut excluded_fields: Vec<&String> = excluded_fields.iter().collect();
+    excluded_fields.sort();
     for excluded_field in excluded_fields {
         if !actual_fields.contains(excluded_field) {
             return Err(Error::new(
@@ -635,4 +638,25 @@ fn self_view_impl(item: TokenStream) -> Result<TokenStream, Error> {
     };
 
     Ok(output.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn excluded_field_errors_follow_name_order() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Example {
+                present: u8,
+            }
+        };
+        let names = ["zulu", "alpha", "kilo", "bravo", "yankee", "charlie"];
+        for _ in 0..32 {
+            let excluded = names.iter().map(|name| (*name).to_owned()).collect();
+            let error =
+                validate_excluded_fields(&input.data, &excluded).expect_err("invalid field");
+            assert_eq!(error.to_string(), "Field 'alpha' does not exist and cannot be excluded");
+        }
+    }
 }

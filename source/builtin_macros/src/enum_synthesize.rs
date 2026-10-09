@@ -9,6 +9,99 @@ use crate::EraseGhost;
 
 use quote::{quote, quote_spanned};
 
+#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+enum FieldName {
+    Named(verus_syn::Ident),
+    Unnamed(usize),
+}
+
+#[derive(PartialEq, Eq, Debug, Clone)]
+struct FieldInfo {
+    ty: verus_syn::Type,
+    vis: verus_syn::Visibility,
+}
+
+impl FieldInfo {
+    fn from(field: &verus_syn::Field) -> FieldInfo {
+        FieldInfo { ty: field.ty.clone(), vis: field.vis.clone() }
+    }
+}
+
+type DirectEntry = Option<(FieldName, (FieldInfo, Vec<Ident>))>;
+
+fn collect_enum_fields(
+    enum_: &ItemEnum,
+) -> (HashMap<FieldName, usize>, Vec<DirectEntry>, Vec<(Ident, FieldName, FieldInfo)>, Vec<Ident>) {
+    // Keep generated methods in first-seen field order. Vacated slots preserve
+    // remove-and-reinsert behavior for fields with inconsistent types.
+    let mut direct_fields: HashMap<FieldName, usize> = HashMap::new();
+    let mut direct_entries: Vec<DirectEntry> = Vec::new();
+    let mut all_fields: Vec<(Ident, FieldName, FieldInfo)> = Vec::new();
+    let mut invalid_fields: Vec<Ident> = Vec::new();
+    for variant in &enum_.variants {
+        match &variant.fields {
+            verus_syn::Fields::Named(named) => {
+                for field in &named.named {
+                    let ident = field.ident.as_ref().expect("named field").clone();
+                    let name = FieldName::Named(ident.clone());
+                    let info = FieldInfo::from(field);
+                    use std::collections::hash_map::Entry;
+                    match direct_fields.entry(name.clone()) {
+                        Entry::Occupied(occ) => {
+                            let slot = *occ.get();
+                            let entry = direct_entries[slot].as_mut().expect("live entry");
+                            if (entry.1).0 != info {
+                                occ.remove_entry();
+                                direct_entries[slot] = None;
+                                invalid_fields.push(ident);
+                            } else {
+                                (entry.1).1.push(variant.ident.clone());
+                            }
+                        }
+                        Entry::Vacant(vac) => {
+                            vac.insert(direct_entries.len());
+                            direct_entries.push(Some((
+                                name.clone(),
+                                (info.clone(), vec![variant.ident.clone()]),
+                            )));
+                        }
+                    }
+                    all_fields.push((variant.ident.clone(), name.clone(), info));
+                }
+            }
+            verus_syn::Fields::Unnamed(unnamed) => {
+                for (i, field) in unnamed.unnamed.iter().enumerate() {
+                    let name = FieldName::Unnamed(i);
+                    let info = FieldInfo::from(field);
+                    use std::collections::hash_map::Entry;
+                    match direct_fields.entry(name.clone()) {
+                        Entry::Occupied(occ) => {
+                            let slot = *occ.get();
+                            let entry = direct_entries[slot].as_mut().expect("live entry");
+                            if (entry.1).0 != info {
+                                occ.remove_entry();
+                                direct_entries[slot] = None;
+                            } else {
+                                (entry.1).1.push(variant.ident.clone());
+                            }
+                        }
+                        Entry::Vacant(vac) => {
+                            vac.insert(direct_entries.len());
+                            direct_entries.push(Some((
+                                name.clone(),
+                                (info.clone(), vec![variant.ident.clone()]),
+                            )));
+                        }
+                    }
+                    all_fields.push((variant.ident.clone(), name.clone(), info));
+                }
+            }
+            verus_syn::Fields::Unit => {}
+        }
+    }
+    (direct_fields, direct_entries, all_fields, invalid_fields)
+}
+
 #[cfg(verus_keep_ghost)]
 use quote::TokenStreamExt;
 
@@ -71,74 +164,7 @@ pub(crate) fn visit_item_enum_synthesize(
         return None;
     }
 
-    #[derive(PartialEq, Eq, Hash, Debug, Clone)]
-    enum FieldName {
-        Named(verus_syn::Ident),
-        Unnamed(usize),
-    }
-
-    #[derive(PartialEq, Eq, Debug, Clone)]
-    struct FieldInfo {
-        ty: verus_syn::Type,
-        vis: verus_syn::Visibility,
-    }
-
-    impl FieldInfo {
-        fn from(field: &verus_syn::Field) -> FieldInfo {
-            FieldInfo { ty: field.ty.clone(), vis: field.vis.clone() }
-        }
-    }
-
-    let mut direct_fields: HashMap<FieldName, (FieldInfo, Vec<Ident>)> = HashMap::new();
-    let mut all_fields: Vec<(Ident, FieldName, FieldInfo)> = Vec::new();
-    let mut invalid_fields: Vec<Ident> = Vec::new();
-    for variant in &enum_.variants {
-        match &variant.fields {
-            verus_syn::Fields::Named(named) => {
-                for field in &named.named {
-                    let ident = field.ident.as_ref().expect("named field").clone();
-                    let name = FieldName::Named(ident.clone());
-                    let info = FieldInfo::from(field);
-                    use std::collections::hash_map::Entry;
-                    match direct_fields.entry(name.clone()) {
-                        Entry::Occupied(mut occ) => {
-                            if occ.get().0 != info {
-                                occ.remove_entry();
-                                invalid_fields.push(ident);
-                            } else {
-                                occ.get_mut().1.push(variant.ident.clone());
-                            }
-                        }
-                        Entry::Vacant(vac) => {
-                            vac.insert((info.clone(), vec![variant.ident.clone()]));
-                        }
-                    }
-                    all_fields.push((variant.ident.clone(), name.clone(), info));
-                }
-            }
-            verus_syn::Fields::Unnamed(unnamed) => {
-                for (i, field) in unnamed.unnamed.iter().enumerate() {
-                    let name = FieldName::Unnamed(i);
-                    let info = FieldInfo::from(field);
-                    use std::collections::hash_map::Entry;
-                    match direct_fields.entry(name.clone()) {
-                        Entry::Occupied(mut occ) => {
-                            if occ.get().0 != info {
-                                occ.remove_entry();
-                            } else {
-                                occ.get_mut().1.push(variant.ident.clone());
-                            }
-                        }
-                        Entry::Vacant(vac) => {
-                            vac.insert((info.clone(), vec![variant.ident.clone()]));
-                        }
-                    }
-                    all_fields.push((variant.ident.clone(), name.clone(), info));
-                }
-            }
-            verus_syn::Fields::Unit => {}
-        }
-    }
+    let (direct_fields, direct_entries, all_fields, invalid_fields) = collect_enum_fields(enum_);
 
     #[cfg(verus_keep_ghost)]
     if !erase_ghost.erase() && !allow_inconsistent_fields {
@@ -152,8 +178,9 @@ pub(crate) fn visit_item_enum_synthesize(
     let enum_vis_pub = !matches!(enum_.vis, verus_syn::Visibility::Inherited);
     if direct_fields.len() != 0 || all_fields.len() != 0 {
         let enum_ident = &enum_.ident;
-        let methods_direct = direct_fields
+        let methods_direct = direct_entries
             .iter()
+            .flatten()
             .map(|(name, (info, variants))| {
                 let method_ident = match name {
                     FieldName::Named(named) => quote::format_ident!("arrow_{}", named),
@@ -262,5 +289,32 @@ pub(crate) fn visit_item_enum_synthesize(
         }))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_field_methods_follow_declaration_order() {
+        for _ in 0..32 {
+            let input: ItemEnum = verus_syn::parse_quote! {
+                enum Example {
+                    First { zebra: u8, alpha: u8, middle: u8 },
+                    Second { zebra: u8, alpha: u8, middle: u8 },
+                }
+            };
+            let (_, direct_entries, _, _) = collect_enum_fields(&input);
+            let names: Vec<String> = direct_entries
+                .iter()
+                .flatten()
+                .map(|(name, _)| match name {
+                    FieldName::Named(name) => name.to_string(),
+                    FieldName::Unnamed(index) => index.to_string(),
+                })
+                .collect();
+            assert_eq!(names, ["zebra", "alpha", "middle"]);
+        }
     }
 }
