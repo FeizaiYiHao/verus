@@ -61,6 +61,8 @@ pub struct GlobalCtx {
     pub(crate) no_span: Span,
     pub func_call_graph: Arc<Graph<Node>>,
     pub func_call_sccs: Arc<Vec<Node>>,
+    /// Maps call-graph nodes to positions in `func_call_sccs`.
+    pub func_call_scc_index: Arc<HashMap<Node, usize>>,
     pub(crate) datatype_graph: Arc<Graph<crate::recursive_types::TypNode>>,
     pub(crate) datatype_graph_span_infos: Vec<Span>,
     pub trait_impl_to_extensions: HashMap<Path, Vec<Path>>,
@@ -614,6 +616,12 @@ impl GlobalCtx {
         let mut func_call_graph = func_call_graph.graph;
         func_call_graph.compute_sccs();
         let func_call_sccs = func_call_graph.sort_sccs();
+        let mut func_call_scc_index: HashMap<Node, usize> = HashMap::new();
+        for (i, scc_rep) in func_call_sccs.iter().enumerate() {
+            for node in func_call_graph.get_scc_nodes(scc_rep) {
+                func_call_scc_index.insert(node, i);
+            }
+        }
 
         if let Some(FuncCallGraphLogFiles {
             all_initial,
@@ -731,6 +739,7 @@ impl GlobalCtx {
             no_span,
             func_call_graph: Arc::new(func_call_graph),
             func_call_sccs: Arc::new(func_call_sccs),
+            func_call_scc_index: Arc::new(func_call_scc_index),
             datatype_graph: Arc::new(datatype_graph),
             datatype_graph_span_infos: span_infos,
             extension_to_trait,
@@ -765,6 +774,7 @@ impl GlobalCtx {
             datatype_graph: self.datatype_graph.clone(),
             datatype_graph_span_infos: self.datatype_graph_span_infos.clone(),
             func_call_sccs: self.func_call_sccs.clone(),
+            func_call_scc_index: self.func_call_scc_index.clone(),
             extension_to_trait: self.extension_to_trait.clone(),
             trait_impl_to_extensions: self.trait_impl_to_extensions.clone(),
             warning_ctx: self.warning_ctx.clone(),

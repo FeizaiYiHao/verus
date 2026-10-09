@@ -30,9 +30,18 @@ pub fn ast_to_sst_krate(
 
     let mut sst_infos: HashMap<Fun, FunctionSst> = HashMap::new();
     let mut functions: Vec<FunctionSst> = Vec::new();
-    for scc_rep in ctx.global.func_call_sccs.iter() {
+    // Retains global SCC order while selecting SCCs represented in this crate.
+    let mut scc_idxs: Vec<usize> = func_workmap
+        .keys()
+        .filter_map(|f| ctx.global.func_call_scc_index.get(&crate::recursion::Node::Fun(f.clone())))
+        .cloned()
+        .collect();
+    scc_idxs.sort_unstable();
+    scc_idxs.dedup();
+    for i in scc_idxs {
+        let scc_rep = &ctx.global.func_call_sccs[i];
         let mut scc_functions: Vec<FunctionSst> = Vec::new();
-        for node in ctx.global.func_call_graph.get_scc_nodes(&scc_rep) {
+        for node in ctx.global.func_call_graph.get_scc_nodes(scc_rep) {
             if let crate::recursion::Node::Fun(f) = &node {
                 if let Some(mut func_sst) = func_workmap.remove(f) {
                     elaborate_function1(ctx, diagnostics, &sst_infos, &mut func_sst)?;
