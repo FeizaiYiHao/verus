@@ -1,6 +1,6 @@
 use crate::commands::{OpGenerator, OpKind, QueryOp, Style};
 use crate::config::{Args, CargoVerusArgs, ShowTriggers};
-use crate::context::{ContextX, ErasureInfo};
+use crate::context::ContextX;
 use crate::external::VerifOrExternal;
 use crate::externs::VerusExterns;
 use crate::query::{Query, QueryError};
@@ -2654,25 +2654,9 @@ impl Verifier {
             return Err((vec![err], vec![], None));
         }
 
-        let erasure_info = ErasureInfo {
-            local_hir_vir_ids: vec![],
-            binder_hir_vir_ids: vec![],
-            ctor_hir_vir_ids: vec![],
-            resolved_calls: vec![],
-            resolved_pats: vec![],
-            direct_var_modes: vec![],
-            ignored_functions: vec![],
-            bodies: vec![],
-            shadow_check: vec![],
-            extra_erase_ast_ids: vec![],
-            local_invariant_bodies: vec![],
-        };
-        let erasure_info = std::rc::Rc::new(std::cell::RefCell::new(erasure_info));
-
         let ctxtx = ContextX::new(
             self.args.clone(),
             tcx,
-            erasure_info,
             spans.clone(),
             verus_items,
             self.args.vstd == crate::config::Vstd::NoVstd,
@@ -2681,11 +2665,11 @@ impl Verifier {
 
         let ctxt_diagnostics = ctxtx.diagnostics.clone();
         let map_err_diagnostics =
-            |err: VirErr| (vec![err], ctxt_diagnostics.borrow_mut().drain(..).collect(), None);
+            |err: VirErr| (vec![err], ctxt_diagnostics.lock().unwrap().drain(..).collect(), None);
         let map_errs_diagnostics =
-            |errs: Vec<VirErr>| (errs, ctxt_diagnostics.borrow_mut().drain(..).collect(), None);
+            |errs: Vec<VirErr>| (errs, ctxt_diagnostics.lock().unwrap().drain(..).collect(), None);
         let map_query_err = |err: QueryError| {
-            (vec![], ctxt_diagnostics.borrow_mut().drain(..).collect(), Some(err))
+            (vec![], ctxt_diagnostics.lock().unwrap().drain(..).collect(), Some(err))
         };
 
         let crate_items = crate::external::get_crate_items(&ctxtx).map_err(map_errs_diagnostics)?;

@@ -6,7 +6,7 @@ For soundness's sake, be as defensive as possible:
 - explicitly match all fields of the Rust AST so we catch any features added in the future
 */
 
-use crate::context::{Context, ContextX};
+use crate::context::{Context, ContextX, ErasureInfo};
 use crate::external::{CrateItems, GeneralItemId, VerifOrExternal};
 use crate::query::PreCrate;
 use crate::reveal_hide::handle_reveal_hide;
@@ -20,6 +20,7 @@ use crate::rust_to_vir_impl::ExternalInfo;
 use crate::util::{err_span, err_span_vec};
 use crate::verus_items::{self, VerusItem};
 use crate::{unsupported_err, unsupported_err_vec, unsupported_err_vec_unless};
+use rustc_data_structures::sync::IntoDynSyncSend;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -38,9 +39,18 @@ use vir::context::{WarningConfig, WarningCtx};
 pub(crate) struct State {
     pub(crate) external_info: ExternalInfo,
     pub(crate) fun_warn_configs: HashMap<Fun, WarningConfig>,
+    /// Module-level `broadcast use` directives, retained in item order.
+    pub(crate) module_reveals: Vec<(Path, rustc_span::Span, vir::ast::ModuleReveals)>,
 }
 
 impl State {
+    /// Creates empty item-local outputs with the shared extension map.
+    fn for_item(external_trait_extension_impl_map: &HashMap<Path, Path>) -> State {
+        let mut external_info = ExternalInfo::new();
+        external_info.external_trait_extension_impl_map = external_trait_extension_impl_map.clone();
+        State { external_info, fun_warn_configs: HashMap::new(), module_reveals: Vec::new() }
+    }
+
     pub(crate) fn insert_fun_warn_config<'tcx>(
         &mut self,
         ctxt: &Context<'tcx>,
@@ -160,19 +170,12 @@ fn check_item<'tcx>(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let module = vir
-                .modules
-                .iter_mut()
-                .find(|m| &m.x.path == module_path)
-                .expect("cannot find current module");
-            let reveals = &mut Arc::make_mut(module).x.reveals;
-            if reveals.is_some() {
-                return err_span_vec(
-                    item.span,
-                    "only one module-level `broadcast use` allowed for each module",
-                );
-            }
-            *reveals = Some(ctxt.spanned_new(item.span, funs));
+            // Merged into the module in crate-item order.
+            state.module_reveals.push((
+                module_path.clone(),
+                item.span,
+                ctxt.spanned_new(item.span, funs),
+            ));
 
             return Ok(());
         }
@@ -504,6 +507,132 @@ fn check_extern_crate_alias<'tcx>(item: &'tcx Item<'tcx>) -> Result<(), VirErr> 
     Ok(())
 }
 
+/// Ordered outputs from one crate item.
+struct ItemOutput<'tcx> {
+    vir: KrateX,
+    state: State,
+    infos: Vec<FunctionOrConstInfo<'tcx>>,
+    erasure_info: ErasureInfo,
+    diagnostics: Vec<vir::ast::VirErrAs>,
+    errors: Vec<VirErr>,
+    /// Item-local next span and read-kind IDs.
+    next_ids: (u64, u64),
+}
+
+/// Translates one crate item into item-local outputs.
+fn translate_crate_item<'tcx>(
+    ctxt: &ContextX<'tcx>,
+    external_trait_extension_impl_map: &HashMap<Path, Path>,
+    crate_items: &CrateItems,
+    i: usize,
+    local_ids: Option<(u64, u64)>,
+) -> ItemOutput<'tcx> {
+    let ctxt: Context<'tcx> = Rc::new(ctxt.fork_for_item(local_ids));
+    let mut state = State::for_item(external_trait_extension_impl_map);
+    let mut vir: KrateX = KrateX {
+        functions: Vec::new(),
+        reveal_groups: Vec::new(),
+        datatypes: Vec::new(),
+        opaque_types: Vec::new(),
+        traits: Vec::new(),
+        trait_impls: Vec::new(),
+        assoc_type_impls: Vec::new(),
+        modules: Vec::new(),
+        external_fns: Vec::new(),
+        external_types: Vec::new(),
+        path_as_rust_names: Vec::new(),
+        arch: vir::ast::Arch { word_bits: vir::ast::ArchWordBits::Either32Or64 },
+    };
+    let mut infos: Vec<FunctionOrConstInfo<'tcx>> = Vec::new();
+    let mut errors = vec![];
+    let crate_item = &crate_items.items[i];
+    match &crate_item.verif {
+        VerifOrExternal::VerusAware {
+            module_path,
+            const_directive: _,
+            external_body: _,
+            external_fn_specification: _,
+        } => {
+            match crate_item.id {
+                GeneralItemId::ItemId(item_id) => {
+                    let item = ctxt.tcx.hir_item(item_id);
+                    if let Err(errs) = check_item(
+                        &ctxt,
+                        &mut state,
+                        &mut vir,
+                        &mut infos,
+                        &module_path,
+                        &item_id,
+                        item,
+                        &crate_items,
+                    ) {
+                        errors.extend(errs);
+                    }
+                }
+                GeneralItemId::ForeignItemId(foreign_item_id) => {
+                    let foreign_item = ctxt.tcx.hir_foreign_item(foreign_item_id);
+                    if let Err(err) = check_foreign_item(
+                        &ctxt,
+                        &mut state,
+                        &mut infos,
+                        &foreign_item_id,
+                        foreign_item,
+                    ) {
+                        errors.push(err);
+                    }
+                }
+                GeneralItemId::ImplItemId(_impl_item_id) => {
+                    // Processed as part of the impl (which is an Item)
+                }
+                GeneralItemId::TraitItemId(_trait_item_id) => {
+                    // Processed as part of the impl (which is an Item)
+                }
+            }
+        }
+        VerifOrExternal::External { path: Some(my_path), path_string: _, explicit: _ } => {
+            // If possible, track this item in the VIR Krate for diagnostic purposes
+            let (is_fn, is_datatype) = match crate_item.id {
+                GeneralItemId::ItemId(item_id) => {
+                    let i = ctxt.tcx.hir_item(item_id);
+                    match i.kind {
+                        ItemKind::Fn { .. } | ItemKind::Const(..) => (true, false),
+                        ItemKind::Struct(..) | ItemKind::Enum(..) | ItemKind::Union(..) => {
+                            (false, true)
+                        }
+                        _ => (false, false),
+                    }
+                }
+                GeneralItemId::ForeignItemId(foreign_item_id) => {
+                    let i = ctxt.tcx.hir_foreign_item(foreign_item_id);
+                    match i.kind {
+                        ForeignItemKind::Fn(..) => (true, false),
+                        _ => (false, false),
+                    }
+                }
+                GeneralItemId::ImplItemId(impl_item_id) => {
+                    let i = ctxt.tcx.hir_impl_item(impl_item_id);
+                    match i.kind {
+                        ImplItemKind::Fn(..) => (true, false),
+                        _ => (false, false),
+                    }
+                }
+                GeneralItemId::TraitItemId(_trait_item_id) => (false, false),
+            };
+            if is_fn {
+                vir.external_fns.push(Arc::new(FunX { path: my_path.clone() }));
+            }
+            if is_datatype {
+                vir.external_types.push(my_path.clone());
+            }
+        }
+        VerifOrExternal::External { path: None, path_string: _, explicit: _ } => {}
+    }
+    let next_ids = ctxt.peek_next_ids();
+    let erasure_info = std::mem::take(&mut *ctxt.erasure_info.borrow_mut());
+    let diagnostics = std::mem::take(&mut *ctxt.diagnostics.lock().unwrap());
+    ItemOutput { vir, state, infos, erasure_info, diagnostics, errors, next_ids }
+}
+
 pub(crate) fn crate_to_vir<'a, 'tcx>(
     mut ctxtx: ContextX<'tcx>,
     imported: &Vec<Krate>,
@@ -538,7 +667,7 @@ pub(crate) fn crate_to_vir<'a, 'tcx>(
         .insert(tcx.get_diagnostic_item(rustc_span::sym::Send).expect("send"));
 
     let fun_warn_configs = HashMap::new();
-    let mut state = State { external_info, fun_warn_configs };
+    let mut state = State { external_info, fun_warn_configs, module_reveals: Vec::new() };
 
     let mut errors = vec![];
 
@@ -610,87 +739,142 @@ pub(crate) fn crate_to_vir<'a, 'tcx>(
     )
     .map_err(|e| vec![e])?;
 
-    for crate_item in crate_items.items.iter() {
-        match &crate_item.verif {
-            VerifOrExternal::VerusAware {
-                module_path,
-                const_directive: _,
-                external_body: _,
-                external_fn_specification: _,
-            } => {
-                match crate_item.id {
-                    GeneralItemId::ItemId(item_id) => {
-                        let item = ctxt.tcx.hir_item(item_id);
-                        if let Err(errs) = check_item(
-                            &ctxt,
-                            &mut state,
-                            &mut vir,
-                            &mut infos,
-                            &module_path,
-                            &item_id,
-                            item,
-                            &crate_items,
-                        ) {
-                            errors.extend(errs);
-                        }
+    // Item-local outputs are merged in crate order. A counting pass assigns deterministic
+    // span and read-kind ID ranges before the output-producing pass.
+    let n_items = crate_items.items.len();
+    let ext_map: &HashMap<Path, Path> = &state.external_info.external_trait_extension_impl_map;
+    let outputs: Vec<ItemOutput<'tcx>> = if rustc_data_structures::sync::is_dyn_thread_safe() {
+        let ctxt_ref: &ContextX<'tcx> = &ctxt;
+        // Limits contention in shared translation caches.
+        const MAX_PARALLEL_ITEM_JOBS: usize = 8;
+        // Retains enough work units to balance uneven item costs.
+        const MAX_ITEM_GROUPS: usize = 128;
+        let group_size = n_items.div_ceil(MAX_ITEM_GROUPS).max(1);
+        let n_groups = n_items.div_ceil(group_size);
+        let n_jobs = n_groups.clamp(1, MAX_PARALLEL_ITEM_JOBS);
+        let next_group = std::sync::atomic::AtomicUsize::new(0);
+        let counts_by_job: Vec<Vec<(usize, (u64, u64))>> =
+            rustc_data_structures::sync::par_map(0..n_jobs, |_| {
+                let mut job_counts = Vec::with_capacity(n_items.div_ceil(n_jobs));
+                loop {
+                    let group = next_group.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if group >= n_groups {
+                        break;
                     }
-                    GeneralItemId::ForeignItemId(foreign_item_id) => {
-                        let foreign_item = ctxt.tcx.hir_foreign_item(foreign_item_id);
-                        if let Err(err) = check_foreign_item(
-                            &ctxt,
-                            &mut state,
-                            &mut infos,
-                            &foreign_item_id,
-                            foreign_item,
-                        ) {
-                            errors.push(err);
-                        }
+                    let start = group * group_size;
+                    let end = (start + group_size).min(n_items);
+                    for i in start..end {
+                        let out =
+                            translate_crate_item(ctxt_ref, ext_map, crate_items, i, Some((0, 0)));
+                        job_counts.push((i, out.next_ids));
                     }
-                    GeneralItemId::ImplItemId(_impl_item_id) => {
-                        // Processed as part of the impl (which is an Item)
+                }
+                job_counts
+            });
+        let mut counts = vec![(0, 0); n_items];
+        for job_counts in counts_by_job {
+            for (i, count) in job_counts {
+                counts[i] = count;
+            }
+        }
+        let (first_span_id, first_read_kind_id) = ctxt.peek_next_ids();
+        let mut first_ids: Vec<(u64, u64)> = Vec::with_capacity(n_items);
+        let (mut span_id, mut read_kind_id) = (first_span_id, first_read_kind_id);
+        for (span_ids, read_kind_ids) in counts {
+            first_ids.push((span_id, read_kind_id));
+            span_id += span_ids;
+            read_kind_id += read_kind_ids;
+        }
+        let first_ids_ref: &Vec<(u64, u64)> = &first_ids;
+        let next_group = std::sync::atomic::AtomicUsize::new(0);
+        let outputs_by_job: Vec<Vec<(usize, IntoDynSyncSend<ItemOutput<'tcx>>)>> =
+            rustc_data_structures::sync::par_map(0..n_jobs, |_| {
+                let mut job_outputs = Vec::with_capacity(n_items.div_ceil(n_jobs));
+                loop {
+                    let group = next_group.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if group >= n_groups {
+                        break;
                     }
-                    GeneralItemId::TraitItemId(_trait_item_id) => {
-                        // Processed as part of the impl (which is an Item)
+                    let start = group * group_size;
+                    let end = (start + group_size).min(n_items);
+                    for i in start..end {
+                        let out = translate_crate_item(
+                            ctxt_ref,
+                            ext_map,
+                            crate_items,
+                            i,
+                            Some(first_ids_ref[i]),
+                        );
+                        job_outputs.push((i, IntoDynSyncSend(out)));
                     }
+                }
+                job_outputs
+            });
+        ctxt.advance_ids(span_id - first_span_id, read_kind_id - first_read_kind_id);
+        let mut indexed_outputs: Vec<(usize, IntoDynSyncSend<ItemOutput<'tcx>>)> =
+            outputs_by_job.into_iter().flatten().collect();
+        indexed_outputs.sort_unstable_by_key(|(i, _)| *i);
+        indexed_outputs.into_iter().map(|(_, out)| out.0).collect()
+    } else {
+        (0..n_items).map(|i| translate_crate_item(&ctxt, ext_map, crate_items, i, None)).collect()
+    };
+
+    {
+        let mut erasure_info = ctxt.erasure_info.borrow_mut();
+        let mut diagnostics = ctxt.diagnostics.lock().unwrap();
+        for out in outputs {
+            let ItemOutput {
+                vir: mut item_vir,
+                state: item_state,
+                infos: mut item_infos,
+                erasure_info: mut item_erasure_info,
+                diagnostics: item_diagnostics,
+                errors: item_errors,
+                next_ids: _,
+            } = out;
+            for (module_path, span, reveals) in item_state.module_reveals {
+                let module = vir
+                    .modules
+                    .iter_mut()
+                    .find(|m| m.x.path == module_path)
+                    .expect("cannot find current module");
+                let module_reveals = &mut Arc::make_mut(module).x.reveals;
+                if module_reveals.is_some() {
+                    errors.push(crate::util::err_span_bare(
+                        span,
+                        "only one module-level `broadcast use` allowed for each module",
+                    ));
+                } else {
+                    *module_reveals = Some(reveals);
                 }
             }
-            VerifOrExternal::External { path: Some(my_path), path_string: _, explicit: _ } => {
-                // If possible, track this item in the VIR Krate for diagnostic purposes
-                let (is_fn, is_datatype) = match crate_item.id {
-                    GeneralItemId::ItemId(item_id) => {
-                        let i = ctxt.tcx.hir_item(item_id);
-                        match i.kind {
-                            ItemKind::Fn { .. } | ItemKind::Const(..) => (true, false),
-                            ItemKind::Struct(..) | ItemKind::Enum(..) | ItemKind::Union(..) => {
-                                (false, true)
-                            }
-                            _ => (false, false),
-                        }
-                    }
-                    GeneralItemId::ForeignItemId(foreign_item_id) => {
-                        let i = ctxt.tcx.hir_foreign_item(foreign_item_id);
-                        match i.kind {
-                            ForeignItemKind::Fn(..) => (true, false),
-                            _ => (false, false),
-                        }
-                    }
-                    GeneralItemId::ImplItemId(impl_item_id) => {
-                        let i = ctxt.tcx.hir_impl_item(impl_item_id);
-                        match i.kind {
-                            ImplItemKind::Fn(..) => (true, false),
-                            _ => (false, false),
-                        }
-                    }
-                    GeneralItemId::TraitItemId(_trait_item_id) => (false, false),
-                };
-                if is_fn {
-                    vir.external_fns.push(Arc::new(FunX { path: my_path.clone() }));
-                }
-                if is_datatype {
-                    vir.external_types.push(my_path.clone());
-                }
-            }
-            VerifOrExternal::External { path: None, path_string: _, explicit: _ } => {}
+            errors.extend(item_errors);
+            vir.functions.append(&mut item_vir.functions);
+            vir.reveal_groups.append(&mut item_vir.reveal_groups);
+            vir.datatypes.append(&mut item_vir.datatypes);
+            vir.opaque_types.append(&mut item_vir.opaque_types);
+            vir.traits.append(&mut item_vir.traits);
+            vir.trait_impls.append(&mut item_vir.trait_impls);
+            vir.assoc_type_impls.append(&mut item_vir.assoc_type_impls);
+            vir.external_fns.append(&mut item_vir.external_fns);
+            vir.external_types.append(&mut item_vir.external_types);
+            infos.append(&mut item_infos);
+            assert!(item_vir.modules.is_empty());
+            let ExternalInfo {
+                local_trait_ids,
+                internal_trait_impls,
+                external_fn_specification_trait_method_impls,
+                ..
+            } = item_state.external_info;
+            state.external_info.local_trait_ids.extend(local_trait_ids);
+            state.external_info.internal_trait_impls.extend(internal_trait_impls);
+            state
+                .external_info
+                .external_fn_specification_trait_method_impls
+                .extend(external_fn_specification_trait_method_impls);
+            state.fun_warn_configs.extend(item_state.fun_warn_configs);
+            erasure_info.append(&mut item_erasure_info);
+            diagnostics.extend(item_diagnostics);
         }
     }
 

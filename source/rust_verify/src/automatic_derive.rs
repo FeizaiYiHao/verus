@@ -104,7 +104,7 @@ fn clone_add_post_condition<'tcx>(
             span,
             &WarningAllow::AutoderiveCloneWithoutSpec,
             || msg,
-            |msg| ctxt.diagnostics.borrow_mut().push(VirErrAs::Warning(msg)),
+            |msg| ctxt.diagnostics.lock().unwrap().push(VirErrAs::Warning(msg)),
         );
     };
     let warn_unexpected = || {
@@ -186,7 +186,7 @@ fn cleanup_span_ids<'tcx>(ctxt: &Context<'tcx>, span: Span, expr: &Expr) -> Expr
     vir::ast_visitor::map_expr_place_visitor(
         expr,
         &|e: &Expr| {
-            let e = ctxt.spans.spanned_typed_new(span, &e.typ, e.x.clone());
+            let e = ctxt.spanned_typed_new(span, &e.typ, e.x.clone());
             if matches!(&e.x, ExprX::Var(..) | ExprX::VarAt(..)) {
                 let mut erasure_info = ctxt.erasure_info.borrow_mut();
                 erasure_info.local_hir_vir_ids.push((None, e.span.id));
@@ -194,7 +194,7 @@ fn cleanup_span_ids<'tcx>(ctxt: &Context<'tcx>, span: Span, expr: &Expr) -> Expr
             Ok(e)
         },
         &|p: &Place| {
-            let p = ctxt.spans.spanned_typed_new(span, &p.typ, p.x.clone());
+            let p = ctxt.spanned_typed_new(span, &p.typ, p.x.clone());
             if matches!(&p.x, PlaceX::Local(..)) {
                 let mut erasure_info = ctxt.erasure_info.borrow_mut();
                 erasure_info.local_hir_vir_ids.push((None, p.span.id));

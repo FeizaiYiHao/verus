@@ -416,6 +416,32 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] parallel_item_errors_follow_source_order verus_code! {
+        broadcast proof fn reveal_a()
+            ensures true,
+        {}
+
+        broadcast proof fn reveal_b()
+            ensures true,
+        {}
+
+        mod first {
+            broadcast use crate::reveal_a;
+            broadcast use crate::reveal_b; // FIRST_ITEM_ERROR
+        }
+
+        mod second {
+            broadcast use crate::reveal_a;
+            broadcast use crate::reveal_b; // SECOND_ITEM_ERROR
+        }
+    } => Err(err) => {
+        assert_eq!(err.errors.len(), 2);
+        assert!(err.errors[0].rendered.contains("FIRST_ITEM_ERROR"));
+        assert!(err.errors[1].rendered.contains("SECOND_ITEM_ERROR"));
+    }
+}
+
+test_verify_one_file! {
     #[test] test_circular_module_reveal verus_code! {
         mod mf {
             use vstd::prelude::*;

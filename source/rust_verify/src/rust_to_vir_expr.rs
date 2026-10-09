@@ -1765,7 +1765,7 @@ pub(crate) fn expr_to_vir_with_adjustments<'tcx>(
                         let x = ExprX::ImplicitReborrowOrSpecRead(
                             p.clone(),
                             b,
-                            bctx.ctxt.spans.to_air_span(expr.span),
+                            bctx.ctxt.to_air_span(expr.span),
                         );
                         let typ = bctx.mid_ty_to_vir(expr.span, &adjustment.target)?;
                         let e = bctx.spanned_typed_new(expr.span, &typ, x);
@@ -2336,7 +2336,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
 
                         // non-static calls are translated into a static call to
                         // `exec_nonstatic_call` which is defined in the vstd lib.
-                        let span = bctx.ctxt.spans.to_air_span(expr.span.clone());
+                        let span = bctx.ctxt.to_air_span(expr.span.clone());
                         let tup = vir::ast_util::mk_tuple(&span, &Arc::new(vir_args));
                         let helper_fun = vir::def::nonstatic_call_fun(is_proof_fun);
                         let ret_typ = expr_typ.clone();
@@ -4034,8 +4034,9 @@ pub(crate) fn let_stmt_to_vir<'tcx>(
         None => None,
     };
 
-    let unwrapped_binding = parse_attrs_opt(attrs, Some(&mut *bctx.ctxt.diagnostics.borrow_mut()))
-        .contains(&Attr::UnwrappedBinding);
+    let unwrapped_binding =
+        parse_attrs_opt(attrs, Some(&mut *bctx.ctxt.diagnostics.lock().unwrap()))
+            .contains(&Attr::UnwrappedBinding);
     if unwrapped_binding {
         let pat_typ = &bctx.types.node_type(pattern.hir_id);
         if let TyKind::Adt(AdtDef(adt_def_data), _args) = pat_typ.kind() {
@@ -4050,7 +4051,7 @@ pub(crate) fn let_stmt_to_vir<'tcx>(
                     || "the right-hand side is already wrapped with `Tracked`, you likely don't need a `tracked` variable",
                     |msg| {
                         let msg = msg.help("consider `.get()` on the right-hand side, or removing `tracked` on the left-hand side");
-                        bctx.ctxt.diagnostics.borrow_mut().push(vir::ast::VirErrAs::Warning(msg));
+                        bctx.ctxt.diagnostics.lock().unwrap().push(vir::ast::VirErrAs::Warning(msg));
                     }
                 );
             } else if pat_typ_verus_item
@@ -4063,7 +4064,7 @@ pub(crate) fn let_stmt_to_vir<'tcx>(
                     || "the right-hand side is already wrapped with `Ghost`, you likely don't need a `ghost` variable",
                     |msg| {
                         let msg = msg.help("consider `@` on the right-hand side, or removing `ghost` on the left-hand side");
-                        bctx.ctxt.diagnostics.borrow_mut().push(vir::ast::VirErrAs::Warning(msg));
+                        bctx.ctxt.diagnostics.lock().unwrap().push(vir::ast::VirErrAs::Warning(msg));
                     }
                 );
             }

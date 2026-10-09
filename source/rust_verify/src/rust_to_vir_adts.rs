@@ -155,7 +155,7 @@ pub(crate) fn check_item_struct<'tcx>(
         vattrs.external_body,
         def_id,
         Some(&vattrs),
-        Some(&mut *ctxt.diagnostics.borrow_mut()),
+        Some(&mut *ctxt.diagnostics.lock().unwrap()),
     )?;
     let path = ctxt.def_id_to_vir_path(def_id);
     let name = path.segments.last().expect("unexpected struct path");
@@ -244,7 +244,7 @@ pub(crate) fn check_item_enum<'tcx>(
         vattrs.external_body,
         def_id,
         Some(&vattrs),
-        Some(&mut *ctxt.diagnostics.borrow_mut()),
+        Some(&mut *ctxt.diagnostics.lock().unwrap()),
     )?;
     let path = ctxt.def_id_to_vir_path(def_id);
     let mut total_vis = visibility.clone();
@@ -335,7 +335,7 @@ pub(crate) fn check_item_union<'tcx>(
         vattrs.external_body,
         def_id,
         Some(&vattrs),
-        Some(&mut *ctxt.diagnostics.borrow_mut()),
+        Some(&mut *ctxt.diagnostics.lock().unwrap()),
     )?;
     let path = ctxt.def_id_to_vir_path(def_id);
 
@@ -629,7 +629,7 @@ pub(crate) fn check_item_external<'tcx>(
         vattrs.external_body,
         def_id,
         Some(&vattrs),
-        Some(&mut *ctxt.diagnostics.borrow_mut()),
+        Some(&mut *ctxt.diagnostics.lock().unwrap()),
     )?;
     let mode = Mode::Exec;
 

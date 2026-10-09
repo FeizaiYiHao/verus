@@ -255,7 +255,7 @@ impl<'a, 'tcx> VisitMod<'a, 'tcx> {
                 self.ctxt,
                 self.state,
                 &eattrs,
-                &mut *self.ctxt.diagnostics.borrow_mut(),
+                &mut *self.ctxt.diagnostics.lock().unwrap(),
                 &mut self.errors,
                 span,
                 &general_item,
@@ -662,7 +662,7 @@ fn get_attributes_for_automatic_derive<'tcx>(
             span,
             &WarningAllow::UnknownAutomaticDerive,
             || "Verus doesn't know how to handle this automatically derived item; ignoring it",
-            |msg| ctxt.diagnostics.borrow_mut().push(VirErrAs::Warning(msg)),
+            |msg| ctxt.diagnostics.lock().unwrap().push(VirErrAs::Warning(msg)),
         );
     };
 

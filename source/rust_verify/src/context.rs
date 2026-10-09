@@ -1,6 +1,7 @@
 use crate::{erase::ResolvedCall, verus_items::VerusItems};
 use air::messages::MessageLevel;
 use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::sync::{DynSend, DynSync, Lock, RwLock};
 use rustc_hir::Attribute;
 use rustc_hir::HirId;
 use rustc_hir::def_id::LocalDefId;
@@ -10,14 +11,14 @@ use rustc_span::SpanData;
 use rustc_span::def_id::DefId;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ops::DerefMut;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 use vir::ast::{CrateId, Dt, Mode, Path, Pattern, Typ, TypX, VirErr};
 use vir::messages::{AstId, ToAny, WarningAllow};
 
+#[derive(Default)]
 pub struct ErasureInfo {
     /// Connect every PlaceX::Local, ExprX::Var, and ExprX::VarAt node to its
     /// HirId (an ExprKind::Path node that resolves to Local).
@@ -49,26 +50,69 @@ pub struct ErasureInfo {
     pub(crate) local_invariant_bodies: Vec<rustc_mir_build_verus::verus::LocalInvariantBody>,
 }
 
-type ErasureInfoRef = std::rc::Rc<std::cell::RefCell<ErasureInfo>>;
+impl ErasureInfo {
+    /// Appends every ordered erasure output from `other`.
+    pub(crate) fn append(&mut self, other: &mut ErasureInfo) {
+        let ErasureInfo {
+            local_hir_vir_ids,
+            binder_hir_vir_ids,
+            ctor_hir_vir_ids,
+            resolved_calls,
+            resolved_pats,
+            direct_var_modes,
+            ignored_functions,
+            bodies,
+            shadow_check,
+            extra_erase_ast_ids,
+            local_invariant_bodies,
+        } = other;
+        self.local_hir_vir_ids.append(local_hir_vir_ids);
+        self.binder_hir_vir_ids.append(binder_hir_vir_ids);
+        self.ctor_hir_vir_ids.append(ctor_hir_vir_ids);
+        self.resolved_calls.append(resolved_calls);
+        self.resolved_pats.append(resolved_pats);
+        self.direct_var_modes.append(direct_var_modes);
+        self.ignored_functions.append(ignored_functions);
+        self.bodies.append(bodies);
+        self.shadow_check.append(shadow_check);
+        self.extra_erase_ast_ids.append(extra_erase_ast_ids);
+        self.local_invariant_bodies.append(local_invariant_bodies);
+    }
+}
 
 pub type Context<'tcx> = Rc<ContextX<'tcx>>;
+/// Context for HIR-to-VIR translation.
+///
+/// Item forks share immutable or synchronized state and own their output accumulators and ID
+/// counters.
 pub struct ContextX<'tcx> {
-    pub(crate) cmd_line_args: crate::config::Args,
+    pub(crate) cmd_line_args: Arc<crate::config::Args>,
     pub(crate) tcx: TyCtxt<'tcx>,
-    pub(crate) erasure_info: ErasureInfoRef,
+    pub(crate) erasure_info: Lock<ErasureInfo>,
     pub(crate) spans: crate::spans::SpanContext,
     pub(crate) verus_items: Arc<VerusItems>,
-    pub(crate) diagnostics: Rc<RefCell<Vec<vir::ast::VirErrAs>>>,
+    pub(crate) diagnostics: Arc<Mutex<Vec<vir::ast::VirErrAs>>>,
     pub(crate) no_vstd: bool,
     pub(crate) arch_word_bits: Option<vir::ast::ArchWordBits>,
     pub(crate) crate_name: CrateId,
-    pub(crate) name_def_id_map: Rc<RefCell<HashMap<Path, DefId>>>,
-    pub(crate) next_read_kind_id: AtomicU64,
+    pub(crate) name_def_id_map: Arc<RwLock<HashMap<Path, DefId>>>,
+    /// Item-local span IDs, or `None` for the shared span counter.
+    local_span_ids: Option<AtomicU64>,
+    pub(crate) next_read_kind_id: Arc<AtomicU64>,
     // Per-compilation lookup caches.
-    externals_available_cache: RefCell<HashMap<DefId, bool>>,
-    get_field_many_variants_cache: RefCell<HashMap<DefId, bool>>,
-    mid_ty_cache: RefCell<FxHashMap<(Ty<'tcx>, DefId), Typ>>,
+    externals_available_cache: Arc<RwLock<HashMap<DefId, bool>>>,
+    get_field_many_variants_cache: Arc<RwLock<HashMap<DefId, bool>>>,
+    mid_ty_cache: Arc<RwLock<FxHashMap<(Ty<'tcx>, DefId), Typ>>>,
 }
+
+// SAFETY: `crate_to_vir` shares this context only when rustc enables dynamic thread
+// safety. TyCtxt satisfies rustc's marker traits; shared mutable accumulators,
+// caches, maps, and counters are protected by Lock, RwLock, or atomics. The remaining
+// fields are immutable or synchronized Arcs. VIR's erased span payload is Send + Sync but
+// lacks rustc's marker implementations, which prevents a derived implementation here.
+unsafe impl<'tcx> DynSend for ContextX<'tcx> {}
+// SAFETY: The same ownership and synchronization guarantees apply to shared references.
+unsafe impl<'tcx> DynSync for ContextX<'tcx> {}
 
 /// The context in which a given header node might be interpretted
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -122,33 +166,88 @@ impl<'tcx> ContextX<'tcx> {
     pub(crate) fn new(
         cmd_line_args: crate::config::Args,
         tcx: TyCtxt<'tcx>,
-        erasure_info: ErasureInfoRef,
         spans: crate::spans::SpanContext,
         verus_items: Arc<VerusItems>,
         no_vstd: bool,
         crate_name: CrateId,
     ) -> Self {
         ContextX {
-            cmd_line_args,
+            cmd_line_args: Arc::new(cmd_line_args),
             tcx,
-            erasure_info,
+            erasure_info: Lock::new(ErasureInfo::default()),
             spans,
             verus_items,
-            diagnostics: Rc::new(RefCell::new(Vec::new())),
+            diagnostics: Arc::new(Mutex::new(Vec::new())),
             no_vstd,
             arch_word_bits: None,
             crate_name,
-            name_def_id_map: Rc::new(RefCell::new(HashMap::new())),
-            next_read_kind_id: AtomicU64::new(0),
-            externals_available_cache: RefCell::new(HashMap::new()),
-            get_field_many_variants_cache: RefCell::new(HashMap::new()),
-            mid_ty_cache: RefCell::new(FxHashMap::default()),
+            name_def_id_map: Arc::new(RwLock::new(HashMap::new())),
+            local_span_ids: None,
+            next_read_kind_id: Arc::new(AtomicU64::new(0)),
+            externals_available_cache: Arc::new(RwLock::new(HashMap::new())),
+            get_field_many_variants_cache: Arc::new(RwLock::new(HashMap::new())),
+            mid_ty_cache: Arc::new(RwLock::new(FxHashMap::default())),
         }
+    }
+
+    /// Forks a context with empty outputs and optional item-local ID counters.
+    pub(crate) fn fork_for_item(&self, local_ids: Option<(u64, u64)>) -> ContextX<'tcx> {
+        ContextX {
+            cmd_line_args: self.cmd_line_args.clone(),
+            tcx: self.tcx,
+            erasure_info: Lock::new(ErasureInfo::default()),
+            spans: self.spans.clone(),
+            verus_items: self.verus_items.clone(),
+            diagnostics: Arc::new(Mutex::new(Vec::new())),
+            no_vstd: self.no_vstd,
+            arch_word_bits: self.arch_word_bits,
+            crate_name: self.crate_name.clone(),
+            name_def_id_map: self.name_def_id_map.clone(),
+            local_span_ids: local_ids.map(|(span_id, _)| AtomicU64::new(span_id)),
+            next_read_kind_id: match local_ids {
+                Some((_, read_kind_id)) => Arc::new(AtomicU64::new(read_kind_id)),
+                None => self.next_read_kind_id.clone(),
+            },
+            externals_available_cache: self.externals_available_cache.clone(),
+            get_field_many_variants_cache: self.get_field_many_variants_cache.clone(),
+            mid_ty_cache: self.mid_ty_cache.clone(),
+        }
+    }
+
+    /// Returns the next span and read-kind IDs.
+    pub(crate) fn peek_next_ids(&self) -> (u64, u64) {
+        let span_id = match &self.local_span_ids {
+            Some(c) => c.load(Ordering::SeqCst),
+            None => self.spans.peek_next_span_id(),
+        };
+        (span_id, self.next_read_kind_id.load(Ordering::SeqCst))
+    }
+
+    /// Advances the span and read-kind ID counters.
+    pub(crate) fn advance_ids(&self, span_ids: u64, read_kind_ids: u64) {
+        match &self.local_span_ids {
+            Some(c) => {
+                c.fetch_add(span_ids, Ordering::SeqCst);
+            }
+            None => self.spans.advance_span_id(span_ids),
+        }
+        self.next_read_kind_id.fetch_add(read_kind_ids, Ordering::SeqCst);
+    }
+
+    pub(crate) fn next_span_id(&self) -> u64 {
+        match &self.local_span_ids {
+            Some(c) => c.fetch_add(1, Ordering::SeqCst),
+            None => self.spans.get_next_span_id(),
+        }
+    }
+
+    pub(crate) fn to_air_span(&self, span: rustc_span::Span) -> vir::messages::Span {
+        self.spans.to_air_span_with_id(span, self.next_span_id())
     }
 
     // TODO: It's easy to forget to do this; should come up with a different system
     pub(crate) fn flush_diagnostics(&self, reporter: &dyn air::messages::Diagnostics) {
-        for diag in self.diagnostics.borrow_mut().drain(..) {
+        for diag in self.diagnostics.lock().unwrap().drain(..) {
             match diag {
                 vir::ast::VirErrAs::Warning(err) => {
                     reporter.report_as(&err.to_any(), MessageLevel::Warning)
@@ -169,7 +268,7 @@ impl<'tcx> ContextX<'tcx> {
         // deprecation message.
         #[allow(deprecated)]
         let f_attrs = self.tcx.get_all_attrs(f);
-        let mut diagnostics = self.diagnostics.borrow_mut();
+        let mut diagnostics = self.diagnostics.lock().unwrap();
         let n_diagnostics = diagnostics.len();
         let b = crate::attributes::is_get_field_many_variants(f_attrs, Some(&mut *diagnostics))?;
         if diagnostics.len() == n_diagnostics {
@@ -198,7 +297,7 @@ impl<'tcx> ContextX<'tcx> {
         &self,
         attrs: &[Attribute],
     ) -> Result<crate::attributes::VerifierAttrs, VirErr> {
-        crate::attributes::get_verifier_attrs(attrs, Some(&mut *self.diagnostics.borrow_mut()))
+        crate::attributes::get_verifier_attrs(attrs, Some(&mut *self.diagnostics.lock().unwrap()))
     }
 
     pub(crate) fn get_verifier_attrs_no_check(
@@ -207,7 +306,7 @@ impl<'tcx> ContextX<'tcx> {
     ) -> Result<crate::attributes::VerifierAttrs, VirErr> {
         crate::attributes::get_verifier_attrs_no_check(
             attrs,
-            Some(&mut *self.diagnostics.borrow_mut()),
+            Some(&mut *self.diagnostics.lock().unwrap()),
         )
     }
 
@@ -215,7 +314,7 @@ impl<'tcx> ContextX<'tcx> {
         &self,
         attrs: &[Attribute],
     ) -> Result<crate::attributes::ExternalAttrs, VirErr> {
-        crate::attributes::get_external_attrs(attrs, Some(&mut *self.diagnostics.borrow_mut()))
+        crate::attributes::get_external_attrs(attrs, Some(&mut *self.diagnostics.lock().unwrap()))
     }
 
     pub(crate) fn push_body_erasure(&self, local_def_id: LocalDefId, c: BodyErasure) {
@@ -223,19 +322,31 @@ impl<'tcx> ContextX<'tcx> {
         r.bodies.push((local_def_id, c));
     }
 
-    pub(crate) fn path_def_id_ref(
-        &self,
-    ) -> Option<impl DerefMut<Target = HashMap<Path, DefId>> + use<'_>> {
-        self.name_def_id_map.try_borrow_mut().ok()
+    // Merges path registrations without holding the shared lock across rustc queries.
+    fn record_path_def_ids(&self, local: HashMap<Path, DefId>) {
+        for (path, def_id) in local {
+            self.record_path_def_id(path, def_id);
+        }
+    }
+
+    // Avoids taking the write lock for an idempotent path registration.
+    fn record_path_def_id(&self, path: Path, def_id: DefId) {
+        if self.name_def_id_map.borrow().get(&path) == Some(&def_id) {
+            return;
+        }
+        self.name_def_id_map.borrow_mut().insert(path, def_id);
     }
 
     pub(crate) fn def_id_to_vir_path(&self, def_id: DefId) -> Path {
-        crate::rust_to_vir_base::def_id_to_vir_path(
+        let mut local: HashMap<Path, DefId> = HashMap::new();
+        let path = crate::rust_to_vir_base::def_id_to_vir_path(
             self.tcx,
             &self.verus_items,
             def_id,
-            self.path_def_id_ref(),
-        )
+            Some(&mut local),
+        );
+        self.record_path_def_ids(local);
+        path
     }
 
     pub(crate) fn mid_ty_to_vir(
@@ -264,16 +375,19 @@ impl<'tcx> ContextX<'tcx> {
         assume_specification_opaque_type_map: Option<&HashMap<Path, Path>>,
         record_path: bool,
     ) -> Result<vir::ast::Typ, VirErr> {
+        let mut local: HashMap<Path, DefId> = HashMap::new();
         if assume_specification_opaque_type_map.is_some() {
-            return crate::rust_to_vir_base::mid_ty_to_vir(
+            let typ = crate::rust_to_vir_base::mid_ty_to_vir(
                 self.tcx,
                 &self.verus_items,
-                if record_path { self.path_def_id_ref() } else { None },
+                if record_path { Some(&mut local) } else { None },
                 param_env_src,
                 span,
                 ty,
                 assume_specification_opaque_type_map,
             );
+            self.record_path_def_ids(local);
+            return typ;
         }
         let key = (*ty, param_env_src);
         let cached = self.mid_ty_cache.borrow().get(&key).cloned();
@@ -282,9 +396,7 @@ impl<'tcx> ContextX<'tcx> {
                 if let (TyKind::Adt(adt_def, _), TypX::Datatype(Dt::Path(path), _, _)) =
                     (ty.kind(), &*typ)
                 {
-                    if let Some(mut map) = self.path_def_id_ref() {
-                        map.insert(path.clone(), adt_def.did());
-                    }
+                    self.record_path_def_id(path.clone(), adt_def.did());
                 }
             }
             return Ok(typ);
@@ -292,18 +404,20 @@ impl<'tcx> ContextX<'tcx> {
         let typ = crate::rust_to_vir_base::mid_ty_to_vir(
             self.tcx,
             &self.verus_items,
-            if record_path { self.path_def_id_ref() } else { None },
+            if record_path { Some(&mut local) } else { None },
             param_env_src,
             span,
             ty,
             None,
-        )?;
+        );
+        self.record_path_def_ids(local);
+        let typ = typ?;
         self.mid_ty_cache.borrow_mut().insert(key, typ.clone());
         Ok(typ)
     }
 
     pub(crate) fn unique_read_kind_id(&self) -> u64 {
-        self.next_read_kind_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        self.next_read_kind_id.fetch_add(1, Ordering::SeqCst)
     }
 }
 

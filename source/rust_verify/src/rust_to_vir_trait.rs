@@ -145,7 +145,7 @@ pub(crate) fn translate_trait<'tcx>(
             false,
             trait_def_id,
             None,
-            Some(&mut *ctxt.diagnostics.borrow_mut()),
+            Some(&mut *ctxt.diagnostics.lock().unwrap()),
         )?;
         vir::traits::remove_self_is_itself_bound(&mut typ_bounds, &trait_path, &generics_params);
         (generics_params, typ_bounds)
@@ -259,7 +259,7 @@ pub(crate) fn translate_trait<'tcx>(
             false,
             owner_id.to_def_id(),
             None,
-            Some(&mut *ctxt.diagnostics.borrow_mut()),
+            Some(&mut *ctxt.diagnostics.lock().unwrap()),
         )?;
 
         if crate_items.is_trait_item_external(*trait_item_id) {
