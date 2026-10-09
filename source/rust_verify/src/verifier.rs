@@ -400,6 +400,66 @@ pub fn module_name(module: &vir::ast::Path) -> String {
     module.segments.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("::")
 }
 
+// Gives small functions enough weight to affect list scheduling.
+const BUCKET_BASE_FUNCTION_COST: u64 = 20;
+// Accounts for the higher expected cost of explicitly spun-off proofs.
+const SPINOFF_COST_MULTIPLIER: u64 = 5;
+
+fn source_extent(span_data: &[u64]) -> u64 {
+    span_data.get(1).map(|lo_hi| (*lo_hi as u32 as u64).saturating_sub(lo_hi >> 32)).unwrap_or(0)
+}
+
+/// Estimates a bucket from the source extents of its proof and exec functions.
+fn bucket_cost_heuristic(functions: &HashMap<&Fun, &vir::ast::Function>, bucket: &Bucket) -> u64 {
+    bucket
+        .funs
+        .iter()
+        .map(|f| match functions.get(f) {
+            Some(function)
+                if function.x.body.is_some() && function.x.mode != vir::ast::Mode::Spec =>
+            {
+                (BUCKET_BASE_FUNCTION_COST + source_extent(&function.span.data))
+                    * if function.x.attrs.spinoff_prover { SPINOFF_COST_MULTIPLIER } else { 1 }
+            }
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Estimates every bucket in `bucket_ids` order.
+fn bucket_cost_estimates(
+    krate: &Krate,
+    bucket_ids: &[BucketId],
+    buckets: &HashMap<BucketId, Bucket>,
+) -> Vec<u64> {
+    let functions: HashMap<&Fun, &vir::ast::Function> =
+        krate.functions.iter().map(|f| (&f.x.name, f)).collect();
+    bucket_ids.iter().map(|b| bucket_cost_heuristic(&functions, &buckets[b])).collect()
+}
+
+fn bucket_schedule(costs: &[u64]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..costs.len()).collect();
+    order.sort_by_key(|&index| std::cmp::Reverse(costs[index]));
+    order
+}
+
+#[cfg(test)]
+mod bucket_schedule_tests {
+    use super::{bucket_schedule, source_extent};
+
+    #[test]
+    fn descending_costs_keep_stable_indices() {
+        assert_eq!(bucket_schedule(&[4, 9, 9, 1]), [1, 2, 0, 3]);
+    }
+
+    #[test]
+    fn missing_and_reversed_spans_have_zero_extent() {
+        assert_eq!(source_extent(&[]), 0);
+        assert_eq!(source_extent(&[0, (20_u64 << 32) | 10]), 0);
+        assert_eq!(source_extent(&[0, (10_u64 << 32) | 42]), 32);
+    }
+}
+
 mod util {
     pub(crate) struct PanicOnDropVec<T>(Option<Vec<T>>);
 
@@ -2117,10 +2177,15 @@ impl Verifier {
             // create the multiple producers, single consumer queue
             let (sender, receiver) = std::sync::mpsc::channel();
 
+            // Start higher-cost buckets first while retaining bucket indices for reporting.
+            let costs = bucket_cost_estimates(&krate, &bucket_ids, &self.buckets);
+            let order = bucket_schedule(&costs);
             // collect the buckets and create the task queue
             let mut tasks = VecDeque::with_capacity(bucket_ids.len());
-            let mut messages: Vec<(bool, Vec<(Message, MessageLevel)>)> = Vec::new();
-            for (i, bucket_id) in bucket_ids.iter().enumerate() {
+            let mut messages: Vec<(bool, Vec<(Message, MessageLevel)>)> =
+                (0..bucket_ids.len()).map(|_| (false, Vec::new())).collect();
+            for i in order {
+                let bucket_id = &bucket_ids[i];
                 // give each bucket its own log file
                 let interpreter_log_file = Arc::new(std::sync::Mutex::new(
                     if self.args.log_all || self.args.log_args.log_interpreter {
@@ -2142,7 +2207,6 @@ impl Verifier {
                     global_ctx.from_self_with_log(interpreter_log_file),
                     reporter,
                 ));
-                messages.push((false, Vec::new()));
             }
 
             // protect the taskq with a mutex
