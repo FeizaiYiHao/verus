@@ -54,11 +54,10 @@ mod parsing {
     use crate::error::Result;
     use crate::parse::{Parse, ParseStream};
     use crate::token::Token;
-    use alloc::string::ToString;
     use proc_macro2::Ident;
 
-    fn accept_as_ident(ident: &Ident) -> bool {
-        match ident.to_string().as_str() {
+    fn accept_as_ident(text: &str) -> bool {
+        match text {
             "_" |
             // Based on https://doc.rust-lang.org/1.65.0/reference/keywords.html
             "abstract" | "as" | "async" | "await" | "become" | "box" | "break" |
@@ -77,9 +76,9 @@ mod parsing {
     impl Parse for Ident {
         fn parse(input: ParseStream) -> Result<Self> {
             input.step(|cursor| {
-                if let Some((ident, rest)) = cursor.ident() {
-                    if accept_as_ident(&ident) {
-                        Ok((ident, rest))
+                if let Some((ident, text, rest)) = cursor.ident_str() {
+                    if accept_as_ident(text) {
+                        Ok((ident.clone(), rest))
                     } else {
                         Err(cursor.error(format_args!(
                             "expected identifier, found keyword `{}`",
@@ -95,8 +94,8 @@ mod parsing {
 
     impl Token for Ident {
         fn peek(cursor: Cursor) -> bool {
-            if let Some((ident, _rest)) = cursor.ident() {
-                accept_as_ident(&ident)
+            if let Some((_ident, text, _rest)) = cursor.ident_str() {
+                accept_as_ident(text)
             } else {
                 false
             }

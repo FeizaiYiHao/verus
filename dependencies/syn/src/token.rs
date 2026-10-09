@@ -535,8 +535,8 @@ impl ToTokens for Underscore {
 impl Parse for Underscore {
     fn parse(input: ParseStream) -> Result<Self> {
         input.step(|cursor| {
-            if let Some((ident, rest)) = cursor.ident() {
-                if ident == "_" {
+            if let Some((ident, text, rest)) = cursor.ident_str() {
+                if text == "_" {
                     return Ok((Underscore(ident.span()), rest));
                 }
             }
@@ -553,8 +553,8 @@ impl Parse for Underscore {
 #[cfg(feature = "parsing")]
 impl Token for Underscore {
     fn peek(cursor: Cursor) -> bool {
-        if let Some((ident, _rest)) = cursor.ident() {
-            return ident == "_";
+        if let Some((_ident, text, _rest)) = cursor.ident_str() {
+            return text == "_";
         }
         if let Some((punct, _rest)) = cursor.punct() {
             return punct.as_char() == '_';
@@ -1116,8 +1116,8 @@ pub(crate) mod parsing {
 
     pub(crate) fn keyword(input: ParseStream, token: &str) -> Result<Span> {
         input.step(|cursor| {
-            if let Some((ident, rest)) = cursor.ident() {
-                if ident == token {
+            if let Some((ident, text, rest)) = cursor.ident_str() {
+                if text == token {
                     return Ok((ident.span(), rest));
                 }
             }
@@ -1126,8 +1126,8 @@ pub(crate) mod parsing {
     }
 
     pub(crate) fn peek_keyword(cursor: Cursor, token: &str) -> bool {
-        if let Some((ident, _rest)) = cursor.ident() {
-            ident == token
+        if let Some((_ident, text, _rest)) = cursor.ident_str() {
+            text == token
         } else {
             false
         }

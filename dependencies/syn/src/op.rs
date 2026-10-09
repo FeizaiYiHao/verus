@@ -95,90 +95,169 @@ ast_enum! {
 
 #[cfg(feature = "parsing")]
 pub(crate) mod parsing {
+    use crate::buffer::Cursor;
     use crate::error::Result;
     use crate::op::{BinOp, UnOp};
     use crate::parse::{Parse, ParseStream};
 
+    /// Returns whether the current token can begin a binary operator.
+    pub(crate) fn peek_binop_start(cursor: Cursor) -> bool {
+        match cursor.punct() {
+            Some((punct, _)) => matches!(
+                punct.as_char(),
+                '<' | '=' | '!' | '+' | '-' | '*' | '/' | '%' | '^' | '&' | '|' | '>'
+            ),
+            None => false,
+        }
+    }
+
     #[cfg_attr(docsrs, doc(cfg(feature = "parsing")))]
     impl Parse for BinOp {
         fn parse(input: ParseStream) -> Result<Self> {
-            if input.peek(Token![<==>]) {
-                input.parse().map(BinOp::Equiv)
-            } else if input.peek(Token![==>]) {
-                input.parse().map(BinOp::Imply)
-            } else if input.peek(Token![<==]) {
-                input.parse().map(BinOp::Exply)
-            } else if input.peek(Token![===]) {
-                input.parse().map(BinOp::BigEq)
-            } else if input.peek(Token![!==]) {
-                input.parse().map(BinOp::BigNe)
-            } else if input.peek(Token![=~=]) {
-                input.parse().map(BinOp::ExtEq)
-            } else if input.peek(Token![!~=]) {
-                input.parse().map(BinOp::ExtNe)
-            } else if input.peek(Token![=~~=]) {
-                input.parse().map(BinOp::ExtDeepEq)
-            } else if input.peek(Token![!~~=]) {
-                input.parse().map(BinOp::ExtDeepNe)
-            } else if input.peek(Token![+=]) {
-                input.parse().map(BinOp::AddAssign)
-            } else if input.peek(Token![-=]) {
-                input.parse().map(BinOp::SubAssign)
-            } else if input.peek(Token![*=]) {
-                input.parse().map(BinOp::MulAssign)
-            } else if input.peek(Token![/=]) {
-                input.parse().map(BinOp::DivAssign)
-            } else if input.peek(Token![%=]) {
-                input.parse().map(BinOp::RemAssign)
-            } else if input.peek(Token![^=]) {
-                input.parse().map(BinOp::BitXorAssign)
-            } else if input.peek(Token![&=]) {
-                input.parse().map(BinOp::BitAndAssign)
-            } else if input.peek(Token![|=]) {
-                input.parse().map(BinOp::BitOrAssign)
-            } else if input.peek(Token![<<=]) {
-                input.parse().map(BinOp::ShlAssign)
-            } else if input.peek(Token![>>=]) {
-                input.parse().map(BinOp::ShrAssign)
-            } else if input.peek(Token![&&]) {
-                input.parse().map(BinOp::And)
-            } else if input.peek(Token![||]) {
-                input.parse().map(BinOp::Or)
-            } else if input.peek(Token![<<]) {
-                input.parse().map(BinOp::Shl)
-            } else if input.peek(Token![>>]) {
-                input.parse().map(BinOp::Shr)
-            } else if input.peek(Token![==]) {
-                input.parse().map(BinOp::Eq)
-            } else if input.peek(Token![<=]) {
-                input.parse().map(BinOp::Le)
-            } else if input.peek(Token![!=]) {
-                input.parse().map(BinOp::Ne)
-            } else if input.peek(Token![>=]) {
-                input.parse().map(BinOp::Ge)
-            } else if input.peek(Token![+]) {
-                input.parse().map(BinOp::Add)
-            } else if input.peek(Token![-]) {
-                input.parse().map(BinOp::Sub)
-            } else if input.peek(Token![*]) {
-                input.parse().map(BinOp::Mul)
-            } else if input.peek(Token![/]) {
-                input.parse().map(BinOp::Div)
-            } else if input.peek(Token![%]) {
-                input.parse().map(BinOp::Rem)
-            } else if input.peek(Token![^]) {
-                input.parse().map(BinOp::BitXor)
-            } else if input.peek(Token![&]) {
-                input.parse().map(BinOp::BitAnd)
-            } else if input.peek(Token![|]) {
-                input.parse().map(BinOp::BitOr)
-            } else if input.peek(Token![<]) {
-                input.parse().map(BinOp::Lt)
-            } else if input.peek(Token![>]) {
-                input.parse().map(BinOp::Gt)
-            } else {
-                Err(input.error("expected binary operator"))
+            // Operators sharing a first character are tested in grammar order.
+            let first = match input.cursor().punct() {
+                Some((punct, _)) => punct.as_char(),
+                None => return Err(input.error("expected binary operator")),
+            };
+            match first {
+                '<' => {
+                    if input.peek(Token![<==>]) {
+                        return input.parse().map(BinOp::Equiv);
+                    }
+                    if input.peek(Token![<==]) {
+                        return input.parse().map(BinOp::Exply);
+                    }
+                    if input.peek(Token![<<=]) {
+                        return input.parse().map(BinOp::ShlAssign);
+                    }
+                    if input.peek(Token![<<]) {
+                        return input.parse().map(BinOp::Shl);
+                    }
+                    if input.peek(Token![<=]) {
+                        return input.parse().map(BinOp::Le);
+                    }
+                    if input.peek(Token![<]) {
+                        return input.parse().map(BinOp::Lt);
+                    }
+                }
+                '=' => {
+                    if input.peek(Token![==>]) {
+                        return input.parse().map(BinOp::Imply);
+                    }
+                    if input.peek(Token![===]) {
+                        return input.parse().map(BinOp::BigEq);
+                    }
+                    if input.peek(Token![=~=]) {
+                        return input.parse().map(BinOp::ExtEq);
+                    }
+                    if input.peek(Token![=~~=]) {
+                        return input.parse().map(BinOp::ExtDeepEq);
+                    }
+                    if input.peek(Token![==]) {
+                        return input.parse().map(BinOp::Eq);
+                    }
+                }
+                '!' => {
+                    if input.peek(Token![!==]) {
+                        return input.parse().map(BinOp::BigNe);
+                    }
+                    if input.peek(Token![!~=]) {
+                        return input.parse().map(BinOp::ExtNe);
+                    }
+                    if input.peek(Token![!~~=]) {
+                        return input.parse().map(BinOp::ExtDeepNe);
+                    }
+                    if input.peek(Token![!=]) {
+                        return input.parse().map(BinOp::Ne);
+                    }
+                }
+                '+' => {
+                    if input.peek(Token![+=]) {
+                        return input.parse().map(BinOp::AddAssign);
+                    }
+                    if input.peek(Token![+]) {
+                        return input.parse().map(BinOp::Add);
+                    }
+                }
+                '-' => {
+                    if input.peek(Token![-=]) {
+                        return input.parse().map(BinOp::SubAssign);
+                    }
+                    if input.peek(Token![-]) {
+                        return input.parse().map(BinOp::Sub);
+                    }
+                }
+                '*' => {
+                    if input.peek(Token![*=]) {
+                        return input.parse().map(BinOp::MulAssign);
+                    }
+                    if input.peek(Token![*]) {
+                        return input.parse().map(BinOp::Mul);
+                    }
+                }
+                '/' => {
+                    if input.peek(Token![/=]) {
+                        return input.parse().map(BinOp::DivAssign);
+                    }
+                    if input.peek(Token![/]) {
+                        return input.parse().map(BinOp::Div);
+                    }
+                }
+                '%' => {
+                    if input.peek(Token![%=]) {
+                        return input.parse().map(BinOp::RemAssign);
+                    }
+                    if input.peek(Token![%]) {
+                        return input.parse().map(BinOp::Rem);
+                    }
+                }
+                '^' => {
+                    if input.peek(Token![^=]) {
+                        return input.parse().map(BinOp::BitXorAssign);
+                    }
+                    if input.peek(Token![^]) {
+                        return input.parse().map(BinOp::BitXor);
+                    }
+                }
+                '&' => {
+                    if input.peek(Token![&=]) {
+                        return input.parse().map(BinOp::BitAndAssign);
+                    }
+                    if input.peek(Token![&&]) {
+                        return input.parse().map(BinOp::And);
+                    }
+                    if input.peek(Token![&]) {
+                        return input.parse().map(BinOp::BitAnd);
+                    }
+                }
+                '|' => {
+                    if input.peek(Token![|=]) {
+                        return input.parse().map(BinOp::BitOrAssign);
+                    }
+                    if input.peek(Token![||]) {
+                        return input.parse().map(BinOp::Or);
+                    }
+                    if input.peek(Token![|]) {
+                        return input.parse().map(BinOp::BitOr);
+                    }
+                }
+                '>' => {
+                    if input.peek(Token![>>=]) {
+                        return input.parse().map(BinOp::ShrAssign);
+                    }
+                    if input.peek(Token![>>]) {
+                        return input.parse().map(BinOp::Shr);
+                    }
+                    if input.peek(Token![>=]) {
+                        return input.parse().map(BinOp::Ge);
+                    }
+                    if input.peek(Token![>]) {
+                        return input.parse().map(BinOp::Gt);
+                    }
+                }
+                _ => {}
             }
+            Err(input.error("expected binary operator"))
         }
     }
 
