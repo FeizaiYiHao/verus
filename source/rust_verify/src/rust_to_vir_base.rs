@@ -162,6 +162,24 @@ pub(crate) fn def_id_to_vir_path_option<'tcx>(
     def_id: DefId,
 ) -> Option<Path> {
     if let Some(verus_items) = verus_items {
+        // Friendly-path registration is idempotent within one compilation.
+        if let Some(path) = verus_items.vir_path_cache.lock().unwrap().get(&def_id) {
+            return path.clone();
+        }
+        let path = def_id_to_vir_path_option_uncached(tcx, Some(verus_items), def_id);
+        verus_items.vir_path_cache.lock().unwrap().insert(def_id, path.clone());
+        path
+    } else {
+        def_id_to_vir_path_option_uncached(tcx, None, def_id)
+    }
+}
+
+fn def_id_to_vir_path_option_uncached<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    verus_items: Option<&crate::verus_items::VerusItems>,
+    def_id: DefId,
+) -> Option<Path> {
+    if let Some(verus_items) = verus_items {
         use crate::verus_items::RustPrivate;
         let verus_item = verus_items.id_to_name.get(&def_id);
         if let Some(VerusItem::Vstd(_, Some(fn_name))) = verus_item {
@@ -636,7 +654,7 @@ pub(crate) fn get_impl_paths_for_clauses<'tcx>(
                                 || Some(trait_def_id) == tcx.lang_items().sync_trait()
                                 || Some(trait_def_id) == tcx.lang_items().destruct_trait()
                                 || matches!(
-                                    verus_items::get_rust_item(tcx, trait_def_id),
+                                    verus_items.get_rust_item(tcx, trait_def_id),
                                     Some(RustItem::Send | RustItem::Thin | RustItem::Any)
                                 )
                             {
@@ -873,7 +891,7 @@ pub(crate) fn mid_ty_simplify<'tcx>(
                 verus_items.id_to_name.get(&did),
                 Some(VerusItem::BuiltinType(BuiltinTypeItem::Ghost | BuiltinTypeItem::Tracked))
             );
-            let rust_item = verus_items::get_rust_item(tcx, did);
+            let rust_item = verus_items.get_rust_item(tcx, did);
             let is_box = rust_item == Some(verus_items::RustItem::Box);
             let is_smart_ptr =
                 (matches!(rust_item, Some(verus_items::RustItem::Rc | verus_items::RustItem::Arc))
@@ -945,7 +963,7 @@ pub(crate) fn mid_ty_filter_for_external_impls<'tcx>(
         TyKind::Adt(rustc_middle::ty::AdtDef(adt_def_data), _) => {
             let verus_item = ctxt.verus_items.id_to_name.get(&adt_def_data.did);
             let is_verus_type = matches!(verus_item, Some(VerusItem::BuiltinType(_)));
-            let is_rust_type = match verus_items::get_rust_item(ctxt.tcx, adt_def_data.did) {
+            let is_rust_type = match ctxt.verus_items.get_rust_item(ctxt.tcx, adt_def_data.did) {
                 Some(RustItem::Box | RustItem::Rc | RustItem::Arc) => true,
                 _ => false,
             };
@@ -1165,7 +1183,7 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
             } else if let Some(VerusItem::BuiltinType(BuiltinTypeItem::Real)) = verus_item {
                 (Arc::new(TypX::Real), false)
             } else {
-                let rust_item = verus_items::get_rust_item(tcx, did);
+                let rust_item = verus_items.get_rust_item(tcx, did);
 
                 let typ_args = mk_typ_args(&args)?;
                 if Some(did) == tcx.lang_items().owned_box() && typ_args.len() == 2 {
@@ -1598,14 +1616,12 @@ pub(crate) fn typ_of_expr_adjusted<'tcx>(
     let rustc_hir::Node::Expr(e) = bctx.ctxt.tcx.hir_node(*id) else {
         panic!("typ_of_expr_adjusted expected Expr");
     };
-    mid_ty_to_vir(
-        bctx.ctxt.tcx,
-        &bctx.ctxt.verus_items,
-        None::<&mut HashMap<_, _>>,
+    bctx.ctxt.mid_ty_to_vir_cached(
         bctx.fun_id,
         span,
         &bctx.types.expr_ty_adjusted(e),
         bctx.external_opaque_type_map.as_ref(),
+        false,
     )
 }
 
@@ -1614,14 +1630,12 @@ pub(crate) fn typ_of_node_unadjusted<'tcx>(
     span: Span,
     id: &HirId,
 ) -> Result<Typ, VirErr> {
-    mid_ty_to_vir(
-        bctx.ctxt.tcx,
-        &bctx.ctxt.verus_items,
-        None::<&mut HashMap<_, _>>,
+    bctx.ctxt.mid_ty_to_vir_cached(
         bctx.fun_id,
         span,
         &bctx.types.node_type(*id),
         bctx.external_opaque_type_map.as_ref(),
+        false,
     )
 }
 

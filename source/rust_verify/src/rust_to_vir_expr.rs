@@ -2171,7 +2171,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
         }
     }
 
-    let loop_isolation = {
+    let loop_isolation = || {
         if let Some(b) = expr_vattrs.loop_isolation {
             b
         } else {
@@ -3261,7 +3261,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                 *header_span,
                 &expr_typ()?,
                 ExprX::Loop {
-                    loop_isolation,
+                    loop_isolation: loop_isolation(),
                     allow_complex_invariants,
                     is_for_loop: expr_vattrs.for_loop,
                     assume_termination: expr_vattrs.assume_termination,
@@ -3356,7 +3356,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                 *header_span,
                 &expr_typ()?,
                 ExprX::Loop {
-                    loop_isolation,
+                    loop_isolation: loop_isolation(),
                     allow_complex_invariants: allow_complex_invariants(),
                     is_for_loop: false,
                     assume_termination: expr_vattrs.assume_termination,
@@ -4699,7 +4699,7 @@ pub(crate) fn deref_overloaded<'tcx>(
             let call_expr = match inner_ty.kind() {
                 TyKind::Adt(adt_def, args)
                     if matches!(
-                        verus_items::get_rust_item(bctx.ctxt.tcx, adt_def.did()),
+                        bctx.ctxt.verus_items.get_rust_item(bctx.ctxt.tcx, adt_def.did()),
                         Some(RustItem::Rc | RustItem::Arc)
                     ) =>
                 {
