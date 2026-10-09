@@ -79,9 +79,10 @@ impl Emitter {
 
     pub fn log_node(&mut self, node: &Node) {
         if let Some(w) = &mut self.pipe_buffer {
-            writeln!(w, "{}", self.node_writer.node_to_string_indent(&self.current_indent, &node))
-                .unwrap();
-            w.flush().unwrap();
+            w.extend_from_slice(
+                self.node_writer.node_to_string_indent(&self.current_indent, &node).as_bytes(),
+            );
+            w.push(b'\n');
         }
         if let Some(w) = &mut self.log {
             writeln!(
