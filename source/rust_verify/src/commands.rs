@@ -69,6 +69,8 @@ pub struct OpGenerator<'a> {
     func_map: HashMap<Fun, FunctionSst>,
     trait_impl_map: HashMap<Path, TraitImpl>,
 
+    /// SCC positions that can emit operations for this bucket, in global order.
+    relevant_sccs: Vec<usize>,
     scc_idx: usize,
 }
 
@@ -92,18 +94,43 @@ impl<'a> OpGenerator<'a> {
             trait_impl_map.insert(imp.x.impl_path.clone(), imp.clone());
         }
 
-        OpGenerator { ctx, func_map, trait_impl_map, bucket, scc_idx: 0 }
+        let scc_index = &ctx.global.func_call_scc_index;
+        let mut relevant_sccs: Vec<usize> = Vec::new();
+        for f in func_map.keys() {
+            if let Some(i) = scc_index.get(&Node::Fun(f.clone())) {
+                relevant_sccs.push(*i);
+            }
+        }
+        for impl_path in trait_impl_map.keys() {
+            if let Some(i) =
+                scc_index.get(&Node::TraitImpl(ImplPath::TraitImplPath(impl_path.clone())))
+            {
+                relevant_sccs.push(*i);
+            }
+        }
+        for (impl_path, extensions) in ctx.global.trait_impl_to_extensions.iter() {
+            if extensions.iter().any(|e| trait_impl_map.contains_key(e)) {
+                if let Some(i) =
+                    scc_index.get(&Node::TraitImpl(ImplPath::TraitImplPath(impl_path.clone())))
+                {
+                    relevant_sccs.push(*i);
+                }
+            }
+        }
+        relevant_sccs.sort_unstable();
+        relevant_sccs.dedup();
+
+        OpGenerator { ctx, func_map, trait_impl_map, bucket, relevant_sccs, scc_idx: 0 }
     }
 
     pub fn next<'b>(&'b mut self) -> Result<Option<FunctionOpGenerator<'a, 'b>>, VirErr>
     where
         'a: 'b,
     {
-        // Iterate through each SCC
-        if self.scc_idx < self.ctx.global.func_call_sccs.len() {
-            let current_queue = VecDeque::from(
-                self.handle_scc_component(self.ctx.global.func_call_sccs[self.scc_idx].clone())?,
-            );
+        // Visit SCCs that can contribute operations to this bucket.
+        if self.scc_idx < self.relevant_sccs.len() {
+            let scc_rep = &self.ctx.global.func_call_sccs[self.relevant_sccs[self.scc_idx]];
+            let current_queue = VecDeque::from(self.handle_scc_component(scc_rep.clone())?);
             self.scc_idx += 1;
             Ok(Some(FunctionOpGenerator {
                 op_generator: self,
