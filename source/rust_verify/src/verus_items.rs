@@ -1,6 +1,8 @@
 use air::ast::Ident;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_middle::ty::{IntTy, TyCtxt, TyKind, UintTy};
 use rustc_span::def_id::DefId;
+use std::sync::Mutex;
 use std::{collections::HashMap, sync::Arc};
 use vir::ast::CrateId;
 
@@ -810,6 +812,22 @@ pub(crate) struct VerusItems {
     pub(crate) name_to_id: HashMap<VerusItem, DefId>,
     // RustPrivate items also map to an underlying Rust DefId (in addition to the Verus DefId):
     pub(crate) name_to_rust_private_id: HashMap<VerusItem, DefId>,
+    /// Cached Rust-item classifications by definition.
+    rust_item_cache: Mutex<FxHashMap<DefId, Option<RustItem>>>,
+    /// Cached VIR paths by definition.
+    pub(crate) vir_path_cache: Mutex<FxHashMap<DefId, Option<vir::ast::Path>>>,
+}
+
+impl VerusItems {
+    /// Returns the cached Rust-item classification for `def_id`.
+    pub(crate) fn get_rust_item<'tcx>(&self, tcx: TyCtxt<'tcx>, def_id: DefId) -> Option<RustItem> {
+        if let Some(r) = self.rust_item_cache.lock().unwrap().get(&def_id) {
+            return *r;
+        }
+        let r = get_rust_item(tcx, def_id);
+        self.rust_item_cache.lock().unwrap().insert(def_id, r);
+        r
+    }
 }
 
 pub(crate) fn from_diagnostic_items(tcx: TyCtxt) -> VerusItems {
@@ -853,7 +871,13 @@ pub(crate) fn from_diagnostic_items(tcx: TyCtxt) -> VerusItems {
             }
         }
     }
-    VerusItems { id_to_name, name_to_id, name_to_rust_private_id }
+    VerusItems {
+        id_to_name,
+        name_to_id,
+        name_to_rust_private_id,
+        rust_item_cache: Mutex::new(FxHashMap::default()),
+        vir_path_cache: Mutex::new(FxHashMap::default()),
+    }
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]

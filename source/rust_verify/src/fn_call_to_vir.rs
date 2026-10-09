@@ -55,7 +55,7 @@ pub(crate) fn fn_call_to_vir<'tcx>(
 
     let expr_typ = || typ_of_node_unadjusted(bctx, expr.span, &expr.hir_id);
 
-    let rust_item = verus_items::get_rust_item(tcx, f);
+    let rust_item = bctx.ctxt.verus_items.get_rust_item(tcx, f);
     let verus_item = bctx.ctxt.get_verus_item(f);
 
     if bctx.external_body
@@ -135,14 +135,7 @@ pub(crate) fn fn_call_to_vir<'tcx>(
         }
     }
 
-    // Verus attributes are `Unparsed` where get_all_attrs is acceptable per its
-    // deprecation message.
-    #[allow(deprecated)]
-    let f_attrs = bctx.ctxt.tcx.get_all_attrs(f);
-    if crate::attributes::is_get_field_many_variants(
-        f_attrs,
-        Some(&mut *bctx.ctxt.diagnostics.borrow_mut()),
-    )? {
+    if bctx.ctxt.is_get_field_many_variants(f)? {
         return Err(vir::messages::error(
             &crate::spans::err_air_span(expr.span),
             format!("this field is present in multiple variants, cannot use -> syntax"),
@@ -286,11 +279,7 @@ fn fn_call_or_assoc_const_to_vir<'tcx>(
         }
     };
 
-    let assume_external_allowed =
-        crate::attributes::get_externals_available_without_declaration_walk_parents(
-            bctx.ctxt.tcx,
-            bctx.fun_id,
-        );
+    let assume_external_allowed = bctx.ctxt.externals_available_without_declaration(bctx.fun_id);
 
     let resolved_call = ResolvedCall::Call(name.clone(), record_name, assume_external_allowed);
     record_call(bctx, expr, resolved_call);

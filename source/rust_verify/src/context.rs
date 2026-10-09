@@ -1,8 +1,9 @@
 use crate::{erase::ResolvedCall, verus_items::VerusItems};
+use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::Attribute;
 use rustc_hir::HirId;
 use rustc_hir::def_id::LocalDefId;
-use rustc_middle::ty::{TyCtxt, TypeckResults};
+use rustc_middle::ty::{Ty, TyCtxt, TyKind, TypeckResults};
 use rustc_mir_build_verus::verus::BodyErasure;
 use rustc_span::SpanData;
 use rustc_span::def_id::DefId;
@@ -13,7 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::Sender;
-use vir::ast::{CrateId, Mode, Path, Pattern, VirErr};
+use vir::ast::{CrateId, Dt, Mode, Path, Pattern, Typ, TypX, VirErr};
 use vir::messages::{AstId, WarningAllow};
 
 pub struct ErasureInfo {
@@ -62,6 +63,10 @@ pub struct ContextX<'tcx> {
     pub(crate) crate_name: CrateId,
     pub(crate) name_def_id_map: Rc<RefCell<HashMap<Path, DefId>>>,
     pub(crate) next_read_kind_id: AtomicU64,
+    // Per-compilation lookup caches.
+    externals_available_cache: RefCell<HashMap<DefId, bool>>,
+    get_field_many_variants_cache: RefCell<HashMap<DefId, bool>>,
+    mid_ty_cache: RefCell<FxHashMap<(Ty<'tcx>, DefId), Typ>>,
 }
 
 /// The context in which a given header node might be interpretted
@@ -134,7 +139,40 @@ impl<'tcx> ContextX<'tcx> {
             crate_name,
             name_def_id_map: Rc::new(RefCell::new(HashMap::new())),
             next_read_kind_id: AtomicU64::new(0),
+            externals_available_cache: RefCell::new(HashMap::new()),
+            get_field_many_variants_cache: RefCell::new(HashMap::new()),
+            mid_ty_cache: RefCell::new(FxHashMap::default()),
         }
+    }
+
+    /// Caches successful attribute parsing that emits no diagnostics.
+    pub(crate) fn is_get_field_many_variants(&self, f: DefId) -> Result<bool, VirErr> {
+        if let Some(b) = self.get_field_many_variants_cache.borrow().get(&f) {
+            return Ok(*b);
+        }
+        // Verus attributes are `Unparsed` where get_all_attrs is acceptable per its
+        // deprecation message.
+        #[allow(deprecated)]
+        let f_attrs = self.tcx.get_all_attrs(f);
+        let mut diagnostics = self.diagnostics.borrow_mut();
+        let n_diagnostics = diagnostics.len();
+        let b = crate::attributes::is_get_field_many_variants(f_attrs, Some(&mut *diagnostics))?;
+        if diagnostics.len() == n_diagnostics {
+            self.get_field_many_variants_cache.borrow_mut().insert(f, b);
+        }
+        Ok(b)
+    }
+
+    /// Caches external-declaration availability by definition.
+    pub(crate) fn externals_available_without_declaration(&self, def_id: DefId) -> bool {
+        if let Some(b) = self.externals_available_cache.borrow().get(&def_id) {
+            return *b;
+        }
+        let b = crate::attributes::get_externals_available_without_declaration_walk_parents(
+            self.tcx, def_id,
+        );
+        self.externals_available_cache.borrow_mut().insert(def_id, b);
+        b
     }
 
     pub(crate) fn get_verus_item(&self, def_id: DefId) -> Option<&crate::verus_items::VerusItem> {
@@ -192,15 +230,61 @@ impl<'tcx> ContextX<'tcx> {
         ty: &rustc_middle::ty::Ty<'tcx>,
         assume_specification_opaque_type_map: Option<&HashMap<Path, Path>>,
     ) -> Result<vir::ast::Typ, VirErr> {
-        crate::rust_to_vir_base::mid_ty_to_vir(
-            self.tcx,
-            &self.verus_items,
-            self.path_def_id_ref(),
+        self.mid_ty_to_vir_cached(
             param_env_src,
             span,
             ty,
             assume_specification_opaque_type_map,
+            true,
         )
+    }
+
+    /// Caches successful conversions without opaque type maps.
+    /// Cache hits replay datatype path registration; errors retain their call-site span.
+    pub(crate) fn mid_ty_to_vir_cached(
+        &self,
+        param_env_src: DefId,
+        span: rustc_span::Span,
+        ty: &rustc_middle::ty::Ty<'tcx>,
+        assume_specification_opaque_type_map: Option<&HashMap<Path, Path>>,
+        record_path: bool,
+    ) -> Result<vir::ast::Typ, VirErr> {
+        if assume_specification_opaque_type_map.is_some() {
+            return crate::rust_to_vir_base::mid_ty_to_vir(
+                self.tcx,
+                &self.verus_items,
+                if record_path { self.path_def_id_ref() } else { None },
+                param_env_src,
+                span,
+                ty,
+                assume_specification_opaque_type_map,
+            );
+        }
+        let key = (*ty, param_env_src);
+        let cached = self.mid_ty_cache.borrow().get(&key).cloned();
+        if let Some(typ) = cached {
+            if record_path {
+                if let (TyKind::Adt(adt_def, _), TypX::Datatype(Dt::Path(path), _, _)) =
+                    (ty.kind(), &*typ)
+                {
+                    if let Some(mut map) = self.path_def_id_ref() {
+                        map.insert(path.clone(), adt_def.did());
+                    }
+                }
+            }
+            return Ok(typ);
+        }
+        let typ = crate::rust_to_vir_base::mid_ty_to_vir(
+            self.tcx,
+            &self.verus_items,
+            if record_path { self.path_def_id_ref() } else { None },
+            param_env_src,
+            span,
+            ty,
+            None,
+        )?;
+        self.mid_ty_cache.borrow_mut().insert(key, typ.clone());
+        Ok(typ)
     }
 
     pub(crate) fn unique_read_kind_id(&self) -> u64 {
