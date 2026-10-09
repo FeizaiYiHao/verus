@@ -287,10 +287,23 @@ impl SpanContextX {
         self.next_span_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
-    pub(crate) fn to_air_span(&self, span: Span) -> vir::messages::Span {
-        let raw_span = to_raw_span(span);
+    pub(crate) fn peek_next_span_id(&self) -> u64 {
+        self.next_span_id.load(std::sync::atomic::Ordering::SeqCst)
+    }
 
+    pub(crate) fn advance_span_id(&self, n: u64) {
+        self.next_span_id.fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Converts a rustc span with a fresh VIR ID.
+    pub(crate) fn to_air_span(&self, span: Span) -> vir::messages::Span {
         let id = self.get_next_span_id();
+        self.to_air_span_with_id(span, id)
+    }
+
+    /// Converts a rustc span with the supplied VIR ID.
+    pub(crate) fn to_air_span_with_id(&self, span: Span, id: u64) -> vir::messages::Span {
+        let raw_span = to_raw_span(span);
         let data = self.pack_span(span);
         let as_string = format!("{:?}", span);
         vir::messages::Span { raw_span, id, data, as_string }
@@ -307,7 +320,9 @@ impl SpanContextX {
             self.unpack_span(&air_span.data, source_map)
         }
     }
+}
 
+impl<'tcx> crate::context::ContextX<'tcx> {
     pub(crate) fn spanned_new<X>(&self, span: Span, x: X) -> Arc<Spanned<X>> {
         Spanned::new(self.to_air_span(span), x)
     }
@@ -315,9 +330,7 @@ impl SpanContextX {
     pub(crate) fn spanned_typed_new<X>(&self, span: Span, typ: &Typ, x: X) -> Arc<SpannedTyped<X>> {
         SpannedTyped::new(&self.to_air_span(span), typ, x)
     }
-}
 
-impl<'tcx> crate::context::ContextX<'tcx> {
     /// Clones generated statements with fresh IDs, while preserving diagnostic locations.
     pub(crate) fn clone_stmts_with_fresh_ids(&self, stmts: &[vir::ast::Stmt]) -> vir::ast::Stmts {
         Arc::new(
@@ -326,23 +339,16 @@ impl<'tcx> crate::context::ContextX<'tcx> {
                 .map(|stmt| {
                     vir::ast_visitor::map_stmt_spans(stmt, &mut |span| {
                         let mut span = span.clone();
-                        span.id = self.spans.get_next_span_id();
-                        self.erasure_info.borrow_mut().local_hir_vir_ids.push((None, span.id));
-                        self.erasure_info.borrow_mut().binder_hir_vir_ids.push((None, span.id));
-                        self.erasure_info.borrow_mut().ctor_hir_vir_ids.push((None, span.id));
+                        span.id = self.next_span_id();
+                        let mut erasure_info = self.erasure_info.borrow_mut();
+                        erasure_info.local_hir_vir_ids.push((None, span.id));
+                        erasure_info.binder_hir_vir_ids.push((None, span.id));
+                        erasure_info.ctor_hir_vir_ids.push((None, span.id));
                         span
                     })
                 })
                 .collect(),
         )
-    }
-
-    pub(crate) fn spanned_new<X>(&self, span: Span, x: X) -> Arc<Spanned<X>> {
-        self.spans.spanned_new(span, x)
-    }
-
-    pub(crate) fn spanned_typed_new<X>(&self, span: Span, typ: &Typ, x: X) -> Arc<SpannedTyped<X>> {
-        self.spans.spanned_typed_new(span, typ, x)
     }
 
     pub(crate) fn spanned_typed_new_vir<X>(
@@ -352,7 +358,7 @@ impl<'tcx> crate::context::ContextX<'tcx> {
         x: X,
     ) -> Arc<SpannedTyped<X>> {
         let mut span = span.clone();
-        span.id = self.spans.get_next_span_id();
+        span.id = self.next_span_id();
         SpannedTyped::new(&span, typ, x)
     }
 }

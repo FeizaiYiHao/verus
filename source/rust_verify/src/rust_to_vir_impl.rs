@@ -139,7 +139,7 @@ fn trait_impl_to_vir<'tcx>(
         span,
         hir_generics,
         impl_def_id,
-        Some(&mut *ctxt.diagnostics.borrow_mut()),
+        Some(&mut *ctxt.diagnostics.lock().unwrap()),
     )?;
     let impl_path = ctxt.def_id_to_vir_path(impl_def_id);
     let trait_impl = vir::ast::TraitImplX {
@@ -178,7 +178,7 @@ fn translate_assoc_type<'tcx>(
         impll_generics_span,
         impll_generics,
         impl_def_id,
-        Some(&mut *ctxt.diagnostics.borrow_mut()),
+        Some(&mut *ctxt.diagnostics.lock().unwrap()),
     )?;
 
     let ai = ctxt.tcx.associated_item(impl_item_id);
@@ -344,7 +344,7 @@ pub(crate) fn translate_impl<'tcx>(
             let trait_attrs = ctxt.tcx.get_all_attrs(trait_def_id);
             let sealed = crate::attributes::is_sealed(
                 trait_attrs,
-                Some(&mut *ctxt.diagnostics.borrow_mut()),
+                Some(&mut *ctxt.diagnostics.lock().unwrap()),
             )
             .map_err(|e| vec![e])?;
 

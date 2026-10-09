@@ -1735,7 +1735,7 @@ pub(crate) fn check_item_fn<'tcx>(
             cg.span,
             Some(cg),
             impl_def_id,
-            Some(&mut *ctxt.diagnostics.borrow_mut()),
+            Some(&mut *ctxt.diagnostics.lock().unwrap()),
         )?)
     } else {
         None
@@ -1784,7 +1784,7 @@ pub(crate) fn check_item_fn<'tcx>(
         generics.span,
         Some(generics),
         id,
-        Some(&mut *ctxt.diagnostics.borrow_mut()),
+        Some(&mut *ctxt.diagnostics.lock().unwrap()),
     )?;
 
     let params: Vec<(VarIdent, Span, Option<HirId>, bool)> = match body_id {
@@ -3255,7 +3255,7 @@ pub(crate) fn check_item_const_or_static<'tcx>(
             cg.span,
             Some(cg),
             impl_def_id,
-            Some(&mut *ctxt.diagnostics.borrow_mut()),
+            Some(&mut *ctxt.diagnostics.lock().unwrap()),
         )?
     } else {
         (Arc::new(vec![]), Arc::new(vec![]))
@@ -3456,7 +3456,7 @@ pub(crate) fn check_foreign_item_fn<'tcx>(
         generics.span,
         Some(generics),
         id,
-        Some(&mut *ctxt.diagnostics.borrow_mut()),
+        Some(&mut *ctxt.diagnostics.lock().unwrap()),
     )?;
     let mut vir_params: Vec<vir::ast::Param> = Vec::new();
 

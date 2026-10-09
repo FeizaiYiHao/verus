@@ -1,7 +1,7 @@
 use crate::boundary_suggestions::build_boundary_suggestion;
 use crate::commands::{OpGenerator, OpKind, QueryOp, Style};
 use crate::config::{Args, CargoVerusArgs, ShowTriggers};
-use crate::context::{ContextX, ErasureInfo};
+use crate::context::ContextX;
 use crate::debugger::Debugger;
 use crate::external::VerifOrExternal;
 use crate::externs::VerusExterns;
@@ -2676,25 +2676,9 @@ impl Verifier {
             return Err((vec![err], vec![]));
         }
 
-        let erasure_info = ErasureInfo {
-            local_hir_vir_ids: vec![],
-            binder_hir_vir_ids: vec![],
-            ctor_hir_vir_ids: vec![],
-            resolved_calls: vec![],
-            resolved_pats: vec![],
-            direct_var_modes: vec![],
-            ignored_functions: vec![],
-            bodies: vec![],
-            shadow_check: vec![],
-            extra_erase_ast_ids: vec![],
-            local_invariant_bodies: vec![],
-        };
-        let erasure_info = std::rc::Rc::new(std::cell::RefCell::new(erasure_info));
-
         let ctxtx = ContextX::new(
             self.args.clone(),
             tcx,
-            erasure_info,
             spans.clone(),
             verus_items,
             self.args.vstd == crate::config::Vstd::NoVstd,
@@ -2703,9 +2687,9 @@ impl Verifier {
 
         let ctxt_diagnostics = ctxtx.diagnostics.clone();
         let map_err_diagnostics =
-            |err: VirErr| (vec![err], ctxt_diagnostics.borrow_mut().drain(..).collect());
+            |err: VirErr| (vec![err], ctxt_diagnostics.lock().unwrap().drain(..).collect());
         let map_errs_diagnostics =
-            |errs: Vec<VirErr>| (errs, ctxt_diagnostics.borrow_mut().drain(..).collect());
+            |errs: Vec<VirErr>| (errs, ctxt_diagnostics.lock().unwrap().drain(..).collect());
 
         let crate_items = crate::external::get_crate_items(&ctxtx).map_err(map_errs_diagnostics)?;
 
@@ -2829,7 +2813,7 @@ impl Verifier {
         let check_crate_result = vir::well_formed::check_crate(
             &vir_crate,
             &unpruned_crate,
-            &mut *ctxt.diagnostics.borrow_mut(),
+            &mut *ctxt.diagnostics.lock().unwrap(),
             &mut self.deferred_errors,
             &warning_ctx,
             self.args.no_verify,
@@ -2868,10 +2852,10 @@ impl Verifier {
             }
         }
         if all_wf_errors.len() > 0 {
-            return Err((all_wf_errors, ctxt_diagnostics.borrow_mut().drain(..).collect()));
+            return Err((all_wf_errors, ctxt_diagnostics.lock().unwrap().drain(..).collect()));
         }
 
-        for diag in ctxt.diagnostics.borrow_mut().drain(..) {
+        for diag in ctxt.diagnostics.lock().unwrap().drain(..) {
             match diag {
                 vir::ast::VirErrAs::Warning(err) => {
                     diagnostics.report_as(&err.to_any(), MessageLevel::Warning)

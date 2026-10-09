@@ -722,14 +722,14 @@ fn verus_item_to_vir<'tcx, 'a>(
                 SpecItem::InvMaskNone => {
                     record_spec_fn_pure_args_only(bctx, expr);
                     mk_expr(ExprX::InvMask(MaskSpec::InvariantOpens(
-                        bctx.ctxt.spans.to_air_span(expr.span.clone()),
+                        bctx.ctxt.to_air_span(expr.span.clone()),
                         Default::default(),
                     )))
                 }
                 SpecItem::InvMaskAny => {
                     record_spec_fn_pure_args_only(bctx, expr);
                     mk_expr(ExprX::InvMask(MaskSpec::InvariantOpensExcept(
-                        bctx.ctxt.spans.to_air_span(expr.span.clone()),
+                        bctx.ctxt.to_air_span(expr.span.clone()),
                         Default::default(),
                     )))
                 }
@@ -748,7 +748,7 @@ fn verus_item_to_vir<'tcx, 'a>(
                         vir_args.push(vir_arg);
                     }
 
-                    let span = bctx.ctxt.spans.to_air_span(expr.span.clone());
+                    let span = bctx.ctxt.to_air_span(expr.span.clone());
                     let args = Arc::new(vir_args);
                     mk_expr(ExprX::InvMask(match spec_item {
                         SpecItem::InvMaskList => MaskSpec::InvariantOpens(span, args),

@@ -158,11 +158,11 @@ pub(crate) fn def_id_to_vir_path_option<'tcx>(
 ) -> Option<Path> {
     if let Some(verus_items) = verus_items {
         // Friendly-path registration is idempotent within one compilation.
-        if let Some(path) = verus_items.vir_path_cache.lock().unwrap().get(&def_id) {
+        if let Some(path) = verus_items.vir_path_cache.read().unwrap().get(&def_id) {
             return path.clone();
         }
         let path = def_id_to_vir_path_option_uncached(tcx, Some(verus_items), def_id);
-        verus_items.vir_path_cache.lock().unwrap().insert(def_id, path.clone());
+        verus_items.vir_path_cache.write().unwrap().insert(def_id, path.clone());
         path
     } else {
         def_id_to_vir_path_option_uncached(tcx, None, def_id)
