@@ -158,19 +158,90 @@ fn typ_to_reached_type(typ: &Typ) -> ReachedType {
     }
 }
 
-fn record_datatype(ctxt: &Ctxt, state: &mut State, typ: &Typ, dt: &Dt) {
+// A state mutation recorded during read-only function traversal.
+#[derive(Debug)]
+enum Reach {
+    Function(Fun),
+    FunctionViaReveal(Fun),
+    Type(ReachedType),
+    BoundTrait(TraitName),
+    OpaqueType(OpaqueTyName),
+    AssocTypeDecl((Path, Ident)),
+    FnDefType(Fun),
+    DynTrait(Path),
+    MonoTyp(MonoTyp),
+    ResolveTyp(Typ),
+    SetOps,
+    AtomicUpdateOps,
+    SeqFuns,
+    UsesByteStr,
+    UsesIeeeFloat,
+    MethodsOfFunction(Fun),
+}
+
+struct Recorder {
+    collect_monotyps: bool,
+    collect_resolve_typs: bool,
+    events: Vec<Reach>,
+    // Deduplicates monotone insertions within one recording.
+    dedup: Option<(HashSet<Fun>, HashSet<ReachedType>, HashSet<MonoTyp>)>,
+}
+
+impl Recorder {
+    fn new(collect_monotyps: bool, collect_resolve_typs: bool, dedup: bool) -> Self {
+        Recorder {
+            collect_monotyps,
+            collect_resolve_typs,
+            events: Vec::new(),
+            dedup: if dedup { Some(Default::default()) } else { None },
+        }
+    }
+
+    fn function(&mut self, f: &Fun) {
+        if let Some((fs, _, _)) = &mut self.dedup {
+            if !fs.insert(f.clone()) {
+                return;
+            }
+        }
+        self.events.push(Reach::Function(f.clone()));
+    }
+
+    fn typ(&mut self, t: ReachedType) {
+        if let Some((_, ts, _)) = &mut self.dedup {
+            if !ts.insert(t.clone()) {
+                return;
+            }
+        }
+        self.events.push(Reach::Type(t));
+    }
+
+    fn mono(&mut self, m: MonoTyp) {
+        if let Some((_, _, ms)) = &mut self.dedup {
+            if !ms.insert(m.clone()) {
+                return;
+            }
+        }
+        self.events.push(Reach::MonoTyp(m));
+    }
+
+    fn push(&mut self, r: Reach) {
+        self.events.push(r);
+    }
+}
+
+fn record_datatype(ctxt: &Ctxt, rec: &mut Recorder, typ: &Typ, dt: &Dt) {
     let module = if let Some(module) = &ctxt.module {
         module
     } else {
         return;
     };
-    if let Some(mono_abstract_datatypes) = &mut state.mono_abstract_datatypes {
+    if rec.collect_monotyps {
         if let Some(d) = ctxt.datatype_map.get(dt) {
             let is_vis = is_visible_to(&d.x.visibility, module);
             let is_transparent = is_datatype_transparent(module, &d);
             if is_vis && !is_transparent {
                 if let Some(monotyp) = crate::poly::typ_as_mono(typ) {
-                    mono_abstract_datatypes.insert(monotyp);
+                    rec.mono(monotyp);
                 }
             }
         }
@@ -292,7 +363,7 @@ fn reach_type(ctxt: &Ctxt, state: &mut State, typ: &ReachedType) {
 }
 
 // shallowly reach typ (the AST visitor takes care of recursing through typ)
-fn reach_typ(ctxt: &Ctxt, state: &mut State, typ: &Typ) {
+fn record_typ(_ctxt: &Ctxt, rec: &mut Recorder, typ: &Typ) {
     match &**typ {
         TypX::Bool
         | TypX::Int(_)
@@ -302,15 +373,15 @@ fn reach_typ(ctxt: &Ctxt, state: &mut State, typ: &Typ) {
         | TypX::Datatype(..)
         | TypX::Primitive(..)
         | TypX::PointeeMetadata(_) => {
-            reach_type(ctxt, state, &typ_to_reached_type(typ));
+            rec.typ(typ_to_reached_type(typ));
         }
         TypX::Dyn(trait_path, _, _) => {
-            reach_type(ctxt, state, &typ_to_reached_type(typ));
-            reach_bound_trait(ctxt, state, trait_path);
-            state.dyn_traits.insert(trait_path.clone());
+            rec.typ(typ_to_reached_type(typ));
+            rec.push(Reach::BoundTrait(trait_path.clone()));
+            rec.push(Reach::DynTrait(trait_path.clone()));
         }
         TypX::Opaque { def_path, .. } => {
-            reach_opaque_type(ctxt, state, def_path);
+            rec.push(Reach::OpaqueType(def_path.clone()));
         }
         TypX::AnonymousClosure(..) => {}
         TypX::Air(_) => {
@@ -319,18 +390,18 @@ fn reach_typ(ctxt: &Ctxt, state: &mut State, typ: &Typ) {
         TypX::Decorate(_, _, _t) | TypX::Boxed(_t) => {} // let visitor handle _t
         TypX::TypParam(_) | TypX::TypeId | TypX::ConstInt(_) | TypX::ConstBool(_) => {}
         TypX::Projection { trait_path, name, .. } => {
-            reach_assoc_type_decl(ctxt, state, &(trait_path.clone(), name.clone()));
+            rec.push(Reach::AssocTypeDecl((trait_path.clone(), name.clone())));
             // let visitor handle self_typ, trait_typ_args
         }
         TypX::FnDef(fun, typs, res_fun_opt) => {
-            state.fndef_types.insert(fun.clone());
-            reach_function(ctxt, state, fun);
+            rec.push(Reach::FnDefType(fun.clone()));
+            rec.function(fun);
             let typ_args: Vec<ReachedType> = typs.iter().map(typ_to_reached_type).collect();
-            reach_type(ctxt, state, &ReachedType::FnDef(fun.clone(), typ_args));
+            rec.typ(ReachedType::FnDef(fun.clone(), typ_args));
 
             if let Some(res_fun) = res_fun_opt {
-                state.fndef_types.insert(res_fun.clone());
-                reach_function(ctxt, state, res_fun);
+                rec.push(Reach::FnDefType(res_fun.clone()));
+                rec.function(res_fun);
             }
         }
         TypX::MutRef(_) => {}
@@ -382,14 +453,14 @@ fn reach_seq_funs(ctxt: &Ctxt, state: &mut State) {
     }
 }
 
-fn traverse_typ(ctxt: &Ctxt, state: &mut State, t: &Typ) {
-    reach_typ(ctxt, state, t);
+fn record_traverse_typ(ctxt: &Ctxt, rec: &mut Recorder, t: &Typ) {
+    record_typ(ctxt, rec, t);
     match &**t {
-        TypX::Datatype(path, _, _) => record_datatype(ctxt, state, t, path),
+        TypX::Datatype(path, _, _) => record_datatype(ctxt, rec, t, path),
         TypX::Primitive(_, _) => {
-            if let Some(mono_abstract_datatypes) = &mut state.mono_abstract_datatypes {
+            if rec.collect_monotyps {
                 if let Some(monotyp) = crate::poly::typ_as_mono(t) {
-                    mono_abstract_datatypes.insert(monotyp);
+                    rec.mono(monotyp);
                 }
             }
         }
@@ -403,9 +474,9 @@ fn traverse_typ(ctxt: &Ctxt, state: &mut State, t: &Typ) {
     }
 }
 
-fn traverse_generic_bounds(
+fn record_generic_bounds(
     ctxt: &Ctxt,
-    state: &mut State,
+    rec: &mut Recorder,
     bounds: &crate::ast::GenericBounds,
     traverse_typs: bool,
 ) {
@@ -417,23 +488,49 @@ fn traverse_generic_bounds(
                 continue;
             }
             crate::ast::GenericBoundX::TypEquality(path, _, name, _) => {
-                reach_assoc_type_decl(ctxt, state, &(path.clone(), name.clone()));
+                rec.push(Reach::AssocTypeDecl((path.clone(), name.clone())));
                 path
             }
             crate::ast::GenericBoundX::ConstTyp(_, _) => {
                 continue;
             }
         };
-        reach_bound_trait(ctxt, state, path);
+        rec.push(Reach::BoundTrait(path.clone()));
     }
     if traverse_typs {
-        let ft = |state: &mut State, t: &Typ| -> Result<(), VirErr> {
-            traverse_typ(ctxt, state, t);
+        let ft = |rec: &mut Recorder, t: &Typ| -> Result<(), VirErr> {
+            record_traverse_typ(ctxt, rec, t);
             Ok(())
         };
-        crate::ast_visitor::walk_generic_bounds_visitor_env(bounds, state, &ft)
+        crate::ast_visitor::walk_generic_bounds_visitor_env(bounds, rec, &ft)
             .expect("traverse_typs");
     }
+}
+
+fn set_ops_funs() -> Vec<Fun> {
+    vec![
+        fn_iset_contains_name(),
+        fn_iset_empty_name(),
+        fn_iset_full_name(),
+        fn_iset_insert_name(),
+        fn_iset_remove_name(),
+        fn_iset_subset_of_name(),
+    ]
+}
+
+fn atomic_update_ops_funs() -> Vec<Fun> {
+    vec![
+        fn_au_req(),
+        fn_au_ens(),
+        fn_au_pred(),
+        fn_au_resolves(),
+        fn_au_input(),
+        fn_au_output(),
+        fn_au_inner_mask(),
+        fn_au_outer_mask(),
+        fn_pred_args(),
+        fn_branch_bool(),
+    ]
 }
 
 // set operations may be invoked for checking invariant masks,
@@ -465,8 +562,8 @@ fn reach_atomic_update_ops(state: &mut State, ctxt: &Ctxt) {
     reach_set_ops(state, &ctxt);
 }
 
-fn maybe_reach_set_ops_for_call(
-    state: &mut State,
+fn maybe_record_set_ops_for_call(
+    rec: &mut Recorder,
     callee_name: &Fun,
     ctxt: &Ctxt,
     function: &Function,
@@ -479,175 +576,348 @@ fn maybe_reach_set_ops_for_call(
         // If caller is `all`, we generate no set operations
         // If callee is `none`, we generate no set operations
         if !caller_mask.is_all() && !callee_mask.is_none() {
-            reach_set_ops(state, ctxt);
+            rec.push(Reach::SetOps);
         }
     }
 }
 
-fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
-    loop {
-        let ft = |state: &mut State, t: &Typ| -> Result<(), VirErr> {
-            traverse_typ(ctxt, state, t);
-            Ok(())
-        };
-        if let Some(f) = state.worklist_functions.pop() {
-            let function = &ctxt.function_map[&f];
-            if ctxt.module.is_none() {
-                if let Some(autospec) = &function.x.attrs.autospec {
-                    reach_function(ctxt, state, autospec);
-                }
-            }
-            if let FunctionKind::TraitMethodImpl { method, .. } = &function.x.kind {
-                reach_function(ctxt, state, method);
-            }
-            if let FunctionKind::ForeignTraitMethodImpl { method, .. } = &function.x.kind {
-                reach_function(ctxt, state, method);
-            }
-            if let Some(f_trigs) = ctxt.fun_to_trigger_broadcasts.get(&f) {
-                for f_trig in f_trigs {
-                    reach_function_via_reveal(ctxt, state, f_trig);
-                }
-            }
-            if ctxt.assert_by_compute && crate::interpreter::is_sequence_fn(&f).is_some() {
-                reach_seq_funs(ctxt, state);
-            }
+// Records the reachability effects of one function.
+fn record_function(ctxt: &Ctxt, rec: &mut Recorder, f: &Fun, function: &Function) {
+    if ctxt.module.is_none() {
+        if let Some(autospec) = &function.x.attrs.autospec {
+            rec.function(autospec);
+        }
+    }
+    if let FunctionKind::TraitMethodImpl { method, .. } = &function.x.kind {
+        rec.function(method);
+    }
+    if let FunctionKind::ForeignTraitMethodImpl { method, .. } = &function.x.kind {
+        rec.function(method);
+    }
+    if let Some(f_trigs) = ctxt.fun_to_trigger_broadcasts.get(f) {
+        for f_trig in f_trigs {
+            rec.push(Reach::FunctionViaReveal(f_trig.clone()));
+        }
+    }
+    if ctxt.assert_by_compute && crate::interpreter::is_sequence_fn(f).is_some() {
+        rec.push(Reach::SeqFuns);
+    }
 
-            if function.x.atomic_update.is_some() {
-                reach_atomic_update_ops(state, ctxt);
-            }
+    if function.x.atomic_update.is_some() {
+        rec.push(Reach::AtomicUpdateOps);
+    }
 
-            // Types in typ_bounds are visited below.
-            traverse_generic_bounds(ctxt, state, &function.x.typ_bounds, false);
-            let fe = |state: &mut State, e: &Expr| -> Result<(), VirErr> {
-                // note: the visitor automatically reaches e.typ
-                match &e.x {
-                    ExprX::ConstVar(name, _) => {
-                        assert!(ctxt.module.is_none());
-                        reach_function(ctxt, state, name);
-                    }
-                    ExprX::StaticVar(name) => {
-                        reach_function(ctxt, state, name);
-                    }
-                    ExprX::Call {
-                        target: CallTarget::Fun(kind, name, _, _impl_paths, attrs),
-                        args: _,
-                        post_args: _,
-                        body: _,
-                    } => {
-                        // REVIEW: maybe we can be more precise if we use impl_paths here
-                        assert!(ctxt.module.is_none() || attrs.autospec == AutospecUsage::Final);
-                        reach_function(ctxt, state, name);
-                        if let crate::ast::CallTargetKind::DynamicResolved { resolved, .. } = kind {
-                            reach_function(ctxt, state, resolved);
-                            maybe_reach_set_ops_for_call(state, resolved, &ctxt, function);
-                        }
-                        maybe_reach_set_ops_for_call(state, name, &ctxt, function);
-                    }
-                    ExprX::OpenInvariant(_, _, _, atomicity) => {
-                        // SST -> AIR conversion for OpenInvariant may introduce
-                        // references to these particular names.
-                        reach_function(ctxt, state, &fn_inv_name(*atomicity));
-                        reach_function(ctxt, state, &fn_namespace_name(*atomicity));
-                        reach_set_ops(state, ctxt);
-                    }
-                    ExprX::TryOpenAtomicUpdate(..) | ExprX::Atomically(..) => {
-                        reach_atomic_update_ops(state, &ctxt);
-                    }
-                    ExprX::Fuel(fueled_f, _, is_broadcast_use) if *is_broadcast_use => {
-                        reach_function(ctxt, state, fueled_f);
-                    }
-                    ExprX::AssertAssumeUserDefinedTypeInvariant { is_assume: _, expr: _, fun } => {
-                        reach_function(ctxt, state, fun);
-                    }
-                    ExprX::ArrayLiteral(..) if ctxt.assert_by_compute => {
-                        reach_seq_funs(ctxt, state);
-                    }
-                    ExprX::UnaryOpr(UnaryOpr::HasResolved(typ), _) => {
-                        if let Some(res) = &mut state.resolve_typs {
-                            res.visit_type(typ);
-                        }
-                    }
-                    ExprX::Unary(UnaryOp::Length(ArrayKind::Slice), _) => {
-                        reach_function(ctxt, state, &fn_slice_len());
-                    }
-                    ExprX::Binary(BinaryOp::Index(ArrayKind::Slice, bounds_check), _, _) => {
-                        reach_function(ctxt, state, &fn_slice_index());
-                        if *bounds_check != BoundsCheck::Allow {
-                            reach_function(ctxt, state, &fn_slice_len());
-                        }
-                    }
-                    ExprX::Binary(op, ..) | ExprX::Assign { op: Some(op), .. } => match op {
-                        BinaryOp::Arith(crate::ast::ArithOp::TruncatingDiv(..)) => {
-                            reach_function(ctxt, state, &fn_truncating_div());
-                        }
-                        BinaryOp::Arith(crate::ast::ArithOp::TruncatingMod(..)) => {
-                            reach_function(ctxt, state, &fn_truncating_mod());
-                        }
-                        BinaryOp::UninterpretedFloat(op) => {
-                            reach_function(ctxt, state, &crate::def::fn_fp_postcondition_name(*op));
-                        }
-                        BinaryOp::IeeeFloat(_) => {
-                            state.uses_ieee_float = true;
-                        }
-                        _ => {}
-                    },
-                    ExprX::Const(crate::ast::Constant::ByteStr(_)) => {
-                        state.uses_bytestr = true;
-                    }
-                    ExprX::RevealByteString(_) => {
-                        state.uses_bytestr = true;
-                    }
-                    ExprX::RevealString(_) => {
-                        // Holds a raw string, not a typed expr, so StrSlice isn't otherwise reached
-                        let strslice_typ = Arc::new(TypX::Primitive(
-                            crate::ast::Primitive::StrSlice,
-                            Arc::new(vec![]),
-                        ));
-                        traverse_typ(ctxt, state, &strslice_typ);
-                    }
-                    ExprX::Unary(UnaryOp::IeeeFloat(_), _) => {
-                        state.uses_ieee_float = true;
-                    }
-                    _ => {}
+    // Types in typ_bounds are visited below.
+    record_generic_bounds(ctxt, rec, &function.x.typ_bounds, false);
+    let fe = |rec: &mut Recorder, e: &Expr| -> Result<(), VirErr> {
+        // note: the visitor automatically reaches e.typ
+        match &e.x {
+            ExprX::ConstVar(name, _) => {
+                assert!(ctxt.module.is_none());
+                rec.function(name);
+            }
+            ExprX::StaticVar(name) => {
+                rec.function(name);
+            }
+            ExprX::Call {
+                target: CallTarget::Fun(kind, name, _, _impl_paths, attrs),
+                args: _,
+                post_args: _,
+                body: _,
+            } => {
+                // REVIEW: maybe we can be more precise if we use impl_paths here
+                assert!(ctxt.module.is_none() || attrs.autospec == AutospecUsage::Final);
+                rec.function(name);
+                if let crate::ast::CallTargetKind::DynamicResolved { resolved, .. } = kind {
+                    rec.function(resolved);
+                    maybe_record_set_ops_for_call(rec, resolved, &ctxt, function);
                 }
-                Ok(())
-            };
-            let fpl = |state: &mut State, p: &Place| -> Result<(), VirErr> {
-                match &p.x {
-                    PlaceX::Index(_, _, ArrayKind::Array, _) => {
-                        reach_function(ctxt, state, &fn_array_update());
-                    }
-                    PlaceX::Index(_, _, ArrayKind::Slice, bounds_check) => {
-                        reach_function(ctxt, state, &fn_slice_index());
-                        reach_function(ctxt, state, &fn_slice_update());
-                        if *bounds_check != BoundsCheck::Allow {
-                            reach_function(ctxt, state, &fn_slice_len());
-                        }
-                    }
-                    _ => {}
+                maybe_record_set_ops_for_call(rec, name, &ctxt, function);
+            }
+            ExprX::OpenInvariant(_, _, _, atomicity) => {
+                // SST -> AIR conversion for OpenInvariant may introduce
+                // references to these particular names.
+                rec.function(&fn_inv_name(*atomicity));
+                rec.function(&fn_namespace_name(*atomicity));
+                rec.push(Reach::SetOps);
+            }
+            ExprX::TryOpenAtomicUpdate(..) | ExprX::Atomically(..) => {
+                rec.push(Reach::AtomicUpdateOps);
+            }
+            ExprX::Fuel(fueled_f, _, is_broadcast_use) if *is_broadcast_use => {
+                rec.function(fueled_f);
+            }
+            ExprX::AssertAssumeUserDefinedTypeInvariant { is_assume: _, expr: _, fun } => {
+                rec.function(fun);
+            }
+            ExprX::ArrayLiteral(..) if ctxt.assert_by_compute => {
+                rec.push(Reach::SeqFuns);
+            }
+            ExprX::UnaryOpr(UnaryOpr::HasResolved(typ), _) => {
+                if rec.collect_resolve_typs {
+                    rec.push(Reach::ResolveTyp(typ.clone()));
                 }
-                Ok(())
-            };
-            let fp = |state: &mut State, pat: &Pattern| -> Result<(), VirErr> {
-                match &pat.x {
-                    PatternX::Slice(..) => match array_kind_of_typ(&pat.typ).0 {
-                        ArrayKind::Array => {
-                            reach_function(ctxt, state, &fn_array_update());
-                        }
-                        ArrayKind::Slice => {
-                            reach_function(ctxt, state, &fn_slice_index());
-                            reach_function(ctxt, state, &fn_slice_update());
-                            reach_function(ctxt, state, &fn_slice_len());
-                        }
-                    },
-                    _ => {}
+            }
+            ExprX::Unary(UnaryOp::Length(ArrayKind::Slice), _) => {
+                rec.function(&fn_slice_len());
+            }
+            ExprX::Binary(BinaryOp::Index(ArrayKind::Slice, bounds_check), _, _) => {
+                rec.function(&fn_slice_index());
+                if *bounds_check != BoundsCheck::Allow {
+                    rec.function(&fn_slice_len());
                 }
-                Ok(())
-            };
-            crate::ast_visitor::walk_function_visitor_env(&function, state, &fe, &fp, &ft, &fpl)
-                .unwrap();
+            }
+            ExprX::Binary(op, ..) | ExprX::Assign { op: Some(op), .. } => match op {
+                BinaryOp::Arith(crate::ast::ArithOp::TruncatingDiv(..)) => {
+                    rec.function(&fn_truncating_div());
+                }
+                BinaryOp::Arith(crate::ast::ArithOp::TruncatingMod(..)) => {
+                    rec.function(&fn_truncating_mod());
+                }
+                BinaryOp::UninterpretedFloat(op) => {
+                    rec.function(&crate::def::fn_fp_postcondition_name(*op));
+                }
+                BinaryOp::IeeeFloat(_) => {
+                    rec.push(Reach::UsesIeeeFloat);
+                }
+                _ => {}
+            },
+            ExprX::Const(crate::ast::Constant::ByteStr(_)) => {
+                rec.push(Reach::UsesByteStr);
+            }
+            ExprX::RevealByteString(_) => {
+                rec.push(Reach::UsesByteStr);
+            }
+            ExprX::RevealString(_) => {
+                let strslice_typ =
+                    Arc::new(TypX::Primitive(crate::ast::Primitive::StrSlice, Arc::new(vec![])));
+                record_traverse_typ(ctxt, rec, &strslice_typ);
+            }
+            ExprX::Unary(UnaryOp::IeeeFloat(_), _) => {
+                rec.push(Reach::UsesIeeeFloat);
+            }
+            _ => {}
+        }
+        Ok(())
+    };
+    let ft = |rec: &mut Recorder, t: &Typ| -> Result<(), VirErr> {
+        record_traverse_typ(ctxt, rec, t);
+        Ok(())
+    };
+    let fpl = |rec: &mut Recorder, p: &Place| -> Result<(), VirErr> {
+        match &p.x {
+            PlaceX::Index(_, _, ArrayKind::Array, _) => {
+                rec.function(&fn_array_update());
+            }
+            PlaceX::Index(_, _, ArrayKind::Slice, bounds_check) => {
+                rec.function(&fn_slice_index());
+                rec.function(&fn_slice_update());
+                if *bounds_check != BoundsCheck::Allow {
+                    rec.function(&fn_slice_len());
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    };
+    let fp = |rec: &mut Recorder, pat: &Pattern| -> Result<(), VirErr> {
+        match &pat.x {
+            PatternX::Slice(..) => match array_kind_of_typ(&pat.typ).0 {
+                ArrayKind::Array => {
+                    rec.function(&fn_array_update());
+                }
+                ArrayKind::Slice => {
+                    rec.function(&fn_slice_index());
+                    rec.function(&fn_slice_update());
+                    rec.function(&fn_slice_len());
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    };
+    crate::ast_visitor::walk_function_visitor_env(&function, rec, &fe, &fp, &ft, &fpl).unwrap();
+    rec.push(Reach::MethodsOfFunction(f.clone()));
+    if function.x.attrs.is_async {
+        record_typ(ctxt, rec, &function.x.inner_ret.x.typ);
+    }
+}
+
+fn record_one_function(
+    ctxt: &Ctxt,
+    collect_monotyps: bool,
+    collect_resolve_typs: bool,
+    f: &Fun,
+) -> Vec<Reach> {
+    let mut rec = Recorder::new(collect_monotyps, collect_resolve_typs, true);
+    record_function(ctxt, &mut rec, f, &ctxt.function_map[f]);
+    rec.events
+}
+
+// Applies one recorded reachability effect.
+fn apply_reach(ctxt: &Ctxt, state: &mut State, ev: Reach) {
+    match ev {
+        Reach::Function(f) => reach_function(ctxt, state, &f),
+        Reach::FunctionViaReveal(f) => reach_function_via_reveal(ctxt, state, &f),
+        Reach::Type(t) => reach_type(ctxt, state, &t),
+        Reach::BoundTrait(p) => reach_bound_trait(ctxt, state, &p),
+        Reach::OpaqueType(p) => reach_opaque_type(ctxt, state, &p),
+        Reach::AssocTypeDecl(a) => reach_assoc_type_decl(ctxt, state, &a),
+        Reach::FnDefType(f) => {
+            state.fndef_types.insert(f);
+        }
+        Reach::DynTrait(p) => {
+            state.dyn_traits.insert(p);
+        }
+        Reach::MonoTyp(m) => {
+            if let Some(mono_abstract_datatypes) = &mut state.mono_abstract_datatypes {
+                mono_abstract_datatypes.insert(m);
+            }
+        }
+        Reach::ResolveTyp(t) => {
+            if let Some(res) = &mut state.resolve_typs {
+                res.visit_type(&t);
+            }
+        }
+        Reach::SetOps => reach_set_ops(state, ctxt),
+        Reach::AtomicUpdateOps => reach_atomic_update_ops(state, ctxt),
+        Reach::SeqFuns => reach_seq_funs(ctxt, state),
+        Reach::UsesByteStr => state.uses_bytestr = true,
+        Reach::UsesIeeeFloat => state.uses_ieee_float = true,
+        Reach::MethodsOfFunction(f) => {
             let methods = reached_methods_of_function(ctxt, state, &f);
             reach_methods(ctxt, state, methods);
+        }
+    }
+}
+
+fn apply_recorded(ctxt: &Ctxt, state: &mut State, rec: &mut Recorder) {
+    for ev in rec.events.drain(..) {
+        apply_reach(ctxt, state, ev);
+    }
+}
+
+// Avoids thread overhead for small frontiers.
+const PREFETCH_PAR_MIN: usize = 8;
+
+// Records call-graph frontiers in parallel. Recording may overapproximate future reachability;
+// only ordered replay mutates State.
+fn prefetch_functions(
+    ctxt: &Ctxt,
+    collect_monotyps: bool,
+    collect_resolve_typs: bool,
+    roots: &[Fun],
+    reached: &HashSet<Fun>,
+    recorded: &mut HashMap<Fun, Vec<Reach>>,
+) {
+    let mut queued: HashSet<Fun> = HashSet::new();
+    let mut frontier: Vec<Fun> = Vec::new();
+    for f in roots {
+        if !recorded.contains_key(f) && queued.insert(f.clone()) {
+            frontier.push(f.clone());
+        }
+    }
+    while !frontier.is_empty() {
+        let results: Vec<Vec<Reach>> = if frontier.len() >= PREFETCH_PAR_MIN {
+            crate::util::par_map_init(
+                &frontier,
+                || (),
+                |_, f| record_one_function(ctxt, collect_monotyps, collect_resolve_typs, f),
+            )
+        } else {
+            frontier
+                .iter()
+                .map(|f| record_one_function(ctxt, collect_monotyps, collect_resolve_typs, f))
+                .collect()
+        };
+        let mut next: Vec<Fun> = Vec::new();
+        let mut enqueue = |g: &Fun| {
+            if ctxt.function_map.contains_key(g)
+                && !reached.contains(g)
+                && !recorded.contains_key(g)
+                && !queued.contains(g)
+            {
+                queued.insert(g.clone());
+                next.push(g.clone());
+            }
+        };
+        for events in results.iter() {
+            for ev in events.iter() {
+                // Candidate functions that replay may add to the worklist.
+                match ev {
+                    Reach::Function(g) | Reach::FunctionViaReveal(g) => enqueue(g),
+                    Reach::MethodsOfFunction(g) => {
+                        if let Some(self_typs) = ctxt.method_self_typs.get(g) {
+                            for self_typ in self_typs {
+                                for m in &ctxt.method_map[&(self_typ.clone(), g.clone())] {
+                                    enqueue(m);
+                                }
+                            }
+                        }
+                    }
+                    Reach::SetOps | Reach::AtomicUpdateOps => {
+                        for g in set_ops_funs().iter().chain(atomic_update_ops_funs().iter()) {
+                            enqueue(g);
+                        }
+                    }
+                    Reach::SeqFuns => {
+                        for g in ctxt.assert_by_compute_seq_funs.iter() {
+                            enqueue(g);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (f, events) in frontier.iter().zip(results.into_iter()) {
+            recorded.insert(f.clone(), events);
+        }
+        frontier = next;
+    }
+}
+
+fn traverse_reachable(ctxt: &Ctxt, state: &mut State, parallel: bool) {
+    let collect_monotyps = state.mono_abstract_datatypes.is_some();
+    let collect_resolve_typs = state.resolve_typs.is_some();
+    // Recorded effects awaiting ordered replay.
+    let mut recorded: HashMap<Fun, Vec<Reach>> = HashMap::new();
+    let mut rec = Recorder::new(collect_monotyps, collect_resolve_typs, false);
+    loop {
+        let ft = |rec: &mut Recorder, t: &Typ| -> Result<(), VirErr> {
+            record_traverse_typ(ctxt, rec, t);
+            Ok(())
+        };
+        if parallel
+            && let Some(f) = state.worklist_functions.last()
+            && !recorded.contains_key(f)
+        {
+            let roots: Vec<Fun> = state
+                .worklist_functions
+                .iter()
+                .filter(|f| !recorded.contains_key(*f))
+                .cloned()
+                .collect();
+            prefetch_functions(
+                ctxt,
+                collect_monotyps,
+                collect_resolve_typs,
+                &roots,
+                &state.reached_functions,
+                &mut recorded,
+            );
+        }
+        if let Some(f) = state.worklist_functions.pop() {
+            match recorded.remove(&f) {
+                Some(events) => {
+                    for ev in events {
+                        apply_reach(ctxt, state, ev);
+                    }
+                }
+                None => {
+                    record_function(ctxt, &mut rec, &f, &ctxt.function_map[&f]);
+                    apply_recorded(ctxt, state, &mut rec);
+                }
+            }
             continue;
         }
         if let Some(f) = state.worklist_reveal_groups.pop() {
@@ -663,8 +933,10 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
             match &t {
                 ReachedType::Datatype(dt @ Dt::Path(_path)) => {
                     let datatype = &ctxt.datatype_map[dt];
-                    traverse_generic_bounds(ctxt, state, &datatype.x.typ_bounds, false);
-                    crate::ast_visitor::walk_datatype_visitor_env(&datatype, state, &ft).unwrap();
+                    record_generic_bounds(ctxt, &mut rec, &datatype.x.typ_bounds, false);
+                    crate::ast_visitor::walk_datatype_visitor_env(&datatype, &mut rec, &ft)
+                        .unwrap();
+                    apply_recorded(ctxt, state, &mut rec);
                     if let Some(FunWithVis { fun, visibility }) =
                         &datatype.x.user_defined_invariant_fn
                         && is_visible_to_or_true(visibility, &ctxt.module)
@@ -705,8 +977,9 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
             }
             if let Some(tr) = ctxt.trait_map.get(&b) {
                 // For assoc_type_trait_bounds_to_air, reach typ_bounds and assoc_typs_bounds
-                traverse_generic_bounds(ctxt, state, &tr.x.typ_bounds, true);
-                traverse_generic_bounds(ctxt, state, &tr.x.assoc_typs_bounds, true);
+                record_generic_bounds(ctxt, &mut rec, &tr.x.typ_bounds, true);
+                record_generic_bounds(ctxt, &mut rec, &tr.x.assoc_typs_bounds, true);
+                apply_recorded(ctxt, state, &mut rec);
             }
             continue;
         }
@@ -719,8 +992,9 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
                     reach_type(ctxt, state, bound_type);
                 }
                 let ti = &trait_impl.trait_impl;
-                traverse_generic_bounds(ctxt, state, &ti.x.typ_bounds, false);
-                crate::ast_visitor::walk_trait_impl_visitor_env(&ti, state, &ft).unwrap();
+                record_generic_bounds(ctxt, &mut rec, &ti.x.typ_bounds, false);
+                crate::ast_visitor::walk_trait_impl_visitor_env(&ti, &mut rec, &ft).unwrap();
+                apply_recorded(ctxt, state, &mut rec);
             }
             continue;
         }
@@ -740,9 +1014,14 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
         if let Some(assoc_group) = state.worklist_assoc_type_impls.pop() {
             if let Some(assoc_impls) = ctxt.assoc_type_impl_map.get(&assoc_group) {
                 for assoc_impl in assoc_impls {
-                    traverse_generic_bounds(ctxt, state, &assoc_impl.x.typ_bounds, false);
-                    crate::ast_visitor::walk_assoc_type_impl_visitor_env(&assoc_impl, state, &ft)
-                        .unwrap();
+                    record_generic_bounds(ctxt, &mut rec, &assoc_impl.x.typ_bounds, false);
+                    crate::ast_visitor::walk_assoc_type_impl_visitor_env(
+                        &assoc_impl,
+                        &mut rec,
+                        &ft,
+                    )
+                    .unwrap();
+                    apply_recorded(ctxt, state, &mut rec);
                 }
             }
             continue;
@@ -751,12 +1030,13 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
             if let Some(opaque_type) = ctxt.opaque_ty_map.get(&opaque_ty_path) {
                 // Revist. this is probably needed, the opaque type can refer to some actual types, which, if pruned
                 // can cause problems
-                traverse_generic_bounds(ctxt, state, &opaque_type.x.typ_bounds, true);
+                record_generic_bounds(ctxt, &mut rec, &opaque_type.x.typ_bounds, true);
                 for t in opaque_type.x.typ_params.iter() {
                     // Revist. Not sure if this is needed. If I understand it correctly, these typs can only be
                     // type params like "T", not some types defined somewhere else.
-                    traverse_typ(ctxt, state, t);
+                    record_traverse_typ(ctxt, &mut rec, t);
                 }
+                apply_recorded(ctxt, state, &mut rec);
             }
             continue;
         }
@@ -1337,7 +1617,8 @@ pub fn prune_krate_for_module_or_krate(
         assert_by_compute,
         assert_by_compute_seq_funs,
     };
-    traverse_reachable(&ctxt, &mut state);
+    // Bucket prunes stay serial because they already run concurrently and have small reach sets.
+    traverse_reachable(&ctxt, &mut state, module.is_none());
 
     for tr in krate.traits.iter() {
         let traitx = tr.x.clone();
