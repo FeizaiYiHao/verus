@@ -1,7 +1,6 @@
 use crate::ast::{
     AutospecUsage, CallTarget, Expr, ExprX, Fun, Function, Krate, KrateX, SpannedTyped, VirErr,
 };
-use crate::util::vec_map_result;
 pub use air::ast_util::{ident_binder, str_ident};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -130,7 +129,7 @@ fn simplify_function(
     function: &Function,
 ) -> Result<Function, VirErr> {
     crate::ast_visitor::map_function_targets_visitor(
-        function,
+        &function,
         &mut (),
         &is_const_var_or_fun_call,
         &|_state, expr| simplify_one_expr(func_map, expr),
@@ -158,7 +157,11 @@ pub fn resolve_autospec(krate: &Krate) -> Result<Krate, VirErr> {
         func_map.insert(function.x.name.clone(), function.clone());
     }
 
-    let functions = vec_map_result(functions, |f| simplify_function(&func_map, f))?;
+    // Preserve function and error order when collecting parallel results.
+    let functions =
+        crate::util::par_map_init(functions, || (), |_, f| simplify_function(&func_map, f))
+            .into_iter()
+            .collect::<Result<Vec<Function>, VirErr>>()?;
 
     let datatypes = datatypes.clone();
     let traits = traits.clone();

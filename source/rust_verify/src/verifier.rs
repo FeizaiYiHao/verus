@@ -2635,6 +2635,7 @@ impl Verifier {
         other_vir_crates: Vec<Krate>,
         diagnostics: &impl air::messages::Diagnostics,
     ) -> Result<bool, (Vec<VirErr>, Vec<vir::ast::VirErrAs>)> {
+        vir::util::set_par_num_threads(self.args.num_threads);
         if self.args.no_lifetime {
             rustc_mir_build_verus::verus::set_verus_aware_def_ids(Arc::new(HashSet::new()));
         }

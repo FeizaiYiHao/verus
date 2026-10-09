@@ -86,6 +86,55 @@ impl EmitError for EmitErrorState {
     }
 }
 
+enum EmitEvent {
+    Emit(VirErrAs),
+    DeferredErr(VirErr),
+    BoundaryErr(Path, VirErr),
+    FuncFailedProofNote(Fun, String),
+}
+
+/// Records diagnostics from one function for ordered replay.
+#[derive(Default)]
+struct EmitLog {
+    events: Vec<EmitEvent>,
+    has_boundary_errors: bool,
+}
+
+impl EmitLog {
+    fn replay(self, emit: &mut EmitErrorState) {
+        for event in self.events {
+            match event {
+                EmitEvent::Emit(err) => emit.emit(err),
+                EmitEvent::DeferredErr(err) => emit.emit_deferred_err(err),
+                EmitEvent::BoundaryErr(path, err) => emit.emit_boundary_err(path, err),
+                EmitEvent::FuncFailedProofNote(func, note) => {
+                    emit.record_func_failed_proof_note(func, note)
+                }
+            }
+        }
+    }
+}
+
+impl EmitError for EmitLog {
+    fn emit(&mut self, err: VirErrAs) {
+        self.events.push(EmitEvent::Emit(err));
+    }
+    fn emit_deferred_err(&mut self, err: VirErr) {
+        self.events.push(EmitEvent::DeferredErr(err));
+    }
+    fn emit_boundary_err(&mut self, path: Path, err: VirErr) {
+        self.has_boundary_errors = true;
+        self.events.push(EmitEvent::BoundaryErr(path, err));
+    }
+    // Boundary errors are the function-local fatal errors.
+    fn has_fatal_errors(&self) -> bool {
+        self.has_boundary_errors
+    }
+    fn record_func_failed_proof_note(&mut self, func: Fun, note: String) {
+        self.events.push(EmitEvent::FuncFailedProofNote(func, note));
+    }
+}
+
 #[warn(unused_must_use)]
 fn check_one_typ<Emit: EmitError>(
     ctxt: &Ctxt,
@@ -2143,11 +2192,22 @@ pub fn check_crate(
     let mut errors = vec![];
 
     // TODO remove once `uninterp` is enforced for uninterpreted functions
-    for function in krate.functions.iter() {
-        let Some(warn_config) = warning_ctx.fun_warn_configs.get(&function.x.name) else {
-            panic!("missing warn_config for function {:?}", function.x.name);
-        };
-        if let Err(e) = check_function(&ctxt, function, &mut emit, warn_config, no_verify) {
+    // Replay function-local diagnostics in the original function order.
+    let results = crate::util::par_map_init(
+        &krate.functions,
+        || (),
+        |_, function| {
+            let Some(warn_config) = warning_ctx.fun_warn_configs.get(&function.x.name) else {
+                panic!("missing warn_config for function {:?}", function.x.name);
+            };
+            let mut log = EmitLog::default();
+            let result = check_function(&ctxt, function, &mut log, warn_config, no_verify);
+            (log, result)
+        },
+    );
+    for (log, result) in results {
+        log.replay(&mut emit);
+        if let Err(e) = result {
             errors.push(e);
         }
     }

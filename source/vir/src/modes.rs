@@ -444,6 +444,7 @@ impl Ghost {
     }
 }
 
+#[derive(Clone)]
 struct SpecialPaths {
     pub(crate) create_open_invariant_credit_name: String,
     pub(crate) spend_open_invariant_credit_name: String,
@@ -485,6 +486,7 @@ impl SpecialPaths {
     }
 }
 
+#[derive(Clone)]
 struct Ctxt {
     pub(crate) funs: HashMap<Fun, Function>,
     pub(crate) datatypes: HashMap<Path, Datatype>,
@@ -4073,10 +4075,8 @@ pub fn check_crate(krate: &Krate) -> Result<(Krate, ErasureModes), Vec<VirErr>> 
             }
         }
     }
-    let erasure_modes =
-        ErasureModes { local_modes: vec![], binder_modes: vec![], ctor_modes: vec![] };
     let special_paths = SpecialPaths::new();
-    let mut ctxt = Ctxt {
+    let base_ctxt = Ctxt {
         funs,
         datatypes,
         traits: krate.traits.iter().map(|t| t.x.name.clone()).collect(),
@@ -4084,10 +4084,13 @@ pub fn check_crate(krate: &Krate) -> Result<(Krate, ErasureModes), Vec<VirErr>> 
         fun_mode: Mode::Exec,
         special_paths,
     };
-    let type_inv_info = TypeInvInfo { ctor_needs_check: HashMap::new() };
-    let mut record = Record {
-        erasure_modes,
-        type_inv_info,
+    let new_record = || Record {
+        erasure_modes: ErasureModes {
+            local_modes: vec![],
+            binder_modes: vec![],
+            ctor_modes: vec![],
+        },
+        type_inv_info: TypeInvInfo { ctor_needs_check: HashMap::new() },
         read_kind_finals: HashMap::new(),
         var_modes: HashMap::new(),
         temporary_modes: HashMap::new(),
@@ -4097,27 +4100,49 @@ pub fn check_crate(krate: &Krate) -> Result<(Krate, ErasureModes), Vec<VirErr>> 
     };
 
     let mut kratex = (**krate).clone();
-    let rtypes = ResolutionTypes::new(&ctxt.datatypes);
+    let rtypes = ResolutionTypes::new(&base_ctxt.datatypes);
+    // Function-local records permit parallel checks and ordered result merging.
+    let results = crate::util::par_map_init(
+        &kratex.functions,
+        || (base_ctxt.clone(), new_record()),
+        |(ctxt, record), function| {
+            ctxt.check_ghost_blocks = function.x.attrs.uses_ghost_blocks;
+            ctxt.fun_mode = function.x.mode;
+
+            let mut state = State {
+                vars: ScopeMap::new(),
+                in_assert_by_body: false,
+                in_proof_in_spec: false,
+                block_ghostness: Ghost::Exec,
+                ret_mode: None,
+                atomic_insts: None,
+                in_pure: false,
+                in_assert_query: None,
+            };
+            let mut typing = Typing::new(&mut state);
+
+            let mut function = function.clone();
+            let result = check_function(ctxt, record, &mut typing, &mut function, &rtypes);
+            let function_erasure_modes = std::mem::replace(
+                &mut record.erasure_modes,
+                ErasureModes { local_modes: vec![], binder_modes: vec![], ctor_modes: vec![] },
+            );
+            (function, result, function_erasure_modes)
+        },
+    );
+    let mut erasure_modes =
+        ErasureModes { local_modes: vec![], binder_modes: vec![], ctor_modes: vec![] };
     let mut errors = vec![];
-    for function in kratex.functions.iter_mut() {
-        ctxt.check_ghost_blocks = function.x.attrs.uses_ghost_blocks;
-        ctxt.fun_mode = function.x.mode;
-
-        let mut state = State {
-            vars: ScopeMap::new(),
-            in_assert_by_body: false,
-            in_proof_in_spec: false,
-            block_ghostness: Ghost::Exec,
-            ret_mode: None,
-            atomic_insts: None,
-            in_pure: false,
-            in_assert_query: None,
-        };
-        let mut typing = Typing::new(&mut state);
-
-        if let Err(err) = check_function(&ctxt, &mut record, &mut typing, function, &rtypes) {
+    for (function, (new_function, result, function_erasure_modes)) in
+        kratex.functions.iter_mut().zip(results.into_iter())
+    {
+        *function = new_function;
+        if let Err(err) = result {
             errors.push(err);
         }
+        erasure_modes.local_modes.extend(function_erasure_modes.local_modes);
+        erasure_modes.binder_modes.extend(function_erasure_modes.binder_modes);
+        erasure_modes.ctor_modes.extend(function_erasure_modes.ctor_modes);
     }
-    if errors.len() > 0 { Err(errors) } else { Ok((Arc::new(kratex), record.erasure_modes)) }
+    if errors.len() > 0 { Err(errors) } else { Ok((Arc::new(kratex), erasure_modes)) }
 }
