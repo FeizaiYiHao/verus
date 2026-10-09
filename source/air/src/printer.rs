@@ -665,22 +665,27 @@ pub(crate) fn node_to_string(node: &Node) -> String {
 }
 
 pub fn clean_up_lines(input: String, indentation: &str) -> String {
-    let lines: Vec<&str> = input.lines().collect();
-    let mut result: String = "".to_string();
-    let mut i = 0;
-    while i < lines.len() {
-        let mut line = lines[i].to_owned();
+    if !input.contains('\n') && !input.ends_with('\r') {
+        return input;
+    }
+    let mut result: String = String::with_capacity(input.len());
+    let mut lines = input.lines().peekable();
+    let mut first = true;
+    while let Some(line) = lines.next() {
+        if !first {
+            result.push_str("\n");
+        }
+        first = false;
         // Consolidate closing ) lines:
         if line.trim() == ")" {
-            while i + 1 < lines.len() && lines[i + 1].trim() == ")" {
-                line = lines[i + 1].to_string() + &indentation[1..] + line.trim();
-                i += 1;
+            let mut merged: std::borrow::Cow<str> = std::borrow::Cow::Borrowed(line);
+            while let Some(next) = lines.next_if(|next| next.trim() == ")") {
+                merged =
+                    std::borrow::Cow::Owned(next.to_string() + &indentation[1..] + merged.trim());
             }
-        }
-        result.push_str(&line);
-        i += 1;
-        if i < lines.len() {
-            result.push_str("\n");
+            result.push_str(&merged);
+        } else {
+            result.push_str(line);
         }
     }
     result
