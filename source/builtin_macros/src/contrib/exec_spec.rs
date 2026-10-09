@@ -1329,6 +1329,9 @@ fn compile_match_arm(ctx: &LocalCtx, arm: &Arm, unverified: bool) -> Result<Toke
     let pat = compile_pattern(&mut ctx, &arm.pat, &mut new_locals)?;
 
     // New locals needs to be converted into the canonical borrowed types (e.g. from &String => &str)
+    // Sort by name so the generated statement order does not depend on HashSet iteration order.
+    let mut new_locals: Vec<_> = new_locals.into_iter().collect();
+    new_locals.sort_by_cached_key(|ident| ident.to_string());
     let local_converts = new_locals.iter().map(|ident| {
         quote! {
             let #ident = #ident.get_ref();
