@@ -9,7 +9,7 @@ use crate::node;
 use crate::printer::{macro_push_node, str_to_node};
 
 use crate::scope_map::ScopeMap;
-use crate::smt_process::SmtProcess;
+use crate::smt_process::{SmtProcess, SmtProcessReaperHandle};
 use crate::smt_verify::ReportLongRunning;
 use crate::typecheck::Typing;
 use sise::TreeNode as Node;
@@ -96,6 +96,7 @@ impl SmtSolver {
 pub struct Context {
     pub(crate) message_interface: Arc<dyn crate::messages::MessageInterface>,
     smt_process: Option<SmtProcess>,
+    smt_process_reaper: Option<SmtProcessReaperHandle>,
     pub(crate) axiom_infos: ScopeMap<Ident, Arc<AxiomInfo>>,
     pub(crate) axiom_infos_count: u64,
     pub(crate) array_map: ScopeMap<ClosureTerm, Ident>,
@@ -135,6 +136,7 @@ impl Context {
         let mut context = Context {
             message_interface: message_interface.clone(),
             smt_process: None,
+            smt_process_reaper: None,
             axiom_infos: ScopeMap::new(),
             axiom_infos_count: 0,
             array_map: ScopeMap::new(),
@@ -207,9 +209,20 @@ impl Context {
         // Only start the smt process if there are queries to run
         if self.smt_process.is_none() {
             let transcript_log = self.smt_transcript_log.take();
-            self.smt_process = Some(SmtProcess::launch(&self.solver, transcript_log));
+            let reaper = if self.profile_logfile_name.is_none() {
+                self.smt_process_reaper.clone()
+            } else {
+                None
+            };
+            self.smt_process = Some(SmtProcess::launch(&self.solver, transcript_log, reaper));
         }
         self.smt_process.as_mut().unwrap()
+    }
+
+    /// Uses `reaper` for solver processes launched by this context.
+    pub fn set_smt_process_reaper(&mut self, reaper: SmtProcessReaperHandle) {
+        assert!(self.smt_process.is_none());
+        self.smt_process_reaper = Some(reaper);
     }
 
     pub fn set_air_initial_log(&mut self, writer: Box<dyn std::io::Write>) {

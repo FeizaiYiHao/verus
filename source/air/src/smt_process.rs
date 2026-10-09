@@ -3,7 +3,8 @@ use yansi::Paint;
 use crate::context::SmtSolver;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
+use std::sync::{Arc, Mutex};
 
 struct SolverInfo {
     executable_name: &'static str,
@@ -37,15 +38,149 @@ pub(crate) enum WriterRequest {
     Final(Vec<u8>),
 }
 
+enum ReaperRequest {
+    Wait(Child),
+    Stop,
+    #[cfg(test)]
+    Error(std::io::Error),
+}
+
+/// A cloneable submission handle for an owned solver reaper.
+#[derive(Clone)]
+pub struct SmtProcessReaperHandle {
+    requests: SyncSender<ReaperRequest>,
+}
+
+/// A bounded group of threads that waits for solver processes.
+pub struct SmtProcessReaper {
+    requests: SyncSender<ReaperRequest>,
+    workers: Vec<std::thread::JoinHandle<Option<std::io::Error>>>,
+    finished: bool,
+}
+
+// Bounds queued children while keeping each reaper supplied.
+const REAPER_QUEUE_PER_WORKER: usize = 2;
+
+impl SmtProcessReaper {
+    /// Starts `worker_count` reaper threads and a bounded submission queue.
+    pub fn new(worker_count: usize) -> Self {
+        assert!(worker_count > 0);
+        let (requests, receiver) = sync_channel(worker_count * REAPER_QUEUE_PER_WORKER);
+        let receiver = Arc::new(Mutex::new(receiver));
+        let mut workers = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let receiver = receiver.clone();
+            workers.push(
+                std::thread::Builder::new()
+                    .name("verus-smt-reaper".to_owned())
+                    .spawn(move || reaper_thread(receiver))
+                    .expect("failed to start SMT reaper thread"),
+            );
+        }
+        SmtProcessReaper { requests, workers, finished: false }
+    }
+
+    /// Returns a handle that submits solver processes to this reaper.
+    pub fn handle(&self) -> SmtProcessReaperHandle {
+        SmtProcessReaperHandle { requests: self.requests.clone() }
+    }
+
+    /// Waits for all submitted solver processes and reports the first wait failure.
+    pub fn finish(mut self) -> std::io::Result<()> {
+        self.finish_inner()
+    }
+
+    fn finish_inner(&mut self) -> std::io::Result<()> {
+        for _ in 0..self.workers.len() {
+            let _ = self.requests.send(ReaperRequest::Stop);
+        }
+        let mut first_error = None;
+        for worker in self.workers.drain(..) {
+            if let Some(error) = worker.join().expect("SMT reaper thread panicked") {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        self.finished = true;
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(test)]
+    fn worker_count(&self) -> usize {
+        self.workers.len()
+    }
+}
+
+impl Drop for SmtProcessReaper {
+    fn drop(&mut self) {
+        if !self.finished {
+            if let Err(error) = self.finish_inner() {
+                panic!("smt process exited with error: {:?}", error);
+            }
+        }
+    }
+}
+
+impl SmtProcessReaperHandle {
+    fn reap(&self, child: Child) -> std::io::Result<()> {
+        match self.requests.send(ReaperRequest::Wait(child)) {
+            Ok(()) => Ok(()),
+            Err(std::sync::mpsc::SendError(ReaperRequest::Wait(mut child))) => {
+                child.wait().map(|_| ())
+            }
+            Err(std::sync::mpsc::SendError(ReaperRequest::Stop)) => unreachable!(),
+            #[cfg(test)]
+            Err(std::sync::mpsc::SendError(ReaperRequest::Error(error))) => Err(error),
+        }
+    }
+
+    #[cfg(test)]
+    fn inject_error(&self, error: std::io::Error) {
+        self.requests.send(ReaperRequest::Error(error)).unwrap();
+    }
+}
+
+fn reaper_thread(receiver: Arc<Mutex<Receiver<ReaperRequest>>>) -> Option<std::io::Error> {
+    let mut first_error = None;
+    loop {
+        let request = match receiver.lock().unwrap().recv() {
+            Ok(request) => request,
+            Err(_) => break,
+        };
+        match request {
+            ReaperRequest::Wait(mut child) => {
+                if let Err(error) = child.wait() {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+            ReaperRequest::Stop => break,
+            #[cfg(test)]
+            ReaperRequest::Error(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+    first_error
+}
+
 pub struct SmtProcess {
     requests: Option<Sender<WriterRequest>>,
     responses_buf_recv:
         Option<(BufReader<ChildStdout>, Receiver<(BufReader<ChildStdout>, Vec<String>)>)>,
     recv_requests: Sender<BufReader<ChildStdout>>,
-    child: Child,
+    child: Option<Child>,
     transcript_log: Option<Box<dyn std::io::Write>>,
     /// Whether a streamed prefix is waiting for its final batch.
     partial_pending: bool,
+    reaper: Option<SmtProcessReaperHandle>,
 }
 
 const DONE: &str = "<<DONE>>";
@@ -128,7 +263,12 @@ fn reader_thread(
 }
 
 impl SmtProcess {
-    pub fn launch(solver: &SmtSolver, transcript_log: Option<Box<dyn std::io::Write>>) -> Self {
+    /// Launches a solver whose process may be submitted to `reaper` on drop.
+    pub fn launch(
+        solver: &SmtSolver,
+        transcript_log: Option<Box<dyn std::io::Write>>,
+        reaper: Option<SmtProcessReaperHandle>,
+    ) -> Self {
         let solver_info = SolverInfo::new(solver);
         let mut child = match std::process::Command::new(solver_info.executable())
             .args(match solver {
@@ -177,9 +317,10 @@ impl SmtProcess {
             requests: Some(requests_sender),
             responses_buf_recv: Some((smt_pipe_stdout, responses_receiver)),
             recv_requests: recv_responses_sender,
-            child,
+            child: Some(child),
             transcript_log,
             partial_pending: false,
+            reaper,
         }
     }
 
@@ -280,11 +421,16 @@ impl Drop for SmtProcess {
     fn drop(&mut self) {
         // send EOF to stdin
         std::mem::drop(self.requests.take());
+        let mut child = self.child.take().expect("smt process child");
         if self.partial_pending {
-            let _ = self.child.kill();
+            let _ = child.kill();
         }
-        if let Err(e) = self.child.wait() {
-            panic!("smt process exited with error: {:?}", e);
+        if let Some(reaper) = &self.reaper {
+            if let Err(error) = reaper.reap(child) {
+                panic!("smt process exited with error: {:?}", error);
+            }
+        } else if let Err(error) = child.wait() {
+            panic!("smt process exited with error: {:?}", error);
         }
     }
 }
@@ -295,7 +441,18 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    const CHILD_ENV: &str = "VERUS_AIR_QUERY_FREE_CHILD";
+    const QUERY_FREE_CHILD_ENV: &str = "VERUS_AIR_QUERY_FREE_CHILD";
+    const REAPER_CHILD_ENV: &str = "VERUS_AIR_REAPER_CHILD";
+
+    fn spawn_reaper_child() -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "smt_process::tests::reaper_child"])
+            .env(REAPER_CHILD_ENV, "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
 
     #[test]
     fn streamed_requests_preserve_solver_input() {
@@ -318,7 +475,7 @@ mod tests {
     fn query_free_partial_stops_the_solver() {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "smt_process::tests::query_free_child", "--nocapture"])
-            .env(CHILD_ENV, "1")
+            .env(QUERY_FREE_CHILD_ENV, "1")
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
@@ -330,7 +487,7 @@ mod tests {
             if line.contains("QUERY_FREE_CHILD_READY") {
                 break;
             }
-            line.truncate(0);
+            String::clear(&mut line);
         }
         let (_responses_sender, responses_receiver) = channel();
         let (recv_requests, _recv_requests_receiver) = channel();
@@ -338,9 +495,10 @@ mod tests {
             requests: None,
             responses_buf_recv: Some((stdout, responses_receiver)),
             recv_requests,
-            child,
+            child: Some(child),
             transcript_log: None,
             partial_pending: true,
+            reaper: None,
         };
         let start = Instant::now();
         drop(process);
@@ -348,12 +506,41 @@ mod tests {
     }
 
     #[test]
+    fn bounded_reaper_waits_for_all_children() {
+        let reaper = SmtProcessReaper::new(2);
+        assert_eq!(reaper.worker_count(), 2);
+        let handle = reaper.handle();
+        for _ in 0..24 {
+            handle.reap(spawn_reaper_child()).unwrap();
+        }
+        drop(handle);
+        reaper.finish().unwrap();
+    }
+
+    #[test]
+    fn reaper_reports_wait_errors() {
+        let reaper = SmtProcessReaper::new(1);
+        let handle = reaper.handle();
+        handle.inject_error(std::io::Error::other("wait failed"));
+        drop(handle);
+        assert_eq!(reaper.finish().unwrap_err().to_string(), "wait failed");
+    }
+
+    #[test]
     fn query_free_child() {
-        if std::env::var_os(CHILD_ENV).is_none() {
+        if std::env::var_os(QUERY_FREE_CHILD_ENV).is_none() {
             return;
         }
         println!("QUERY_FREE_CHILD_READY");
         std::io::stdout().flush().unwrap();
         std::thread::sleep(Duration::from_secs(30));
+    }
+
+    #[test]
+    fn reaper_child() {
+        if std::env::var_os(REAPER_CHILD_ENV).is_none() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
