@@ -8,6 +8,31 @@ use rustc_middle::ty::TyCtxt;
 use rustc_span::{Span, sym};
 use std::time::{Duration, Instant};
 
+#[doc(hidden)]
+pub const PIPELINED_ERASURE_DRIVER_ARG: &str = "--internal-pipelined-erasure";
+
+pub(crate) struct PipelinedErasure {
+    child: Option<std::process::Child>,
+}
+
+impl PipelinedErasure {
+    pub(crate) fn wait(mut self) -> Result<(), ()> {
+        let status =
+            self.child.as_mut().expect("pipelined erasure child").wait().map_err(|_| ())?;
+        self.child = None;
+        if status.success() { Ok(()) } else { Err(()) }
+    }
+}
+
+impl Drop for PipelinedErasure {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 struct DefaultCallbacks;
 impl rustc_driver::Callbacks for DefaultCallbacks {}
 
@@ -200,6 +225,34 @@ pub(crate) fn run_with_erase_macro_compile(
     run_compiler(rustc_args, true, true, &mut callbacks)
 }
 
+fn pipelined_erasure_vstd_arg(vstd: Vstd) -> &'static str {
+    match vstd {
+        Vstd::IsVstd => "is-vstd",
+        Vstd::NoVstd => "no-vstd",
+        Vstd::Imported => "imported",
+        Vstd::IsCore => "is-core",
+        Vstd::ImportedViaCore => "imported-via-core",
+    }
+}
+
+#[doc(hidden)]
+pub fn run_pipelined_erasure_driver(rustc_args: Vec<String>, vstd: Vstd) -> Result<(), ()> {
+    run_with_erase_macro_compile(rustc_args, true, vstd)
+}
+
+pub(crate) fn start_pipelined_erasure_compile(
+    rustc_args: Vec<String>,
+    vstd: Vstd,
+) -> Result<PipelinedErasure, ()> {
+    let child = std::process::Command::new(std::env::current_exe().map_err(|_| ())?)
+        .arg(PIPELINED_ERASURE_DRIVER_ARG)
+        .arg(pipelined_erasure_vstd_arg(vstd))
+        .args(rustc_args)
+        .spawn()
+        .map_err(|_| ())?;
+    Ok(PipelinedErasure { child: Some(child) })
+}
+
 pub struct VerusRoot {
     pub path: std::path::PathBuf,
     in_vargo: bool,
@@ -283,6 +336,10 @@ pub fn run(
         None
     };
 
+    let pipelined_erasure = verifier.compile
+        && !verifier.args.no_verify
+        && verifier.via_cargo_args.as_ref().is_some_and(|args| args.pipelined_erasure);
+    let verifier_vstd = verifier.args.vstd;
     let time0 = Instant::now();
     let mut rustc_args_verify = rustc_args.clone();
     rustc_args_verify.extend(["--cfg", "verus_only"].map(|s| s.to_string()));
@@ -301,6 +358,12 @@ pub fn run(
         verus_externs,
         spans: None,
         unresolved_import_deps: std::collections::HashSet::new(),
+        pipelined_erasure: if pipelined_erasure {
+            Some((rustc_args.clone(), verifier_vstd))
+        } else {
+            None
+        },
+        pipelined_erasure_process: None,
     };
     let status = run_compiler(rustc_args_verify.clone(), true, false, &mut verifier_callbacks);
     let VerifierCallbacksEraseMacro {
@@ -309,6 +372,7 @@ pub fn run(
         rust_end_time,
         tc_start_time,
         tc_end_time,
+        pipelined_erasure_process,
         ..
     } = verifier_callbacks;
     let time1 = Instant::now();
@@ -335,13 +399,17 @@ pub fn run(
         );
     }
 
-    let compile_status =
-        if !verifier.compile && (verifier.args.no_erasure_check || verifier.args.no_lifetime) {
-            Ok(())
-        } else {
-            let do_compile = verifier.compile || verifier.via_cargo_args.is_some();
-            run_with_erase_macro_compile(rustc_args, do_compile, verifier.args.vstd)
-        };
+    let compile_status = if pipelined_erasure {
+        match pipelined_erasure_process {
+            Some(process) => process.wait(),
+            None => Err(()),
+        }
+    } else if !verifier.compile && (verifier.args.no_erasure_check || verifier.args.no_lifetime) {
+        Ok(())
+    } else {
+        let do_compile = verifier.compile || verifier.via_cargo_args.is_some();
+        run_with_erase_macro_compile(rustc_args, do_compile, verifier.args.vstd)
+    };
 
     let time2 = Instant::now();
 

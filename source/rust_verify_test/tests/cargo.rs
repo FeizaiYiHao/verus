@@ -157,6 +157,19 @@ fn cargo_new_builds() {
     assert!(run.status.success());
 }
 
+#[test]
+fn cargo_verify_pipelined_erasure() {
+    let test_dir =
+        compute_test_dir("rust_verify_test/tests/cargo-tests/verified/basic_verified_lib");
+    let target_dir = tempdir().expect("Failed to create temporary target directory");
+    let run = run_cargo_verus_with_target(
+        &["verify", "--pipelined-erasure"],
+        &test_dir,
+        target_dir.path(),
+    );
+    assert!(run.status.success());
+}
+
 // Tests that run `cargo verus {verify, build}` on each crate in the cargo-tests/verified directory
 cargo_examples!(true);
 

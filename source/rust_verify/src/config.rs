@@ -179,6 +179,7 @@ pub struct CargoVerusArgsX {
     pub compile_when_primary_package: bool,
     pub compile_when_not_primary_package: bool,
     pub import_dep_if_present: Vec<String>,
+    pub pipelined_erasure: bool,
 }
 
 impl CargoVerusArgsX {
@@ -187,6 +188,7 @@ impl CargoVerusArgsX {
             compile_when_primary_package: false,
             compile_when_not_primary_package: false,
             import_dep_if_present: Default::default(),
+            pipelined_erasure: false,
         }
     }
 }
@@ -264,6 +266,7 @@ pub fn parse_cargo_args(_program: &String, args: &mut Vec<String>) -> CargoVerus
     const CARGO_OPT_COMPILE_WHEN_PRIMARY: &str = "compile-when-primary-package";
     const CARGO_OPT_COMPILE_WHEN_NOT_PRIMARY: &str = "compile-when-not-primary-package";
     const CARGO_OPT_IMPORT_DEP_IF_PRESENT: &str = "import-dep-if-present";
+    const CARGO_OPT_PIPELINED_ERASURE: &str = "pipelined-erasure";
 
     let mut next_is_via_cargo = false;
     args.retain(|arg| {
@@ -275,6 +278,8 @@ pub fn parse_cargo_args(_program: &String, args: &mut Vec<String>) -> CargoVerus
                 cargo_verus_args.compile_when_primary_package = true;
             } else if arg == CARGO_OPT_COMPILE_WHEN_NOT_PRIMARY {
                 cargo_verus_args.compile_when_not_primary_package = true;
+            } else if arg == CARGO_OPT_PIPELINED_ERASURE {
+                cargo_verus_args.pipelined_erasure = true;
             } else if arg.starts_with(CARGO_OPT_IMPORT_DEP_IF_PRESENT) {
                 let oo: Vec<_> = arg.split("=").collect();
                 if let [_, val] = &oo[..] {

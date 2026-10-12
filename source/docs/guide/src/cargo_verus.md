@@ -118,12 +118,21 @@ workspace = true
 ### `cargo verus verify`
 
 Runs verification on all crates that have `verify = true`, including dependencies.
-Does **not** produce a compiled binary.
+By default, does **not** produce a compiled binary.
 
 ```bash
 cargo verus verify              # Verify all of the crates
 cargo verus verify -p my_crate  # Verify only my_crate and its dependencies
 ```
+
+Pass `--pipelined-erasure` to produce native artifacts while overlapping ghost-erased
+compilation with SMT verification:
+
+```bash
+cargo verus verify --pipelined-erasure
+```
+
+This mode uses additional CPU and memory while compilation and verification overlap.
 
 Use `verify` for day-to-day proof development. Incremental builds mean that only
 changed crates are re-verified.

@@ -28,7 +28,14 @@ pub enum VerusSubcommand {
     Toolchain(ToolchainCommand),
 
     /// Verify the current crate with 'cargo build'
-    Verify(VerifyCommand),
+    Verify {
+        /// Overlap ghost-erased compilation with SMT verification
+        #[arg(long)]
+        pipelined_erasure: bool,
+
+        #[command(flatten)]
+        options: VerifyCommand,
+    },
 
     /// Verify only crate contents, without dependencies.
     Focus(VerifyCommand),
@@ -272,7 +279,7 @@ impl CargoVerusCli {
     fn set_fwd_verus_args_to_default(&mut self) {
         match &mut self.command {
             VerusSubcommand::New(_) | VerusSubcommand::Fmt(_) | VerusSubcommand::Toolchain(_) => {}
-            VerusSubcommand::Verify(cmd)
+            VerusSubcommand::Verify { options: cmd, .. }
             | VerusSubcommand::Build(cmd)
             | VerusSubcommand::Check(cmd) => {
                 if cmd.fwd_verus_args_to.is_none() {
@@ -319,7 +326,7 @@ impl CargoVerusCli {
 
     fn get_verify_cmd(&self) -> Option<&VerifyCommand> {
         match &self.command {
-            VerusSubcommand::Verify(cmd)
+            VerusSubcommand::Verify { options: cmd, .. }
             | VerusSubcommand::Focus(cmd)
             | VerusSubcommand::Build(cmd)
             | VerusSubcommand::Check(cmd) => Some(cmd),
@@ -331,7 +338,7 @@ impl CargoVerusCli {
 
     fn get_verify_cmd_mut(&mut self) -> Option<&mut VerifyCommand> {
         match &mut self.command {
-            VerusSubcommand::Verify(cmd)
+            VerusSubcommand::Verify { options: cmd, .. }
             | VerusSubcommand::Focus(cmd)
             | VerusSubcommand::Build(cmd)
             | VerusSubcommand::Check(cmd) => Some(cmd),

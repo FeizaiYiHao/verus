@@ -1,6 +1,6 @@
 use crate::boundary_suggestions::build_boundary_suggestion;
 use crate::commands::{OpGenerator, OpKind, QueryOp, Style};
-use crate::config::{Args, CargoVerusArgs, ShowTriggers};
+use crate::config::{Args, CargoVerusArgs, ShowTriggers, Vstd};
 use crate::context::ContextX;
 use crate::debugger::Debugger;
 use crate::external::VerifOrExternal;
@@ -3099,6 +3099,10 @@ pub(crate) struct VerifierCallbacksEraseMacro {
     /// import-dep-if-present names that did not match any direct `--extern`;
     /// resolved against rustc's loaded transitive crates in `after_expansion`.
     pub(crate) unresolved_import_deps: HashSet<String>,
+    /// Ghost-erased compilation to start after VIR construction.
+    pub(crate) pipelined_erasure: Option<(Vec<String>, Vstd)>,
+    /// Running ghost-erased compilation.
+    pub(crate) pipelined_erasure_process: Option<crate::driver::PipelinedErasure>,
 }
 
 pub(crate) static BODY_HIR_ID_TO_REVEAL_PATH_RES: std::sync::RwLock<
@@ -3292,6 +3296,15 @@ impl rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
             if let Some(_guar) = compiler.sess.dcx().has_errors() {
                 self.verifier.encountered_error = true;
                 return rustc_driver::Compilation::Stop;
+            }
+            if let Some((rustc_args, vstd)) = self.pipelined_erasure.take() {
+                match crate::driver::start_pipelined_erasure_compile(rustc_args, vstd) {
+                    Ok(process) => self.pipelined_erasure_process = Some(process),
+                    Err(()) => {
+                        self.verifier.encountered_error = true;
+                        return rustc_driver::Compilation::Stop;
+                    }
+                }
             }
             self.tc_start_time = Some(Instant::now());
             let status = if self.verifier.args.no_trait_conflicts {

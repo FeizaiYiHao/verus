@@ -46,13 +46,14 @@ pub fn plan_execution<'a>(
         VerusSubcommand::Toolchain(toolchain_cmd) => match toolchain_cmd.command {
             ToolchainSubcommand::List => return Ok(ExecutionPlan::ListToolchains),
         },
-        VerusSubcommand::Verify(options) => VerusConfig {
+        VerusSubcommand::Verify { options, pipelined_erasure } => VerusConfig {
             current_dir,
-            subcommand: "check",
+            subcommand: if pipelined_erasure { "build" } else { "check" },
             options,
-            compile_primary: false,
+            compile_primary: pipelined_erasure,
             verify_deps: true,
             warn_if_nothing_verified: true,
+            pipelined_erasure,
         },
         VerusSubcommand::Focus(options) => VerusConfig {
             current_dir,
@@ -61,6 +62,7 @@ pub fn plan_execution<'a>(
             compile_primary: false,
             verify_deps: false,
             warn_if_nothing_verified: true,
+            pipelined_erasure: false,
         },
         VerusSubcommand::Build(options) => VerusConfig {
             current_dir,
@@ -69,6 +71,7 @@ pub fn plan_execution<'a>(
             compile_primary: true,
             verify_deps: true,
             warn_if_nothing_verified: false,
+            pipelined_erasure: false,
         },
         VerusSubcommand::Check(options) => VerusConfig {
             current_dir,
@@ -77,6 +80,7 @@ pub fn plan_execution<'a>(
             compile_primary: false,
             verify_deps: true,
             warn_if_nothing_verified: true,
+            pipelined_erasure: false,
         },
     };
 

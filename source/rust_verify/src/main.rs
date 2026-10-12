@@ -34,6 +34,21 @@ pub fn main() {
     let internal_program = internal_args.next().unwrap();
     let (build_test_mode, has_rustc) = if let Some(first_arg) = internal_args.next() {
         match first_arg.as_str() {
+            rust_verify::driver::PIPELINED_ERASURE_DRIVER_ARG => {
+                let vstd = match internal_args.next().as_deref() {
+                    Some("is-vstd") => rust_verify::config::Vstd::IsVstd,
+                    Some("no-vstd") => rust_verify::config::Vstd::NoVstd,
+                    Some("imported") => rust_verify::config::Vstd::Imported,
+                    Some("is-core") => rust_verify::config::Vstd::IsCore,
+                    Some("imported-via-core") => rust_verify::config::Vstd::ImportedViaCore,
+                    mode => panic!("invalid pipelined erasure vstd mode: {mode:?}"),
+                };
+                let rustc_args: Vec<_> = internal_args.collect();
+                if rust_verify::driver::run_pipelined_erasure_driver(rustc_args, vstd).is_err() {
+                    std::process::exit(1);
+                }
+                return;
+            }
             rust_verify::trait_check::TC_DRIVER_ARG => {
                 let mut internal_args: Vec<_> = internal_args.collect();
                 internal_args.insert(0, internal_program);
