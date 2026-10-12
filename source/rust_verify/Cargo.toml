@@ -26,6 +26,9 @@ sha2 = { workspace = true }
 sise = { workspace = true }
 vir = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemalloc-sys = { version = "=0.6.1", optional = true, features = ["unprefixed_malloc_on_supported_platforms"] }
+
 [target.'cfg(windows)'.dependencies]
 win32job = "1"
 
@@ -36,6 +39,7 @@ rust_verify_test_macros = { path = "../rust_verify_test_macros" }
 cargo-verus-toolchains = { workspace = true }
 
 [features]
+jemalloc = ["dep:tikv-jemalloc-sys"]
 singular = ["vir/singular", "air/singular"]
 
 [package.metadata.rust-analyzer]

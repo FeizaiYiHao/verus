@@ -24,6 +24,27 @@ fn os_setup() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(all(target_os = "linux", feature = "jemalloc"))]
+mod jemalloc {
+    use std::ffi::{c_int, c_void};
+    use tikv_jemalloc_sys as sys;
+
+    // Retain unprefixed entry points so they interpose allocations made through rustc_driver.
+    #[used]
+    static _CALLOC: unsafe extern "C" fn(usize, usize) -> *mut c_void = sys::calloc;
+    #[used]
+    static _POSIX_MEMALIGN: unsafe extern "C" fn(*mut *mut c_void, usize, usize) -> c_int =
+        sys::posix_memalign;
+    #[used]
+    static _ALIGNED_ALLOC: unsafe extern "C" fn(usize, usize) -> *mut c_void = sys::aligned_alloc;
+    #[used]
+    static _MALLOC: unsafe extern "C" fn(usize) -> *mut c_void = sys::malloc;
+    #[used]
+    static _REALLOC: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void = sys::realloc;
+    #[used]
+    static _FREE: unsafe extern "C" fn(*mut c_void) = sys::free;
+}
+
 pub fn main() {
     let mut dep_tracker = rust_verify::cargo_verus_dep_tracker::DepTracker::init();
     let via_cargo = dep_tracker.compare_env(rust_verify::cargo_verus::VERUS_DRIVER_VIA_CARGO, "1");
