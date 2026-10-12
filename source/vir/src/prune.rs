@@ -6,7 +6,7 @@ use crate::ast::{
     ArrayKind, AssocTypeImpl, AssocTypeImplX, AutospecUsage, BinaryOp, BoundsCheck, CallTarget,
     CrateId, Datatype, Dt, Expr, ExprX, Fun, FunWithVis, Function, FunctionKind, Ident, Krate,
     KrateX, Mode, Module, ModuleX, OpaqueType, Path, Pattern, PatternX, Place, PlaceX, RevealGroup,
-    Stmt, Trait, TraitId, TraitX, Typ, TypX, UnaryOp, UnaryOpr,
+    Trait, TraitId, TraitX, Typ, TypX, UnaryOp, UnaryOpr, VirErr,
 };
 use crate::ast_util::{
     array_kind_of_typ, is_body_visible_to, is_visible_to, is_visible_to_or_true,
@@ -80,6 +80,9 @@ struct Ctxt {
     assoc_type_impl_map: HashMap<AssocTypeGroup, Vec<AssocTypeImpl>>,
     // Map (D, T.f) -> D.f if D implements T.f:
     method_map: HashMap<(ReachedType, Fun), Vec<Fun>>,
+    // Indexes method_map by trait method and receiver type.
+    method_self_typs: HashMap<Fun, Vec<ReachedType>>,
+    method_functions: HashMap<ReachedType, Vec<Fun>>,
     // For a broadcast function f with triggers containing functions f0..fn, point f0..fn to f:
     fun_to_trigger_broadcasts: HashMap<Fun, Vec<Fun>>,
     typ_to_trigger_broadcasts: HashMap<ReachedType, Vec<Fun>>,
@@ -118,6 +121,8 @@ struct State {
     // (not just used for the broadcast)
     broadcast_functions_fully_reached: HashSet<Fun>,
     resolve_typs: Option<ResolvedTypeCollection>,
+    // Whether invariant-set operations have been reached.
+    reached_set_ops: bool,
 }
 
 fn typ_to_reached_type(typ: &Typ) -> ReachedType {
@@ -185,6 +190,9 @@ fn reach<A: std::hash::Hash + std::cmp::Eq + Clone>(
 
 fn reach_function_inner(ctxt: &Ctxt, state: &mut State, name: &Fun, fully_reach: bool) {
     if fully_reach {
+        if state.broadcast_functions_fully_reached.contains(name) {
+            return;
+        }
         state.broadcast_functions_fully_reached.insert(name.clone());
     }
     if ctxt.function_map.contains_key(name) {
@@ -268,6 +276,9 @@ fn reach_assoc_type_impl(ctxt: &Ctxt, state: &mut State, name: &AssocTypeGroup) 
 }
 
 fn reach_type(ctxt: &Ctxt, state: &mut State, typ: &ReachedType) {
+    if state.reached_types.contains(typ) {
+        return;
+    }
     match typ {
         ReachedType::Datatype(dt) => {
             if matches!(dt, Dt::Tuple(_)) || ctxt.datatype_map.contains_key(dt) {
@@ -326,19 +337,32 @@ fn reach_typ(ctxt: &Ctxt, state: &mut State, typ: &Typ) {
     }
 }
 
-fn reached_methods<'a, 'b, I>(ctxt: &Ctxt, iter: I) -> Vec<Fun>
-where
-    I: Iterator<Item = (&'a ReachedType, &'b Fun)>,
-{
-    // If:
-    // - we reach both D and T.f
-    // - and D implements T.f with D.f
-    // add D.f
+// Finds method implementations after reaching a trait method.
+fn reached_methods_of_function(ctxt: &Ctxt, state: &State, function: &Fun) -> Vec<Fun> {
     let mut method_impls: Vec<Fun> = Vec::new();
-    for (self_typ, function) in iter {
-        if let Some(ms) = ctxt.method_map.get(&(self_typ.clone(), function.clone())) {
-            for method_impl in ms {
-                method_impls.push(method_impl.clone());
+    if let Some(self_typs) = ctxt.method_self_typs.get(function) {
+        for self_typ in self_typs {
+            if *self_typ == ReachedType::None || state.reached_types.contains(self_typ) {
+                let ms = &ctxt.method_map[&(self_typ.clone(), function.clone())];
+                for method_impl in ms {
+                    method_impls.push(method_impl.clone());
+                }
+            }
+        }
+    }
+    method_impls
+}
+
+// Finds method implementations after reaching a receiver type.
+fn reached_methods_of_type(ctxt: &Ctxt, state: &State, self_typ: &ReachedType) -> Vec<Fun> {
+    let mut method_impls: Vec<Fun> = Vec::new();
+    if let Some(functions) = ctxt.method_functions.get(self_typ) {
+        for function in functions {
+            if state.reached_functions.contains(function) {
+                let ms = &ctxt.method_map[&(self_typ.clone(), function.clone())];
+                for method_impl in ms {
+                    method_impls.push(method_impl.clone());
+                }
             }
         }
     }
@@ -403,11 +427,11 @@ fn traverse_generic_bounds(
         reach_bound_trait(ctxt, state, path);
     }
     if traverse_typs {
-        let ft = |state: &mut State, t: &Typ| {
+        let ft = |state: &mut State, t: &Typ| -> Result<(), VirErr> {
             traverse_typ(ctxt, state, t);
-            Ok(t.clone())
+            Ok(())
         };
-        let _ = crate::ast_visitor::map_generic_bounds_visitor(bounds, state, &ft)
+        crate::ast_visitor::walk_generic_bounds_visitor_env(bounds, state, &ft)
             .expect("traverse_typs");
     }
 }
@@ -415,6 +439,10 @@ fn traverse_generic_bounds(
 // set operations may be invoked for checking invariant masks,
 // either when opening an invariant or invoking another function.
 fn reach_set_ops(state: &mut State, ctxt: &Ctxt) {
+    if state.reached_set_ops {
+        return;
+    }
+    state.reached_set_ops = true;
     reach_function(ctxt, state, &fn_iset_contains_name());
     reach_function(ctxt, state, &fn_iset_empty_name());
     reach_function(ctxt, state, &fn_iset_full_name());
@@ -458,9 +486,9 @@ fn maybe_reach_set_ops_for_call(
 
 fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
     loop {
-        let ft = |state: &mut State, t: &Typ| {
+        let ft = |state: &mut State, t: &Typ| -> Result<(), VirErr> {
             traverse_typ(ctxt, state, t);
-            Ok(t.clone())
+            Ok(())
         };
         if let Some(f) = state.worklist_functions.pop() {
             let function = &ctxt.function_map[&f];
@@ -485,9 +513,9 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
                 reach_atomic_update_ops(state, ctxt);
             }
 
-            // note: the types in typ_bounds are handled below by map_function_visitor_env
+            // Types in typ_bounds are visited below.
             traverse_generic_bounds(ctxt, state, &function.x.typ_bounds, false);
-            let fe = |state: &mut State, _: &mut VisitorScopeMap, e: &Expr| {
+            let fe = |state: &mut State, e: &Expr| -> Result<(), VirErr> {
                 // note: the visitor automatically reaches e.typ
                 match &e.x {
                     ExprX::ConstVar(name, _) => {
@@ -579,10 +607,9 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
                     }
                     _ => {}
                 }
-                Ok(e.clone())
+                Ok(())
             };
-            let fs = |_: &mut State, _: &mut VisitorScopeMap, s: &Stmt| Ok(vec![s.clone()]);
-            let fpl = |state: &mut State, _: &mut VisitorScopeMap, p: &Place| {
+            let fpl = |state: &mut State, p: &Place| -> Result<(), VirErr> {
                 match &p.x {
                     PlaceX::Index(_, _, ArrayKind::Array, _) => {
                         reach_function(ctxt, state, &fn_array_update());
@@ -596,9 +623,9 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
                     }
                     _ => {}
                 }
-                Ok(p.clone())
+                Ok(())
             };
-            let fp = |state: &mut State, _: &mut VisitorScopeMap, pat: &Pattern| {
+            let fp = |state: &mut State, pat: &Pattern| -> Result<(), VirErr> {
                 match &pat.x {
                     PatternX::Slice(..) => match array_kind_of_typ(&pat.typ).0 {
                         ArrayKind::Array => {
@@ -612,18 +639,11 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
                     },
                     _ => {}
                 }
-                Ok(pat.clone())
+                Ok(())
             };
-            let mut map: VisitorScopeMap = ScopeMap::new();
-            // TODO: this clones the function unnecessarily
-            crate::ast_visitor::map_function_visitor_env(
-                &function, &mut map, state, &fe, &fs, &ft, &fpl, &fp,
-            )
-            .unwrap();
-            let methods = reached_methods(
-                ctxt,
-                state.reached_types.iter().chain([ReachedType::None].iter()).map(|t| (t, &f)),
-            );
+            crate::ast_visitor::walk_function_visitor_env(&function, state, &fe, &fp, &ft, &fpl)
+                .unwrap();
+            let methods = reached_methods_of_function(ctxt, state, &f);
             reach_methods(ctxt, state, methods);
             continue;
         }
@@ -641,7 +661,7 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
                 ReachedType::Datatype(dt @ Dt::Path(_path)) => {
                     let datatype = &ctxt.datatype_map[dt];
                     traverse_generic_bounds(ctxt, state, &datatype.x.typ_bounds, false);
-                    crate::ast_visitor::map_datatype_visitor_env(&datatype, state, &ft).unwrap();
+                    crate::ast_visitor::walk_datatype_visitor_env(&datatype, state, &ft).unwrap();
                     if let Some(FunWithVis { fun, visibility }) =
                         &datatype.x.user_defined_invariant_fn
                         && is_visible_to_or_true(visibility, &ctxt.module)
@@ -665,7 +685,7 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
                     reach_trait_impl(ctxt, state, imp);
                 }
             }
-            let methods = reached_methods(ctxt, state.reached_functions.iter().map(|f| (&t, f)));
+            let methods = reached_methods_of_type(ctxt, state, &t);
             reach_methods(ctxt, state, methods);
             let assoc_decls: Vec<(Path, Ident)> =
                 state.reached_assoc_type_decls.iter().cloned().collect();
@@ -697,7 +717,7 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
                 }
                 let ti = &trait_impl.trait_impl;
                 traverse_generic_bounds(ctxt, state, &ti.x.typ_bounds, false);
-                crate::ast_visitor::map_trait_impl_visitor_env(&ti, state, &ft).unwrap();
+                crate::ast_visitor::walk_trait_impl_visitor_env(&ti, state, &ft).unwrap();
             }
             continue;
         }
@@ -718,7 +738,7 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
             if let Some(assoc_impls) = ctxt.assoc_type_impl_map.get(&assoc_group) {
                 for assoc_impl in assoc_impls {
                     traverse_generic_bounds(ctxt, state, &assoc_impl.x.typ_bounds, false);
-                    crate::ast_visitor::map_assoc_type_impl_visitor_env(&assoc_impl, state, &ft)
+                    crate::ast_visitor::walk_assoc_type_impl_visitor_env(&assoc_impl, state, &ft)
                         .unwrap();
                 }
             }
@@ -1180,6 +1200,8 @@ pub fn prune_krate_for_module_or_krate(
     let mut typ_to_trait_impls: HashMap<ReachedType, Vec<ImplName>> = HashMap::new();
     let mut trait_impl_map: HashMap<ImplName, ReachTraitImpl> = HashMap::new();
     let mut method_map: HashMap<(ReachedType, Fun), Vec<Fun>> = HashMap::new();
+    let mut method_self_typs: HashMap<Fun, Vec<ReachedType>> = HashMap::new();
+    let mut method_functions: HashMap<ReachedType, Vec<Fun>> = HashMap::new();
     let mut fun_to_trigger_broadcasts: HashMap<Fun, Vec<Fun>> = HashMap::new();
     let mut typ_to_trigger_broadcasts: HashMap<ReachedType, Vec<Fun>> = HashMap::new();
     let mut fun_revealed_broadcast_map: HashMap<Fun, ReachBroadcastFunction> = HashMap::new();
@@ -1195,6 +1217,8 @@ pub fn prune_krate_for_module_or_krate(
             let key = (typ_to_reached_type(self_typ), method.clone());
             if !method_map.contains_key(&key) {
                 method_map.insert(key.clone(), Vec::new());
+                method_self_typs.entry(key.1.clone()).or_default().push(key.0.clone());
+                method_functions.entry(key.0.clone()).or_default().push(key.1.clone());
             }
             method_map.get_mut(&key).unwrap().push(f.x.name.clone());
         }
@@ -1302,6 +1326,8 @@ pub fn prune_krate_for_module_or_krate(
         trait_impl_map,
         assoc_type_impl_map,
         method_map,
+        method_self_typs,
+        method_functions,
         fun_to_trigger_broadcasts,
         typ_to_trigger_broadcasts,
         fun_revealed_broadcast_map,

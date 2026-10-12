@@ -2200,6 +2200,123 @@ where
     visitor.visit_assoc_type_impl(assoc)
 }
 
+/// Walks a function with the same callback order as `map_function_visitor_env`
+/// without rebuilding its nodes.
+struct WalkFunctionVisitorEnv<'a, E, FE, FP, FT, FPL> {
+    env: &'a mut E,
+    fe: &'a FE,
+    fp: &'a FP,
+    ft: &'a FT,
+    fpl: &'a FPL,
+}
+
+impl<'a, E, FE, FP, FT, FPL> AstVisitor<Walk, VirErr, NoScoper>
+    for WalkFunctionVisitorEnv<'a, E, FE, FP, FT, FPL>
+where
+    FE: Fn(&mut E, &Expr) -> Result<(), VirErr>,
+    FP: Fn(&mut E, &Pattern) -> Result<(), VirErr>,
+    FT: Fn(&mut E, &Typ) -> Result<(), VirErr>,
+    FPL: Fn(&mut E, &Place) -> Result<(), VirErr>,
+{
+    fn visit_typ(&mut self, typ: &Typ) -> Result<(), VirErr> {
+        self.visit_typ_rec(typ)?;
+        (self.ft)(self.env, typ)
+    }
+
+    fn visit_expr(&mut self, expr: &Expr) -> Result<(), VirErr> {
+        self.visit_expr_rec(expr)?;
+        (self.fe)(self.env, expr)
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt) -> Result<(), VirErr> {
+        self.visit_stmt_rec(stmt)
+    }
+
+    fn visit_place(&mut self, place: &Place) -> Result<(), VirErr> {
+        self.visit_place_rec(place)?;
+        (self.fpl)(self.env, place)
+    }
+
+    fn visit_pattern(&mut self, pattern: &Pattern) -> Result<(), VirErr> {
+        self.visit_pattern_rec(pattern)?;
+        (self.fp)(self.env, pattern)
+    }
+}
+
+/// Visits a function without rebuilding its nodes.
+pub(crate) fn walk_function_visitor_env<E, FE, FP, FT, FPL>(
+    function: &Function,
+    env: &mut E,
+    fe: &FE,
+    fp: &FP,
+    ft: &FT,
+    fpl: &FPL,
+) -> Result<(), VirErr>
+where
+    FE: Fn(&mut E, &Expr) -> Result<(), VirErr>,
+    FP: Fn(&mut E, &Pattern) -> Result<(), VirErr>,
+    FT: Fn(&mut E, &Typ) -> Result<(), VirErr>,
+    FPL: Fn(&mut E, &Place) -> Result<(), VirErr>,
+{
+    let mut vis = WalkFunctionVisitorEnv { env, fe, fp, ft, fpl };
+    vis.visit_function(function)
+}
+
+/// Visits the types in generic bounds without rebuilding them.
+pub(crate) fn walk_generic_bounds_visitor_env<E, FT>(
+    bounds: &crate::ast::GenericBounds,
+    env: &mut E,
+    ft: &FT,
+) -> Result<(), VirErr>
+where
+    FT: Fn(&mut E, &Typ) -> Result<(), VirErr>,
+{
+    for bound in bounds.iter() {
+        let mut visitor = WalkTypVisitorEnv { env, ft };
+        visitor.visit_generic_bound(bound)?;
+    }
+    Ok(())
+}
+
+/// Visits the types in a datatype without rebuilding them.
+pub(crate) fn walk_datatype_visitor_env<E, FT>(
+    datatype: &Datatype,
+    env: &mut E,
+    ft: &FT,
+) -> Result<(), VirErr>
+where
+    FT: Fn(&mut E, &Typ) -> Result<(), VirErr>,
+{
+    let mut visitor = WalkTypVisitorEnv { env, ft };
+    visitor.visit_datatype(datatype)
+}
+
+/// Visits the types in a trait implementation without rebuilding them.
+pub(crate) fn walk_trait_impl_visitor_env<E, FT>(
+    imp: &TraitImpl,
+    env: &mut E,
+    ft: &FT,
+) -> Result<(), VirErr>
+where
+    FT: Fn(&mut E, &Typ) -> Result<(), VirErr>,
+{
+    let mut visitor = WalkTypVisitorEnv { env, ft };
+    visitor.visit_trait_impl(imp)
+}
+
+/// Visits the types in an associated type implementation without rebuilding them.
+pub(crate) fn walk_assoc_type_impl_visitor_env<E, FT>(
+    assoc: &AssocTypeImpl,
+    env: &mut E,
+    ft: &FT,
+) -> Result<(), VirErr>
+where
+    FT: Fn(&mut E, &Typ) -> Result<(), VirErr>,
+{
+    let mut visitor = WalkTypVisitorEnv { env, ft };
+    visitor.visit_assoc_type_impl(assoc)
+}
+
 // Marks each node whose subtree contains a selected expression. Types cannot
 // contain expressions and do not need to be visited.
 #[derive(Default)]
