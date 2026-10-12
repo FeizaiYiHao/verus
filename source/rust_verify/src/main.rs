@@ -569,6 +569,10 @@ pub fn main() {
         println!("{}", serde_json::ser::to_string_pretty(&out).expect("invalid json"));
     }
 
+    // Verification releases child processes and buffered writers before returning. The remaining
+    // Verifier fields own only heap allocations, so reclaiming them cannot affect process output.
+    std::mem::forget(verifier);
+
     match status {
         Ok(()) => (),
         Err(_) => {
