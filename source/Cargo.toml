@@ -228,3 +228,9 @@ similar.opt-level = 3
 # The test binaries only spawn the verifier, so optimizing them is wasted work
 [profile.release.package]
 rust_verify_test.opt-level = 0
+# Optimize the parser stack used by verus_builtin_macros.
+verus_syn.opt-level = 3
+proc-macro2.opt-level = 3
+quote.opt-level = 3
+syn.opt-level = 3
+verus_prettyplease.opt-level = 3
