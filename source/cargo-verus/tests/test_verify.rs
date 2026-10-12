@@ -21,6 +21,9 @@ fn crate_optin_workdir() {
     };
 
     assert_eq!(cargo_plan.args, ["check"]);
+    let driver_args = cargo_plan.parse_driver_args(VERUS_DRIVER_ARGS);
+    assert!(!driver_args.contains(&"compile-when-primary-package"));
+    assert!(!driver_args.contains(&"pipelined-erasure"));
 
     cargo_plan.assert_env_has(RUSTC_WRAPPER);
     cargo_plan.assert_env_sets(CARGO_DEFAULT_LIB_METADATA, "verus-VerusVersion");
@@ -28,6 +31,22 @@ fn crate_optin_workdir() {
     cargo_plan.assert_env_sets(RUSTC_BOOTSTRAP, "1");
     cargo_plan.assert_env_sets(VERUS_DRIVER_VIA_CARGO, "1");
     cargo_plan.assert_env_sets_key_prefix(&verify_crate_prefix, "1");
+}
+
+#[test]
+fn pipelined_erasure_uses_cargo_build() {
+    let project_dir = MockPackage::new("foo").lib().verify(true).materialize();
+    let args = [BIN_NAME, "verify", "--pipelined-erasure"];
+
+    let plan = plan_execution(project_dir.path(), args).expect("plan");
+    let ExecutionPlan::RunCargo(cargo_plan) = plan else {
+        panic!("expected `ExecutionPlan::RunCargo`");
+    };
+
+    assert_eq!(cargo_plan.args, ["build"]);
+    let driver_args = cargo_plan.parse_driver_args(VERUS_DRIVER_ARGS);
+    assert!(driver_args.contains(&"compile-when-primary-package"));
+    assert!(driver_args.contains(&"pipelined-erasure"));
 }
 
 #[test]

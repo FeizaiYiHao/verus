@@ -289,6 +289,7 @@ pub struct VerusConfig {
     pub compile_primary: bool,
     pub verify_deps: bool,
     pub warn_if_nothing_verified: bool,
+    pub pipelined_erasure: bool,
 }
 
 pub fn plan_cargo_run(mut cfg: VerusConfig) -> Result<CargoRunPlan> {
@@ -421,6 +422,10 @@ pub fn plan_cargo_run(mut cfg: VerusConfig) -> Result<CargoRunPlan> {
             "--VIA-CARGO".to_owned(),
             "compile-when-primary-package".to_owned(),
         ]);
+    }
+    if cfg.pipelined_erasure {
+        common_verus_driver_args
+            .extend_from_slice(&["--VIA-CARGO".to_owned(), "pipelined-erasure".to_owned()]);
     }
     if cfg.options.verbosity >= 2 {
         common_verus_driver_args.push("-v".to_owned());
