@@ -4000,8 +4000,20 @@ fn check_function_inner(
         let borrow_spec = record.infer_spec_for_implicit_reborrows.as_ref().expect("borrow_spec");
         if borrow_spec.len() > 0 || !record.assert_irrefutable.is_empty() {
             let mut functionx = function.x.clone();
-            functionx.body = Some(crate::ast_visitor::map_expr_stmt_visitor(
+            use crate::ast_visitor::map_expr_stmt_targets_visitor;
+            let is_expr_target = |expr: &Expr| {
+                matches!(&expr.x, ExprX::ImplicitReborrowOrSpecRead(..))
+                    || matches!(&expr.x, ExprX::Match(..))
+                        && record.assert_irrefutable.contains(&expr.span.id)
+            };
+            let is_stmt_target = |stmt: &Stmt| {
+                matches!(&stmt.x, StmtX::Decl { .. })
+                    && record.assert_irrefutable.contains(&stmt.span.id)
+            };
+            functionx.body = Some(map_expr_stmt_targets_visitor(
                 body,
+                &is_expr_target,
+                &is_stmt_target,
                 &|expr: &Expr| {
                     match &expr.x {
                         ExprX::ImplicitReborrowOrSpecRead(place, two_phase, inner_span) => {

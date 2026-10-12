@@ -54,6 +54,13 @@ fn get_trait(fun: &Fun) -> Path {
     fun.path.pop_segment()
 }
 
+fn is_dynamic_resolved_call(expr: &Expr) -> bool {
+    matches!(
+        &expr.x,
+        ExprX::Call { target: CallTarget::Fun(CallTargetKind::DynamicResolved { .. }, ..), .. }
+    )
+}
+
 fn demote_one_expr(lookup: &DemoteTraitLookup, expr: &Expr) -> Result<Expr, VirErr> {
     let DemoteTraitLookup { traits, internal_traits, extension_traits, impl_to_spec_traits, funs } =
         lookup;
@@ -315,16 +322,11 @@ pub fn demote_external_traits_function_calls(
     lookup: &DemoteTraitLookup,
     function: &Function,
 ) -> Result<Function, VirErr> {
-    let mut map: VisitorScopeMap = ScopeMap::new();
-    crate::ast_visitor::map_function_visitor_env(
+    crate::ast_visitor::map_function_targets_visitor(
         &function,
-        &mut map,
         &mut (),
-        &|_state, _, expr| demote_one_expr(&lookup, expr),
-        &|_state, _, stmt| Ok(vec![stmt.clone()]),
-        &|_state, typ| Ok(typ.clone()),
-        &|_state, _, place| Ok(place.clone()),
-        &|_state, _, pattern| Ok(pattern.clone()),
+        &is_dynamic_resolved_call,
+        &|_state, expr| demote_one_expr(&lookup, expr),
     )
 }
 
