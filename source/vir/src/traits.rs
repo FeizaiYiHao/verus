@@ -20,6 +20,13 @@ fn get_trait(fun: &Fun) -> Path {
     fun.path.pop_segment()
 }
 
+fn is_dynamic_resolved_call(expr: &Expr) -> bool {
+    matches!(
+        &expr.x,
+        ExprX::Call { target: CallTarget::Fun(CallTargetKind::DynamicResolved { .. }, ..), .. }
+    )
+}
+
 fn demote_one_expr(
     traits: &HashSet<Path>,
     internal_traits: &HashSet<Path>,
@@ -277,12 +284,11 @@ pub fn demote_external_traits(
             *function = Spanned::new(function.span.clone(), functionx);
         }
 
-        let mut map: VisitorScopeMap = ScopeMap::new();
-        *function = crate::ast_visitor::map_function_visitor_env(
+        *function = crate::ast_visitor::map_function_targets_visitor(
             &function,
-            &mut map,
             &mut (),
-            &|_state, _, expr| {
+            &is_dynamic_resolved_call,
+            &|_state, expr| {
                 demote_one_expr(
                     &traits,
                     &internal_traits,
@@ -292,10 +298,6 @@ pub fn demote_external_traits(
                     expr,
                 )
             },
-            &|_state, _, stmt| Ok(vec![stmt.clone()]),
-            &|_state, typ| Ok(typ.clone()),
-            &|_state, _, place| Ok(place.clone()),
-            &|_state, _, pattern| Ok(pattern.clone()),
         )?;
     }
 

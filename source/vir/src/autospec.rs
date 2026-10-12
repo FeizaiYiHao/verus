@@ -1,10 +1,8 @@
 use crate::ast::{
     AutospecUsage, CallTarget, Expr, ExprX, Fun, Function, Krate, KrateX, SpannedTyped, VirErr,
 };
-use crate::ast_visitor::VisitorScopeMap;
 use crate::util::vec_map_result;
 pub use air::ast_util::{ident_binder, str_ident};
-use air::scope_map::ScopeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -123,20 +121,19 @@ fn simplify_one_expr(functions: &HashMap<Fun, Function>, expr: &Expr) -> Result<
     }
 }
 
+fn is_const_var_or_fun_call(expr: &Expr) -> bool {
+    matches!(&expr.x, ExprX::ConstVar(..) | ExprX::Call { target: CallTarget::Fun(..), .. })
+}
+
 fn simplify_function(
     func_map: &HashMap<Fun, Function>,
     function: &Function,
 ) -> Result<Function, VirErr> {
-    let mut map: VisitorScopeMap = ScopeMap::new();
-    crate::ast_visitor::map_function_visitor_env(
-        &function,
-        &mut map,
+    crate::ast_visitor::map_function_targets_visitor(
+        function,
         &mut (),
-        &|_state, _, expr| simplify_one_expr(func_map, expr),
-        &|_state, _, stmt| Ok(vec![stmt.clone()]),
-        &|_state, typ| Ok(typ.clone()),
-        &|_state, _, place| Ok(place.clone()),
-        &|_state, _, pat| Ok(pat.clone()),
+        &is_const_var_or_fun_call,
+        &|_state, expr| simplify_one_expr(func_map, expr),
     )
 }
 

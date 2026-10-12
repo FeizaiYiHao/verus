@@ -1688,6 +1688,25 @@ where
     ast_visitor_check_with_scope_map(expr, &mut scope_map, env, fe, fs, fp, ft, fpl)
 }
 
+// Holds the node that supplies the innermost span for type callbacks.
+enum MostSpecificSpan {
+    Expr(Expr),
+    Stmt(Stmt),
+    Place(Place),
+    Pattern(Pattern),
+}
+
+impl MostSpecificSpan {
+    fn span(&self) -> &Span {
+        match self {
+            MostSpecificSpan::Expr(e) => &e.span,
+            MostSpecificSpan::Stmt(s) => &s.span,
+            MostSpecificSpan::Place(p) => &p.span,
+            MostSpecificSpan::Pattern(p) => &p.span,
+        }
+    }
+}
+
 struct WalkAstVisitor<'a, E, FE, FS, FP, FT, FPL> {
     env: &'a mut E,
     fe: &'a mut FE,
@@ -1697,7 +1716,7 @@ struct WalkAstVisitor<'a, E, FE, FS, FP, FT, FPL> {
     fpl: &'a mut FPL,
     map: &'a mut VisitorScopeMap,
     // Since types don't have spans, keep track of the best span as we descend
-    most_specific_span: Span,
+    most_specific_span: MostSpecificSpan,
 }
 
 impl<'a, E, FE, FS, FP, FT, FPL, T> AstVisitor<Walk, T, VisitorScopeMap>
@@ -1710,7 +1729,7 @@ where
     FPL: FnMut(&mut E, &mut VisitorScopeMap, &Place) -> VisitorControlFlow<T>,
 {
     fn visit_typ(&mut self, typ: &Typ) -> Result<(), T> {
-        match (self.ft)(&mut self.env, self.map, typ, &self.most_specific_span) {
+        match (self.ft)(&mut self.env, self.map, typ, self.most_specific_span.span()) {
             VisitorControlFlow::Recurse => self.visit_typ_rec(typ),
             VisitorControlFlow::Return => Ok(()),
             VisitorControlFlow::Stop(err) => Err(err),
@@ -1718,7 +1737,7 @@ where
     }
 
     fn visit_expr(&mut self, expr: &Expr) -> Result<(), T> {
-        self.most_specific_span = expr.span.clone();
+        self.most_specific_span = MostSpecificSpan::Expr(expr.clone());
         match (self.fe)(&mut self.env, self.map, expr) {
             VisitorControlFlow::Recurse => self.visit_expr_rec(expr),
             VisitorControlFlow::Return => Ok(()),
@@ -1727,7 +1746,7 @@ where
     }
 
     fn visit_stmt(&mut self, stmt: &Stmt) -> Result<(), T> {
-        self.most_specific_span = stmt.span.clone();
+        self.most_specific_span = MostSpecificSpan::Stmt(stmt.clone());
         match (self.fs)(&mut self.env, self.map, stmt) {
             VisitorControlFlow::Recurse => self.visit_stmt_rec(stmt),
             VisitorControlFlow::Return => Ok(()),
@@ -1736,7 +1755,7 @@ where
     }
 
     fn visit_place(&mut self, place: &Place) -> Result<(), T> {
-        self.most_specific_span = place.span.clone();
+        self.most_specific_span = MostSpecificSpan::Place(place.clone());
         match (self.fpl)(&mut self.env, self.map, place) {
             VisitorControlFlow::Recurse => self.visit_place_rec(place),
             VisitorControlFlow::Return => Ok(()),
@@ -1745,7 +1764,7 @@ where
     }
 
     fn visit_pattern(&mut self, pattern: &Pattern) -> Result<(), T> {
-        self.most_specific_span = pattern.span.clone();
+        self.most_specific_span = MostSpecificSpan::Pattern(pattern.clone());
         match (self.fp)(&mut self.env, self.map, pattern) {
             VisitorControlFlow::Recurse => self.visit_pattern_rec(pattern),
             VisitorControlFlow::Return => Ok(()),
@@ -1775,8 +1794,16 @@ where
     FT: FnMut(&mut E, &mut VisitorScopeMap, &Typ, &Span) -> VisitorControlFlow<T>,
     FPL: FnMut(&mut E, &mut VisitorScopeMap, &Place) -> VisitorControlFlow<T>,
 {
-    let mut vis =
-        WalkAstVisitor { env, fe, fs, fp, ft, fpl, map, most_specific_span: expr.span.clone() };
+    let mut vis = WalkAstVisitor {
+        env,
+        fe,
+        fs,
+        fp,
+        ft,
+        fpl,
+        map,
+        most_specific_span: MostSpecificSpan::Expr(expr.clone()),
+    };
     match vis.visit_expr(expr) {
         Ok(()) => VisitorControlFlow::Recurse,
         Err(t) => VisitorControlFlow::Stop(t),
@@ -2171,4 +2198,181 @@ where
 {
     let mut visitor = MapTypVisitorEnv { env, ft };
     visitor.visit_assoc_type_impl(assoc)
+}
+
+// Marks each node whose subtree contains a selected expression. Types cannot
+// contain expressions and do not need to be visited.
+#[derive(Default)]
+struct TargetAncestorMarks {
+    count: usize,
+    exprs: std::collections::HashSet<*const SpannedTyped<ExprX>>,
+    stmts: std::collections::HashSet<*const Spanned<StmtX>>,
+    places: std::collections::HashSet<*const SpannedTyped<PlaceX>>,
+    patterns: std::collections::HashSet<*const SpannedTyped<PatternX>>,
+}
+
+struct MarkTargetAncestorsVisitor<'a, FX, FSX> {
+    is_expr_target: &'a FX,
+    is_stmt_target: &'a FSX,
+    marks: TargetAncestorMarks,
+}
+
+impl<'a, FX, FSX> AstVisitor<Walk, (), NoScoper> for MarkTargetAncestorsVisitor<'a, FX, FSX>
+where
+    FX: Fn(&Expr) -> bool,
+    FSX: Fn(&Stmt) -> bool,
+{
+    fn visit_typ(&mut self, _typ: &Typ) -> Result<(), ()> {
+        Ok(())
+    }
+
+    fn visit_expr(&mut self, expr: &Expr) -> Result<(), ()> {
+        let before = self.marks.count;
+        if (self.is_expr_target)(expr) {
+            self.marks.count += 1;
+        }
+        self.visit_expr_rec(expr)?;
+        if self.marks.count != before {
+            self.marks.exprs.insert(Arc::as_ptr(expr));
+        }
+        Ok(())
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt) -> Result<(), ()> {
+        let before = self.marks.count;
+        if (self.is_stmt_target)(stmt) {
+            self.marks.count += 1;
+        }
+        self.visit_stmt_rec(stmt)?;
+        if self.marks.count != before {
+            self.marks.stmts.insert(Arc::as_ptr(stmt));
+        }
+        Ok(())
+    }
+
+    fn visit_place(&mut self, place: &Place) -> Result<(), ()> {
+        let before = self.marks.count;
+        self.visit_place_rec(place)?;
+        if self.marks.count != before {
+            self.marks.places.insert(Arc::as_ptr(place));
+        }
+        Ok(())
+    }
+
+    fn visit_pattern(&mut self, pattern: &Pattern) -> Result<(), ()> {
+        let before = self.marks.count;
+        self.visit_pattern_rec(pattern)?;
+        if self.marks.count != before {
+            self.marks.patterns.insert(Arc::as_ptr(pattern));
+        }
+        Ok(())
+    }
+}
+
+// Rebuilds marked paths and shares every unmarked subtree.
+struct MapTargetAncestorsVisitor<'a, E, FE, FS> {
+    env: &'a mut E,
+    fe: &'a FE,
+    fs: &'a FS,
+    marks: &'a TargetAncestorMarks,
+}
+
+impl<'a, E, FE, FS> AstVisitor<Rewrite, VirErr, NoScoper>
+    for MapTargetAncestorsVisitor<'a, E, FE, FS>
+where
+    FE: Fn(&mut E, &Expr) -> Result<Expr, VirErr>,
+    FS: Fn(&mut E, &Stmt) -> Result<Vec<Stmt>, VirErr>,
+{
+    fn visit_typ(&mut self, typ: &Typ) -> Result<Typ, VirErr> {
+        Ok(typ.clone())
+    }
+
+    fn visit_expr(&mut self, expr: &Expr) -> Result<Expr, VirErr> {
+        if !self.marks.exprs.contains(&Arc::as_ptr(expr)) {
+            return Ok(expr.clone());
+        }
+        let expr = self.visit_expr_rec(expr)?;
+        (self.fe)(self.env, &expr)
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt) -> Result<Vec<Stmt>, VirErr> {
+        if !self.marks.stmts.contains(&Arc::as_ptr(stmt)) {
+            return Ok(vec![stmt.clone()]);
+        }
+        let stmt = self.visit_stmt_rec(stmt)?;
+        (self.fs)(self.env, &stmt)
+    }
+
+    fn visit_place(&mut self, place: &Place) -> Result<Place, VirErr> {
+        if !self.marks.places.contains(&Arc::as_ptr(place)) {
+            return Ok(place.clone());
+        }
+        self.visit_place_rec(place)
+    }
+
+    fn visit_pattern(&mut self, pattern: &Pattern) -> Result<Pattern, VirErr> {
+        if !self.marks.patterns.contains(&Arc::as_ptr(pattern)) {
+            return Ok(pattern.clone());
+        }
+        self.visit_pattern_rec(pattern)
+    }
+}
+
+/// Maps selected expressions while sharing subtrees that contain no selected expression.
+///
+/// `is_target` must depend only on its expression. For unselected expressions, `fe`
+/// must be side-effect free and return a structurally equal expression. Calls to `fe`
+/// retain the postorder used by `map_function_visitor_env`.
+pub(crate) fn map_function_targets_visitor<E, FE, FX>(
+    function: &Function,
+    env: &mut E,
+    is_target: &FX,
+    fe: &FE,
+) -> Result<Function, VirErr>
+where
+    FE: Fn(&mut E, &Expr) -> Result<Expr, VirErr>,
+    FX: Fn(&Expr) -> bool,
+{
+    let is_stmt_target = |_: &Stmt| false;
+    let mut mark = MarkTargetAncestorsVisitor {
+        is_expr_target: is_target,
+        is_stmt_target: &is_stmt_target,
+        marks: Default::default(),
+    };
+    mark.visit_function(function).expect("MarkTargetAncestorsVisitor");
+    let marks = mark.marks;
+    if marks.count == 0 {
+        return Ok(function.clone());
+    }
+    let fs = |_: &mut E, stmt: &Stmt| Ok(vec![stmt.clone()]);
+    let mut vis = MapTargetAncestorsVisitor { env, fe, fs: &fs, marks: &marks };
+    vis.visit_function(function)
+}
+
+/// Maps selected expressions and statements while sharing unselected subtrees.
+pub(crate) fn map_expr_stmt_targets_visitor<FE, FS, FX, FSX>(
+    expr: &Expr,
+    is_expr_target: &FX,
+    is_stmt_target: &FSX,
+    fe: &FE,
+    fs: &FS,
+) -> Result<Expr, VirErr>
+where
+    FE: Fn(&Expr) -> Result<Expr, VirErr>,
+    FS: Fn(&Stmt) -> Result<Stmt, VirErr>,
+    FX: Fn(&Expr) -> bool,
+    FSX: Fn(&Stmt) -> bool,
+{
+    let mut mark =
+        MarkTargetAncestorsVisitor { is_expr_target, is_stmt_target, marks: Default::default() };
+    mark.visit_expr(expr).expect("MarkTargetAncestorsVisitor");
+    let marks = mark.marks;
+    if marks.count == 0 {
+        return Ok(expr.clone());
+    }
+    let fe_env = |_: &mut (), e: &Expr| fe(e);
+    let fs_env = |_: &mut (), s: &Stmt| Ok(vec![fs(s)?]);
+    let mut vis =
+        MapTargetAncestorsVisitor { env: &mut (), fe: &fe_env, fs: &fs_env, marks: &marks };
+    vis.visit_expr(expr)
 }
