@@ -95,6 +95,11 @@ verus_syn = { version = "=0.0.0-2026-09-06-0133", path = "../dependencies/syn", 
 vir-macros = { path = "vir_macros" }
 vir = { path = "vir" }
 
+# Exact vendored proc-macro2 1.0.107 with the hidden worker-span substrate used by
+# parallel `verus!` item rewriting.
+[patch.crates-io]
+proc-macro2 = { path = "../dependencies/proc-macro2" }
+
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(verus_keep_ghost)',

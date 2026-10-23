@@ -1346,7 +1346,15 @@ where
     F: FnOnce(ParseStream) -> Result<T>,
 {
     let buf = TokenBuffer::new2_rejoin(tokens);
-    let state = tokens_to_parse_buffer(&buf);
+    parse_token_buffer(f, &buf)
+}
+
+/// Parses a rejoin-style buffer, enforcing that the input is fully parsed.
+pub(crate) fn parse_token_buffer<F, T>(f: F, buf: &TokenBuffer) -> Result<T>
+where
+    F: FnOnce(ParseStream) -> Result<T>,
+{
+    let state = tokens_to_parse_buffer(buf);
     let node = f(&state)?;
     state.check_unexpected()?;
     if let Some((unexpected_span, delimiter)) = span_of_unexpected_ignoring_nones(state.cursor()) {

@@ -2844,6 +2844,11 @@ mod printing {
             // they just have to be locally unique to prevent name collisions
             // in function argument position.
             if self.fields.is_empty() {
+                // The process-global counter must only advance in serial order;
+                // a worker job fails here and its caller falls back to serial.
+                if crate::worker_tokens::in_worker_job() {
+                    panic!("PermTuple::to_pattern_tokens: empty tuple inside a worker job");
+                }
                 static COUNTER: AtomicU64 = AtomicU64::new(0);
                 let id = COUNTER.fetch_add(1, Ordering::Relaxed);
                 let var_name = alloc::format!("_perm_tup{id}");
@@ -3276,60 +3281,105 @@ impl parse::Parse for WithSpecOnExpr {
     }
 }
 
+/// One token of a level processed by [`rejoin_core`].
+pub(crate) trait RejoinTok: Sized {
+    /// Character and spacing if this token is a punct.
+    fn punct(&self) -> Option<(char, proc_macro2::Spacing)>;
+    /// `"isnt"`/`"hasnt"` if this token is the identifier `is`/`has` (as printed).
+    fn fold_target(&self) -> Option<&'static str>;
+    /// Whether `next` starts exactly where `self` ends.
+    fn adjacent(&self, next: &Self) -> bool;
+    /// Makes a punct `Joint`; other tokens are unchanged.
+    fn make_joint(&mut self);
+    /// Identifier `joined` replacing `self` (a `!`) and `next`.
+    fn folded(&self, next: &Self, joined: &'static str) -> Self;
+}
+
 /// Rejoins Verus operators within one token-tree level.
 ///
 /// This restores joint punctuation and folds adjacent `!is` and `!has` tokens. Nested
 /// groups are handled by the caller.
 pub(crate) fn rejoin_level(tokens: &mut Vec<proc_macro2::TokenTree>) {
-    use proc_macro2::{Ident, Punct, Spacing, Spacing::*, Span, TokenTree};
-    fn pun(t: &TokenTree) -> Option<(char, Spacing)> {
-        match t {
-            TokenTree::Punct(p) => Some((p.as_char(), p.spacing())),
+    // Adjacency needs real span locations, which worker-job spans do not have
+    // (they would all compare adjacent); worker input is already prejoined.
+    if crate::worker_tokens::in_worker_job() {
+        panic!("verus_syn: Verus operator rejoining is unavailable inside a worker job; parse prejoined tokens");
+    }
+    rejoin_core(tokens);
+}
+
+// Span-adjacency adapter used by every compiler/fallback token path.
+impl RejoinTok for proc_macro2::TokenTree {
+    fn punct(&self) -> Option<(char, proc_macro2::Spacing)> {
+        match self {
+            proc_macro2::TokenTree::Punct(p) => Some((p.as_char(), p.spacing())),
             _ => None,
         }
     }
-    fn adjacent(s1: Span, s2: Span) -> bool {
+    fn fold_target(&self) -> Option<&'static str> {
+        match self {
+            proc_macro2::TokenTree::Ident(id) => match id.to_string().as_str() {
+                "is" => Some("isnt"),
+                "has" => Some("hasnt"),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    fn adjacent(&self, next: &Self) -> bool {
+        let (s1, s2) = (self.span(), next.span());
+        // Equal interned compiler spans `s1.end()` and `s2.start()` have the same
+        // source position, hence the same line/column below; only the files
+        // (taken at the span starts) remain to be compared.
+        if crate::worker_tokens::compiler_end_eq_start(s1, s2) {
+            return s1.local_file() == s2.local_file();
+        }
         let l1 = s1.end();
         let l2 = s2.start();
         s1.local_file() == s2.local_file() && l1.eq(&l2)
     }
-    fn make_joint(t: &mut TokenTree) {
-        if let TokenTree::Punct(p) = t {
-            let mut punct = Punct::new(p.as_char(), Joint);
+    fn make_joint(&mut self) {
+        if let proc_macro2::TokenTree::Punct(p) = self {
+            let mut punct = proc_macro2::Punct::new(p.as_char(), proc_macro2::Spacing::Joint);
             punct.set_span(p.span());
-            *t = TokenTree::Punct(punct);
+            *self = proc_macro2::TokenTree::Punct(punct);
         }
     }
+    fn folded(&self, next: &Self, joined: &'static str) -> Self {
+        let (s1, s2) = (self.span(), next.span());
+        proc_macro2::TokenTree::Ident(proc_macro2::Ident::new(joined, s1.join(s2).unwrap_or(s1)))
+    }
+}
+
+/// Generic Verus operator rejoining of one level, shared by the span-adjacency
+/// and offset-adjacency (`worker_tokens::freeze_rejoin_text`) adapters.
+///
+/// Quirks kept from the original implementation: only indices below `len - 2`
+/// start a pattern, and a `!is`/`!has` fold skips the folded identifier
+/// (`j += 2`), which is removed only after the scan.
+pub(crate) fn rejoin_core<T: RejoinTok>(tokens: &mut Vec<T>) {
+    use proc_macro2::Spacing::*;
     let len = tokens.len();
     // Original indices of identifiers folded into a preceding `!`.
     let mut removed: Vec<usize> = Vec::new();
     let till = if len >= 2 { len - 2 } else { 0 };
     let mut j = 0;
     while j < till {
-        let t0 = pun(&tokens[j]);
+        let t0 = tokens[j].punct();
         if t0 == Some(('!', Alone)) {
-            if let TokenTree::Ident(id) = &tokens[j + 1] {
-                let joined = match id.to_string().as_str() {
-                    "is" => Some("isnt"),
-                    "has" => Some("hasnt"),
-                    _ => None,
-                };
-                if let Some(joined) = joined {
-                    let s1 = tokens[j].span();
-                    let s2 = id.span();
-                    if adjacent(s1, s2) {
-                        tokens[j] = TokenTree::Ident(Ident::new(joined, s1.join(s2).unwrap_or(s1)));
-                        removed.push(j + 1);
-                        j += 2;
-                        continue;
-                    }
+            if let Some(joined) = tokens[j + 1].fold_target() {
+                if tokens[j].adjacent(&tokens[j + 1]) {
+                    tokens[j] = tokens[j].folded(&tokens[j + 1], joined);
+                    removed.push(j + 1);
+                    j += 2;
+                    continue;
                 }
             }
         }
-        let t1 = pun(&tokens[j + 1]);
-        let t2 = pun(&tokens[j + 2]);
+        let t1 = tokens[j + 1].punct();
+        let t2 = tokens[j + 2].punct();
         let t3 = if j + 3 < len {
-            pun(&tokens[j + 3])
+            tokens[j + 3].punct()
         } else {
             None
         };
@@ -3341,23 +3391,23 @@ pub(crate) fn rejoin_level(tokens: &mut Vec<proc_macro2::TokenTree>) {
             | (Some(('<', Joint)), Some(('=', Alone)), Some(('=', Alone)), _)
             | (Some(('&', Joint)), Some(('&', Alone)), Some(('&', Alone)), _)
             | (Some(('|', Joint)), Some(('|', Alone)), Some(('|', Alone)), _) => {
-                if adjacent(tokens[j + 1].span(), tokens[j + 2].span()) {
-                    make_joint(&mut tokens[j + 1]);
+                if tokens[j + 1].adjacent(&tokens[j + 2]) {
+                    tokens[j + 1].make_joint();
                 }
             }
             (Some(('=', Alone)), Some(('~', Alone)), Some(('=', Alone)), _)
             | (Some(('!', Alone)), Some(('~', Alone)), Some(('=', Alone)), _) => {
-                if adjacent(tokens[j + 1].span(), tokens[j + 2].span()) {
-                    make_joint(&mut tokens[j]);
-                    make_joint(&mut tokens[j + 1]);
+                if tokens[j + 1].adjacent(&tokens[j + 2]) {
+                    tokens[j].make_joint();
+                    tokens[j + 1].make_joint();
                 }
             }
             (Some(('=', Alone)), Some(('~', Alone)), Some(('~', Alone)), Some(('=', Alone)))
             | (Some(('!', Alone)), Some(('~', Alone)), Some(('~', Alone)), Some(('=', Alone))) => {
-                if adjacent(tokens[j + 2].span(), tokens[j + 3].span()) {
-                    make_joint(&mut tokens[j]);
-                    make_joint(&mut tokens[j + 1]);
-                    make_joint(&mut tokens[j + 2]);
+                if tokens[j + 2].adjacent(&tokens[j + 3]) {
+                    tokens[j].make_joint();
+                    tokens[j + 1].make_joint();
+                    tokens[j + 2].make_joint();
                 }
             }
             _ => {}

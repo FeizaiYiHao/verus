@@ -68,9 +68,12 @@ impl TokenBuffer {
 
     // Builds the buffer from rejoined levels while preserving bridge normalization of
     // group spans and negative numeric literals.
-    fn recursive_new_rejoin(entries: &mut Vec<Entry>, stream: TokenStream) {
+    // `rejoin` is false when the stream was already rejoined at every level.
+    fn recursive_new_rejoin(entries: &mut Vec<Entry>, stream: TokenStream, rejoin: bool) {
         let mut tokens: Vec<TokenTree> = stream.into_iter().collect();
-        crate::verus::rejoin_level(&mut tokens);
+        if rejoin {
+            crate::verus::rejoin_level(&mut tokens);
+        }
         entries.reserve(tokens.len() + 1);
         for tt in tokens {
             match tt {
@@ -90,7 +93,7 @@ impl TokenBuffer {
                     group.set_span(group.span());
                     let group_start_index = entries.len();
                     entries.push(Entry::End(0, 0)); // we replace this below
-                    Self::recursive_new_rejoin(entries, group.stream());
+                    Self::recursive_new_rejoin(entries, group.stream(), rejoin);
                     let group_end_index = entries.len();
                     let group_offset = group_end_index - group_start_index;
                     entries.push(Entry::End(
@@ -106,8 +109,18 @@ impl TokenBuffer {
 
     /// Creates a token buffer with Verus operators rejoined during construction.
     pub(crate) fn new2_rejoin(stream: TokenStream) -> Self {
+        Self::new2_rejoin_with(stream, true)
+    }
+
+    /// Creates a rejoin-style token buffer from a stream already rejoined at every level.
+    #[doc(hidden)]
+    pub fn new2_prejoined(stream: TokenStream) -> Self {
+        Self::new2_rejoin_with(stream, false)
+    }
+
+    fn new2_rejoin_with(stream: TokenStream, rejoin: bool) -> Self {
         let mut entries = Vec::new();
-        Self::recursive_new_rejoin(&mut entries, stream);
+        Self::recursive_new_rejoin(&mut entries, stream, rejoin);
         entries.push(Entry::End(-(entries.len() as isize), 0));
         Self {
             entries: entries.into_boxed_slice(),

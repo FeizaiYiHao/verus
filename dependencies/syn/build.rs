@@ -16,6 +16,16 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fuzzing)");
     println!("cargo:rustc-check-cfg=cfg(syn_disable_nightly_tests)");
     println!("cargo:rustc-check-cfg=cfg(syn_only)");
+    println!("cargo:rustc-check-cfg=cfg(verus_proc_macro2_worker)");
+
+    // Verus: the worker-job substrate exists only in the vendored proc-macro2
+    // (dependencies/proc-macro2, selected by the Verus source workspace's
+    // `[patch.crates-io]`). With a stock proc-macro2, `worker_tokens` compiles
+    // in a degraded mode in which worker jobs cannot start.
+    println!("cargo:rerun-if-env-changed=DEP_VERUS_PROC_MACRO2_WORKER_WORKER");
+    if env::var_os("DEP_VERUS_PROC_MACRO2_WORKER_WORKER").is_some() {
+        println!("cargo:rustc-cfg=verus_proc_macro2_worker");
+    }
 
     if !unstable() {
         println!("cargo:rustc-cfg=syn_disable_nightly_tests");

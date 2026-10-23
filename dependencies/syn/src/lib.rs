@@ -554,6 +554,8 @@ mod verbatim;
 mod whitespace;
 
 mod verus;
+#[doc(hidden)]
+pub mod worker_tokens;
 pub use crate::verus::rejoin_tokens;
 pub use crate::verus::{
     Assert, AssertForall, Assume, AssumeSpecification, AtomicSpec, AtomicallyBlock, BigAnd,
