@@ -121,7 +121,7 @@ fn is_simple_const_expr(expr: &Expr) -> bool {
 }
 
 impl crate::syntax::Visitor {
-    fn needs_unerased_proxies(&self) -> bool {
+    pub(crate) fn needs_unerased_proxies(&self) -> bool {
         self.erase_ghost.keep() && !self.rustdoc
     }
 
@@ -129,7 +129,7 @@ impl crate::syntax::Visitor {
     // Unfortunately, trying to do it once generically is probably as much of a pain as just
     // duplicating the code.
 
-    fn item_needs_unerased_proxy(&self, item: &Item) -> bool {
+    pub(crate) fn item_needs_unerased_proxy(&self, item: &Item) -> bool {
         match item {
             Item::Const(item_const) => !is_external(&item_const.attrs),
             Item::Static(item_static) => !is_external(&item_static.attrs),

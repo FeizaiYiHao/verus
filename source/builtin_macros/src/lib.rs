@@ -19,6 +19,8 @@ mod contrib;
 mod enum_synthesize;
 mod fndecl;
 mod is_variant;
+mod par_items;
+mod prefetch;
 mod rustdoc;
 mod struct_decl_inv;
 mod structural;
@@ -48,7 +50,7 @@ pub fn verus_enum_synthesize(
     enum_synthesize::attribute_verus_enum_synthesize(&cfg_erase(), attr, input)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum EraseGhost {
     /// keep all ghost code
     Keep,
@@ -99,7 +101,7 @@ pub fn verus_erase_ghost(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 
 #[proc_macro]
 pub fn verus(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::rewrite_items(input, cfg_erase(), true)
+    par_items::rewrite_items_entry(input, cfg_erase(), true)
 }
 
 /// Like verus!, but for use inside a (non-trait) impl
@@ -173,7 +175,7 @@ enum VstdKind {
     ImportedViaCore,
 }
 
-fn vstd_kind() -> VstdKind {
+pub(crate) fn vstd_kind() -> VstdKind {
     static VSTD_KIND: OnceLock<VstdKind> = OnceLock::new();
     *VSTD_KIND.get_or_init(|| {
         match std::env::var("VSTD_KIND") {
@@ -405,9 +407,9 @@ it's generally cleaner to write this manipulation on the verus_syn representatio
 before it is transformed by `verus!`, rather than trying to manipulate the more complicated output
 of `verus!`.  To work with the verus_syn representation, complete this additional step:
 - In builtin_macros/src/contrib/mod.rs,
-  edit contrib_preprocess_item and/or contrib_preprocess_impl_item to match on your macro name and
-  call into your code that processes the verus_syn item or impl_item.  Example:
-  `"auto_spec" => auto_spec::auto_spec_item(item, tokens, new_items),`.
+  add an entry to PREPROCESSORS with your macro name and the functions
+  that process the verus_syn item and impl_item.  Example:
+  `("auto_spec", auto_spec::auto_spec_item, auto_spec::auto_spec_impl_item)`.
   Your code can then edit the item/impl_item in place.
   It can also optionally emit new items/impl_items by adding them to new_items.
 ***/

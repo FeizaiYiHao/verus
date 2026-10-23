@@ -97,22 +97,27 @@ fn collect_attrs(attrs: Option<&Vec<Attribute>>) -> Vec<(String, Option<TokenStr
 // - #[m(args)]
 // where m is on the list of contrib macros and (args) is optional.
 
+type ItemPreprocess = fn(&mut Item, Option<TokenStream>, &mut Vec<Item>);
+type ImplItemPreprocess = fn(&mut ImplItem, Option<TokenStream>, &mut Vec<ImplItem>);
+
+/// Contrib macros needing preprocessing: name, item hook, impl-item hook. This
+/// table is the only dispatch, and the parallel `verus!` path falls back to serial
+/// whenever one of these names occurs in its input.
+pub(crate) const PREPROCESSORS: &[(&str, ItemPreprocess, ImplItemPreprocess)] =
+    &[("auto_spec", auto_spec::auto_spec_item, auto_spec::auto_spec_impl_item)];
+
 pub(crate) fn contrib_preprocess_item(item: &mut Item, new_items: &mut Vec<Item>) {
     for (name, tokens) in collect_attrs(item_attrs(item)) {
-        match name.as_str() {
-            // Add contrib macros needing preprocessing here:
-            "auto_spec" => auto_spec::auto_spec_item(item, tokens, new_items),
-            _ => {}
-        };
+        if let Some((_, f, _)) = PREPROCESSORS.iter().find(|p| p.0 == name) {
+            f(item, tokens, new_items);
+        }
     }
 }
 
 pub(crate) fn contrib_preprocess_impl_item(item: &mut ImplItem, new_items: &mut Vec<ImplItem>) {
     for (name, tokens) in collect_attrs(impl_item_attrs(item)) {
-        match name.as_str() {
-            // Add contrib macros needing preprocessing here:
-            "auto_spec" => auto_spec::auto_spec_impl_item(item, tokens, new_items),
-            _ => {}
+        if let Some((_, _, f)) = PREPROCESSORS.iter().find(|p| p.0 == name) {
+            f(item, tokens, new_items);
         }
     }
 }

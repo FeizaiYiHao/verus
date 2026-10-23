@@ -169,9 +169,16 @@ pub(crate) fn visit_item_enum_synthesize(
     #[cfg(verus_keep_ghost)]
     if !erase_ghost.erase() && !allow_inconsistent_fields {
         for invalid_field in invalid_fields {
-            proc_macro::Diagnostic::spanned(enum_.span().unwrap(), proc_macro::Level::Warning, {
-                format!("field `{}` has inconsistent type or visibility in different variants\n->{} syntax will not be available for this field\nuse #[allow(inconsistent_fields)] on the struct to silence the warnign", invalid_field, invalid_field)
-            }).emit();
+            crate::par_items::emit_diagnostic(
+                crate::par_items::DiagLevel::Warning,
+                vec![enum_.span()],
+                &{
+                    format!(
+                        "field `{}` has inconsistent type or visibility in different variants\n->{} syntax will not be available for this field\nuse #[allow(inconsistent_fields)] on the struct to silence the warnign",
+                        invalid_field, invalid_field
+                    )
+                },
+            );
         }
     }
 
