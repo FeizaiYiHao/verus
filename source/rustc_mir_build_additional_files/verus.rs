@@ -22,8 +22,8 @@ use rustc_middle::ty::{
 };
 use rustc_middle::ty::{TypeFoldable, TypeFolder, UpvarArgs};
 use rustc_span::Span;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -735,11 +735,17 @@ pub(crate) fn erase_closure_body_for_closure_captures<'tcx>(local_def_id: LocalD
     matches!(erasure_ctxt.bodies.get(&local_def_id), Some(BodyErasure { erase_body: true, .. }))
 }
 
-pub(crate) static ATOMIC_CLOSURE_CAPTURE_SHADOW: AtomicBool = AtomicBool::new(false);
+// Set by get_closure_captures_accounting_for_ghost for the duration of the capture analysis it
+// calls synchronously, read on the same thread by that analysis, and restored afterwards.
+// Thread-local (not a process-wide atomic) to fix a
+// cross-thread race under parallel MIR build, where another thread's closure could overwrite it.
+thread_local! {
+    pub(crate) static CLOSURE_CAPTURE_SHADOW: Cell<bool> = const { Cell::new(false) };
+}
 
 pub(crate) fn erase_var_for_closure_captures<'tcx>(hir_id: HirId) -> bool {
     let erasure_ctxt = get_verus_erasure_ctxt();
-    let capture_shadow = ATOMIC_CLOSURE_CAPTURE_SHADOW.load(Ordering::SeqCst);
+    let capture_shadow = CLOSURE_CAPTURE_SHADOW.get();
     if capture_shadow {
         matches!(erasure_ctxt.locals.get(&hir_id), Some(VarErasure::Erase))
     } else {
@@ -749,7 +755,7 @@ pub(crate) fn erase_var_for_closure_captures<'tcx>(hir_id: HirId) -> bool {
 
 pub(crate) fn erase_binder_for_closure_captures<'tcx>(hir_id: HirId) -> bool {
     let erasure_ctxt = get_verus_erasure_ctxt();
-    let capture_shadow = ATOMIC_CLOSURE_CAPTURE_SHADOW.load(Ordering::SeqCst);
+    let capture_shadow = CLOSURE_CAPTURE_SHADOW.get();
     if capture_shadow {
         matches!(erasure_ctxt.binders.get(&hir_id), Some(VarErasure::Erase))
     } else {
@@ -1247,14 +1253,24 @@ pub(crate) fn get_closure_captures_accounting_for_ghost<'tcx>(
 ) {
     let tcx = cx.tcx;
 
-    ATOMIC_CLOSURE_CAPTURE_SHADOW.store(capture_shadow, Ordering::SeqCst);
-    let capture_results = crate::upvar::compute_captures_accounting_for_ghost(
-        tcx,
-        cx.typing_env.param_env,
-        closure_expr,
-        closure_def_id,
-        cx.typeck_results,
-    );
+    // Restores the caller's CLOSURE_CAPTURE_SHADOW on exit, including unwinding, so a nested
+    // closure analysis cannot leak its setting into the enclosing one.
+    struct RestoreCaptureShadow(bool);
+    impl Drop for RestoreCaptureShadow {
+        fn drop(&mut self) {
+            CLOSURE_CAPTURE_SHADOW.set(self.0);
+        }
+    }
+    let capture_results = {
+        let _restore = RestoreCaptureShadow(CLOSURE_CAPTURE_SHADOW.replace(capture_shadow));
+        crate::upvar::compute_captures_accounting_for_ghost(
+            tcx,
+            cx.typing_env.param_env,
+            closure_expr,
+            closure_def_id,
+            cx.typeck_results,
+        )
+    };
 
     let closure_min_captures = capture_results.closure_min_captures;
     let closure_min_captures = Box::leak(Box::new(closure_min_captures));
