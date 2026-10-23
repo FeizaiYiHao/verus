@@ -6,6 +6,7 @@ use crate::util::err_span;
 use crate::verus_items::{self, BuiltinTypeItem, RustItem, VerusItem};
 use crate::{unsupported_err, unsupported_err_unless};
 use rustc_ast::{BindingMode, ByRef, Mutability};
+use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::definitions::DefPath;
 use rustc_hir::{GenericParam, GenericParamKind, Generics, HirId, LifetimeParamKind, QPath, Ty};
 use rustc_infer::infer::TyCtxtInferExt;
@@ -29,9 +30,69 @@ use vir::ast::{
     OpaqueTypeX, OpaqueTypes, Path, PathX, Primitive, Sizedness, TraitId, Typ, TypDecorationArg,
     TypX, Typs, VarIdent, VirErr, VirErrAs,
 };
-use vir::ast_util::{str_unique_var, types_equal, undecorate_typ};
+use vir::ast_util::{types_equal, undecorate_typ};
 
+/// Session-tagged thread-local memo table: `.0` is the `session_cache_tag` of the entries.
+type SessionMap<K, V> = std::cell::RefCell<(usize, FxHashMap<K, V>)>;
+
+/// Returns the entry for `key`, first clearing the table if it belongs to another session.
+fn session_map_get<K: Eq + std::hash::Hash, V: Clone>(
+    map: &'static std::thread::LocalKey<SessionMap<K, V>>,
+    key: &K,
+) -> Option<V> {
+    let tag = crate::verus_items::session_cache_tag();
+    map.with_borrow_mut(|(cache_tag, entries)| {
+        if *cache_tag != tag {
+            *cache_tag = tag;
+            entries.clear();
+        }
+        entries.get(key).cloned()
+    })
+}
+
+fn session_map_insert<K: Eq + std::hash::Hash, V>(
+    map: &'static std::thread::LocalKey<SessionMap<K, V>>,
+    key: K,
+    value: V,
+) {
+    map.with_borrow_mut(|(_, entries)| entries.insert(key, value));
+}
+
+thread_local! {
+    /// Symbol texts by symbol, tagged with the owning session.
+    static SYMBOL_IDENTS: SessionMap<rustc_span::Symbol, vir::ast::Ident> =
+        std::cell::RefCell::new((0, FxHashMap::default()));
+    /// Crate ids by crate number, tagged with the owning session.
+    static CRATE_IDS: SessionMap<CrateNum, CrateId> =
+        std::cell::RefCell::new((0, FxHashMap::default()));
+    /// Type parameter names by `(name, index, rule)`, tagged with the owning session.
+    static TYP_PARAM_NAMES: SessionMap<(rustc_span::Symbol, u32, u8), vir::ast::Ident> =
+        std::cell::RefCell::new((0, FxHashMap::default()));
+}
+
+/// Returns `Arc::new(sym.as_str().to_string())`, sharing one allocation per symbol on this
+/// thread so repeated lookups skip the global symbol interner lock. The interner is
+/// append-only, so a symbol's text is fixed for the session that owns the cache.
+pub(crate) fn symbol_ident(sym: rustc_span::Symbol) -> vir::ast::Ident {
+    if let Some(ident) = session_map_get(&SYMBOL_IDENTS, &sym) {
+        return ident;
+    }
+    let ident = Arc::new(sym.as_str().to_string());
+    session_map_insert(&SYMBOL_IDENTS, sym, ident.clone());
+    ident
+}
+
+/// Memoizes `mk_crate_id_uncached`, which depends only on `krate` within a session.
 pub(crate) fn mk_crate_id<'tcx>(tcx: TyCtxt<'tcx>, krate: CrateNum) -> CrateId {
+    if let Some(id) = session_map_get(&CRATE_IDS, &krate) {
+        return id;
+    }
+    let id = mk_crate_id_uncached(tcx, krate);
+    session_map_insert(&CRATE_IDS, krate, id.clone());
+    id
+}
+
+fn mk_crate_id_uncached<'tcx>(tcx: TyCtxt<'tcx>, krate: CrateNum) -> CrateId {
     let stable_id = tcx.stable_crate_id(krate).as_u64();
     let s = tcx.crate_name(krate).to_string();
     match s.as_str() {
@@ -49,7 +110,7 @@ pub(crate) fn def_path_to_vir_path<'tcx>(tcx: TyCtxt<'tcx>, def_path: DefPath) -
         use rustc_hir::definitions::DefPathData;
         match &d.data {
             DefPathData::ValueNs(symbol) | DefPathData::TypeNs(symbol) => {
-                segments.push(Arc::new(symbol.to_string()));
+                segments.push(symbol_ident(*symbol));
             }
             DefPathData::Ctor => {
                 segments.push(Arc::new(vir::def::RUST_DEF_CTOR.to_string()));
@@ -89,12 +150,33 @@ pub(crate) fn typ_path_and_ident_to_vir_path<'tcx>(path: &Path, ident: vir::ast:
 
 // Register an alternative "friendly" paths for printing better error messages
 // or for the command-line --verify-function arguments.
-fn register_friendly_path_as_rust_name<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, path: &Path) {
-    let hir_id = if let Some(local_id) = def_id.as_local() {
-        tcx.local_def_id_to_hir_id(local_id)
+// Registration is idempotent: the path and friendly name depend only on `def_id` and `tcx`,
+// so a definition already registered skips the HIR walk and the global name-map mutex.
+fn register_friendly_path_as_rust_name<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    verus_items: Option<&crate::verus_items::VerusItems>,
+    def_id: DefId,
+    path: &Path,
+) {
+    let Some(local_id) = def_id.as_local() else { return };
+    if let Some(verus_items) = verus_items {
+        if verus_items.friendly_path_registered.contains(&def_id) {
+            return;
+        }
+        register_local_friendly_path_as_rust_name(tcx, local_id, path);
+        verus_items.friendly_path_registered.insert(def_id);
     } else {
-        return;
-    };
+        register_local_friendly_path_as_rust_name(tcx, local_id, path);
+    }
+}
+
+fn register_local_friendly_path_as_rust_name<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_id: rustc_span::def_id::LocalDefId,
+    path: &Path,
+) {
+    let def_id = local_id.to_def_id();
+    let hir_id = tcx.local_def_id_to_hir_id(local_id);
     let node = tcx.hir_node(hir_id);
     let is_impl_item_fn = matches!(
         node,
@@ -140,7 +222,7 @@ fn register_friendly_path_as_rust_name<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, p
 fn def_to_path_ident<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> vir::ast::Ident {
     let def_path = tcx.def_path(def_id);
     match def_path.data.last().expect("unexpected empty impl path").data {
-        rustc_hir::definitions::DefPathData::ValueNs(name) => Arc::new(name.to_string()),
+        rustc_hir::definitions::DefPathData::ValueNs(name) => symbol_ident(name),
         _ => panic!("unexpected name of impl"),
     }
 }
@@ -162,12 +244,12 @@ pub(crate) fn def_id_to_vir_path_option<'tcx>(
     def_id: DefId,
 ) -> Option<Path> {
     if let Some(verus_items) = verus_items {
-        // Friendly-path registration is idempotent within one compilation.
-        if let Some(path) = verus_items.vir_path_cache.read().unwrap().get(&def_id) {
-            return path.clone();
+        // No cache borrow is held while computing a miss, which may query rustc or recurse.
+        if let Some(path) = verus_items.vir_path_cache.get(&def_id) {
+            return path;
         }
         let path = def_id_to_vir_path_option_uncached(tcx, Some(verus_items), def_id);
-        verus_items.vir_path_cache.write().unwrap().insert(def_id, path.clone());
+        verus_items.vir_path_cache.insert(def_id, path.clone());
         path
     } else {
         def_id_to_vir_path_option_uncached(tcx, None, def_id)
@@ -199,7 +281,7 @@ fn def_id_to_vir_path_option_uncached<'tcx>(
     }
     let path = def_path_to_vir_path(tcx, tcx.def_path(def_id));
     if let Some(path) = &path {
-        register_friendly_path_as_rust_name(tcx, def_id, path);
+        register_friendly_path_as_rust_name(tcx, verus_items, def_id, path);
     }
     path
 }
@@ -243,17 +325,52 @@ pub(crate) fn def_id_to_datatype<'tcx, 'hir>(
 }
 
 pub(crate) fn no_body_param_to_var<'tcx>(ident: &Ident, index: usize) -> VarIdent {
-    let name = if ident.name == kw::Underscore {
-        format!("%param{index}")
+    if ident.name == kw::Underscore {
+        vir::ast_util::str_unique_var(
+            &format!("%param{index}"),
+            vir::ast::VarIdentDisambiguate::NoBodyParam,
+        )
     } else {
-        ident.as_str().to_string()
-    };
-    str_unique_var(&name, vir::ast::VarIdentDisambiguate::NoBodyParam)
+        VarIdent(symbol_ident(ident.name), vir::ast::VarIdentDisambiguate::NoBodyParam)
+    }
 }
 
 pub(crate) fn local_to_var<'tcx>(ident: &Ident, local_id: rustc_hir::ItemLocalId) -> VarIdent {
     let dis = vir::ast::VarIdentDisambiguate::RustcId(local_id.index());
-    str_unique_var(&ident.to_string(), dis)
+    VarIdent(local_var_name(ident), dis)
+}
+
+type LocalVarNames = (usize, FxHashMap<(rustc_span::Symbol, bool), vir::ast::Ident>);
+
+thread_local! {
+    /// Printed local names by `(Symbol, is_raw_guess)`, tagged with the owning session.
+    static LOCAL_VAR_NAMES: std::cell::RefCell<LocalVarNames> =
+        std::cell::RefCell::new((0, FxHashMap::default()));
+}
+
+/// Returns `ident.to_string()`, sharing one allocation per printed name on this thread.
+/// For symbols not starting with `'`, `Ident`'s Display prints `r#name` exactly when
+/// `is_raw_guess` holds and `name` otherwise, so the key determines the string.
+fn local_var_name(ident: &Ident) -> vir::ast::Ident {
+    let key = (ident.name, ident.is_raw_guess());
+    let tag = crate::verus_items::session_cache_tag();
+    let cached = LOCAL_VAR_NAMES.with_borrow_mut(|(cache_tag, names)| {
+        if *cache_tag != tag {
+            *cache_tag = tag;
+            names.clear();
+        }
+        names.get(&key).cloned()
+    });
+    if let Some(name) = cached {
+        return name;
+    }
+    let printed = ident.to_string();
+    let cacheable = !ident.name.as_str().starts_with('\'');
+    let name = Arc::new(printed);
+    if cacheable {
+        LOCAL_VAR_NAMES.with_borrow_mut(|(_, names)| names.insert(key, name.clone()));
+    }
+    name
 }
 
 pub(crate) fn qpath_to_ident<'tcx>(
@@ -1126,9 +1243,7 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
         TyKind::Param(param) if param.name == kw::SelfUpper => {
             (Arc::new(TypX::TypParam(vir::def::trait_self_type_param())), false)
         }
-        TyKind::Param(param) => {
-            (Arc::new(TypX::TypParam(Arc::new(param_ty_to_vir_name(param)))), false)
-        }
+        TyKind::Param(param) => (Arc::new(TypX::TypParam(param_ty_to_vir_name(param))), false),
         TyKind::Never => {
             // All types are inhabited in SMT; we pick an arbitrary inhabited type for Never
             let tuple0 = vir::ast_util::unit_typ();
@@ -1549,7 +1664,7 @@ pub(crate) fn mid_ty_const_to_vir<'tcx>(
     };
 
     match cnst.kind() {
-        ConstKind::Param(param) => Ok(Arc::new(TypX::TypParam(Arc::new(param.name.to_string())))),
+        ConstKind::Param(param) => Ok(Arc::new(TypX::TypParam(symbol_ident(param.name)))),
         ConstKind::Value(Value { ty, valtree }) => {
             let ValTreeKind::Leaf(i) = *valtree else {
                 unsupported_err!(span.expect("span"), format!("const type argument {:?}", cnst));
@@ -1884,27 +1999,39 @@ pub(crate) fn check_generic_bound<'tcx>(
 //  - For synthetic params, use impl%{index} for the name.
 //  - For other type params, just use the user-given type param name.
 
-fn generic_param_def_to_vir_name(r#gen: &rustc_middle::ty::GenericParamDef) -> String {
+fn generic_param_def_to_vir_name(r#gen: &rustc_middle::ty::GenericParamDef) -> vir::ast::Ident {
     let is_synthetic = match r#gen.kind {
         GenericParamDefKind::Type { synthetic, .. } => synthetic,
         GenericParamDefKind::Const { .. } => false,
         _ => panic!("expected GenericParamDefKind::Type"),
     };
-
-    if is_synthetic {
-        vir::def::PREFIX_IMPL_TYPE_PARAM.to_string() + &r#gen.index.to_string()
-    } else {
-        r#gen.name.as_str().to_string()
+    let key = (r#gen.name, r#gen.index, if is_synthetic { 1 } else { 2 });
+    if let Some(name) = session_map_get(&TYP_PARAM_NAMES, &key) {
+        return name;
     }
+    let name = if is_synthetic {
+        Arc::new(vir::def::PREFIX_IMPL_TYPE_PARAM.to_string() + &r#gen.index.to_string())
+    } else {
+        symbol_ident(r#gen.name)
+    };
+    session_map_insert(&TYP_PARAM_NAMES, key, name.clone());
+    name
 }
 
-pub(crate) fn param_ty_to_vir_name(param: &rustc_middle::ty::ParamTy) -> String {
-    let name = param.name.as_str();
-    if name.starts_with("impl ") {
-        vir::def::PREFIX_IMPL_TYPE_PARAM.to_string() + &param.index.to_string()
-    } else {
-        name.to_string()
+/// The name depends only on `(param.name, param.index)`, so it is memoized per thread.
+pub(crate) fn param_ty_to_vir_name(param: &rustc_middle::ty::ParamTy) -> vir::ast::Ident {
+    let key = (param.name, param.index, 0);
+    if let Some(name) = session_map_get(&TYP_PARAM_NAMES, &key) {
+        return name;
     }
+    let text = symbol_ident(param.name);
+    let name = if text.starts_with("impl ") {
+        Arc::new(vir::def::PREFIX_IMPL_TYPE_PARAM.to_string() + &param.index.to_string())
+    } else {
+        text
+    };
+    session_map_insert(&TYP_PARAM_NAMES, key, name.clone());
+    name
 }
 
 pub(crate) fn process_predicate_bounds<'tcx, 'a>(
@@ -2258,20 +2385,20 @@ fn check_generics_bounds_main<'tcx>(
         let mut pos_some = false;
         let mut pos_all = false;
         let param_name = generic_param_def_to_vir_name(mid_param);
-        match accept_recs.get(&param_name) {
+        match accept_recs.get(param_name.as_str()) {
             None => {}
             Some(AcceptRecursiveType::Reject) => neg = true,
             Some(AcceptRecursiveType::RejectInGround) => pos_some = true,
             Some(AcceptRecursiveType::Accept) => pos_all = true,
         }
-        if accept_recs.contains_key(&param_name) {
+        if accept_recs.contains_key(param_name.as_str()) {
             if error_on_polarity {
                 return err_span(
                     span,
                     "the accept_recursive_type/reject_recursive_type attributes are not expected for this kind of item",
                 );
             }
-            accept_recs.remove(&param_name);
+            accept_recs.remove(param_name.as_str());
         }
         let accept_rec = match (neg, pos_some, pos_all) {
             (true, false, false) => AcceptRecursiveType::Reject,
@@ -2303,7 +2430,7 @@ fn check_generics_bounds_main<'tcx>(
             GenericParamDefKind::Const { .. }
             | GenericParamDefKind::Type { has_default: _, synthetic: _ } => {
                 // trait/function bounds
-                typ_params.push((Arc::new(param_name), accept_rec));
+                typ_params.push((param_name, accept_rec));
             }
             _ => {
                 unsupported_err!(span, "this kind of generic param");
@@ -2942,7 +3069,7 @@ pub(crate) fn assoc_item_name(
     span: Span,
 ) -> Result<vir::ast::Ident, VirErr> {
     match assoc_item.opt_name() {
-        Some(name) => Ok(Arc::new(name.to_string())),
+        Some(name) => Ok(symbol_ident(name)),
         None => unsupported_err!(
             span,
             "return-position `impl Trait` in a trait, or `async fn` in a trait"

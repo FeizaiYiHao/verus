@@ -16,9 +16,14 @@ use crate::datatype_to_air::is_datatype_transparent;
 use crate::def::*;
 use crate::poly::MonoTyp;
 use crate::resolve_axioms::{ResolvableType, ResolvedTypeCollection};
+use crate::scc::{FxBuildHasher, FxHashMap};
 use air::scope_map::ScopeMap;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Weak};
+
+// Prune's internal tables use the in-tree deterministic Fx hasher. Every output order is taken
+// from krate order (or sorted), never from the iteration order of these tables.
+type FxHashSet<K> = HashSet<K, FxBuildHasher>;
 
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 // Overapproximation of TypX, used to overapproximate the reached types
@@ -65,42 +70,106 @@ struct ReachBroadcastFunction {
     reach_triggers: Vec<(Vec<Fun>, Vec<ReachedType>)>,
 }
 
+/// Module-independent tables derived from one krate.
+/// Build one with `PruneIndex::new_for_buckets` and pass it to every
+/// `prune_krate_for_module_with_index` call on that krate.
+pub struct PruneIndex {
+    // The krate this index was built from (identity check only; the Weak keeps its allocation
+    // from being reused, so an equal pointer identifies the same krate):
+    krate: Weak<KrateX>,
+    // Positions in krate.functions of each function name, ascending:
+    fn_positions: FxHashMap<Fun, Vec<usize>>,
+    // Positions in krate.functions of the functions owned by each module:
+    module_fn_positions: FxHashMap<Path, Vec<usize>>,
+    // Body-free copies of krate.functions and variant-free copies of krate.datatypes
+    // (only if for_buckets, else empty; None where the original already has no body):
+    for_buckets: bool,
+    stripped_functions: Vec<Option<Function>>,
+    stripped_datatypes: Vec<Datatype>,
+    reveal_group_names: FxHashSet<Fun>,
+    opaque_ty_map: FxHashMap<OpaqueTyName, OpaqueType>,
+    trait_map: FxHashMap<Path, Trait>,
+    // For an impl "bounds ==> trait T(...t...)", point T to impl:
+    trait_to_trait_impls: FxHashMap<TraitName, Vec<ImplName>>,
+    // For an impl "bounds ==> trait T(...t...)", point t to impl:
+    typ_to_trait_impls: FxHashMap<ReachedType, Vec<ImplName>>,
+    trait_impl_map: FxHashMap<ImplName, ReachTraitImpl>,
+    // prune_name() of each element of krate.assoc_type_impls:
+    assoc_type_impl_keys: Vec<AssocTypeGroup>,
+    assoc_type_impl_map: FxHashMap<AssocTypeGroup, Vec<AssocTypeImpl>>,
+    // The keys of assoc_type_impl_map, indexed by self type and by declaration:
+    typ_assoc_decls: FxHashMap<ReachedType, Vec<(Path, Ident)>>,
+    assoc_decl_self_typs: FxHashMap<(Path, Ident), Vec<ReachedType>>,
+    // Map (D, T.f) -> D.f if D implements T.f:
+    method_map: FxHashMap<(ReachedType, Fun), Vec<Fun>>,
+    // Indexes method_map by trait method and receiver type.
+    method_self_typs: FxHashMap<Fun, Vec<ReachedType>>,
+    method_functions: FxHashMap<ReachedType, Vec<Fun>>,
+    // Functions satisfying interpreter::is_seq_to_sst_fun, in krate order:
+    seq_to_sst_funs: Vec<Fun>,
+}
+
+// The functions of one prune, aligned with krate.functions.
+struct FunctionTable {
+    index: Arc<PruneIndex>,
+    functions: Vec<Function>,
+}
+
+impl FunctionTable {
+    // Like a HashMap built by inserting functions in order, the last function of a name wins.
+    fn get(&self, name: &Fun) -> Option<&Function> {
+        let positions = self.index.fn_positions.get(name)?;
+        Some(&self.functions[*positions.last().expect("fn_positions")])
+    }
+
+    fn contains_key(&self, name: &Fun) -> bool {
+        self.index.fn_positions.contains_key(name)
+    }
+
+    // Same as ast_util::get_non_trait_impl
+    fn get_non_trait_impl(&self, name: &Fun) -> Option<&Function> {
+        let function = self.get(name)?;
+        if let FunctionKind::TraitMethodImpl { method, .. } = &function.x.kind {
+            let function = self.get(method)?;
+            assert!(!matches!(&function.x.kind, FunctionKind::TraitMethodImpl { .. }));
+            Some(function)
+        } else {
+            Some(function)
+        }
+    }
+}
+
+impl std::ops::Index<&Fun> for FunctionTable {
+    type Output = Function;
+    fn index(&self, name: &Fun) -> &Function {
+        self.get(name).expect("function_map")
+    }
+}
+
 struct Ctxt {
     module: Option<Path>,
-    function_map: HashMap<Fun, Function>,
-    reveal_group_map: HashMap<Fun, RevealGroup>,
-    datatype_map: HashMap<Dt, Datatype>,
-    opaque_ty_map: HashMap<OpaqueTyName, OpaqueType>,
-    trait_map: HashMap<Path, Trait>,
-    // For an impl "bounds ==> trait T(...t...)", point T to impl:
-    trait_to_trait_impls: HashMap<TraitName, Vec<ImplName>>,
-    // For an impl "bounds ==> trait T(...t...)", point t to impl:
-    typ_to_trait_impls: HashMap<ReachedType, Vec<ImplName>>,
-    trait_impl_map: HashMap<ImplName, ReachTraitImpl>,
-    assoc_type_impl_map: HashMap<AssocTypeGroup, Vec<AssocTypeImpl>>,
-    // Map (D, T.f) -> D.f if D implements T.f:
-    method_map: HashMap<(ReachedType, Fun), Vec<Fun>>,
-    // Indexes method_map by trait method and receiver type.
-    method_self_typs: HashMap<Fun, Vec<ReachedType>>,
-    method_functions: HashMap<ReachedType, Vec<Fun>>,
+    index: Arc<PruneIndex>,
+    function_map: FunctionTable,
+    reveal_group_map: FxHashMap<Fun, RevealGroup>,
+    datatype_map: FxHashMap<Dt, Datatype>,
     // For a broadcast function f with triggers containing functions f0..fn, point f0..fn to f:
-    fun_to_trigger_broadcasts: HashMap<Fun, Vec<Fun>>,
-    typ_to_trigger_broadcasts: HashMap<ReachedType, Vec<Fun>>,
+    fun_to_trigger_broadcasts: FxHashMap<Fun, Vec<Fun>>,
+    typ_to_trigger_broadcasts: FxHashMap<ReachedType, Vec<Fun>>,
     // Map each revealed broadcast function f to its ReachBroadcastFunction
-    fun_revealed_broadcast_map: HashMap<Fun, ReachBroadcastFunction>,
+    fun_revealed_broadcast_map: FxHashMap<Fun, ReachBroadcastFunction>,
     assert_by_compute: bool,
     assert_by_compute_seq_funs: Vec<Fun>,
 }
 
 #[derive(Default)]
 struct State {
-    reached_functions: HashSet<Fun>,
-    reached_types: HashSet<ReachedType>,
-    reached_bound_traits: HashSet<TraitName>,
-    reached_trait_impls: HashSet<ImplName>,
-    reached_assoc_type_decls: HashSet<(Path, Ident)>,
-    reached_assoc_type_impls: HashSet<AssocTypeGroup>,
-    reached_opaque_types: HashSet<OpaqueTyName>,
+    reached_functions: FxHashSet<Fun>,
+    reached_types: FxHashSet<ReachedType>,
+    reached_bound_traits: FxHashSet<TraitName>,
+    reached_trait_impls: FxHashSet<ImplName>,
+    reached_assoc_type_decls: FxHashSet<(Path, Ident)>,
+    reached_assoc_type_impls: FxHashSet<AssocTypeGroup>,
+    reached_opaque_types: FxHashSet<OpaqueTyName>,
     worklist_functions: Vec<Fun>,
     worklist_reveal_groups: Vec<Fun>,
     worklist_types: Vec<ReachedType>,
@@ -109,17 +178,17 @@ struct State {
     worklist_trait_impls: Vec<ImplName>,
     worklist_assoc_type_decls: Vec<(Path, Ident)>,
     worklist_assoc_type_impls: Vec<AssocTypeGroup>,
-    mono_abstract_datatypes: Option<HashSet<MonoTyp>>,
-    spec_fn_types: HashSet<usize>,
-    dyn_traits: HashSet<Path>,
+    mono_abstract_datatypes: Option<FxHashSet<MonoTyp>>,
+    spec_fn_types: FxHashSet<usize>,
+    dyn_traits: FxHashSet<Path>,
     uses_array: bool,
     uses_bytestr: bool,
     uses_pointee_metadata: bool,
     uses_ieee_float: bool,
-    fndef_types: HashSet<Fun>,
+    fndef_types: FxHashSet<Fun>,
     // broadcast functions that are also defined or called normally
     // (not just used for the broadcast)
-    broadcast_functions_fully_reached: HashSet<Fun>,
+    broadcast_functions_fully_reached: FxHashSet<Fun>,
     resolve_typs: Option<ResolvedTypeCollection>,
     // Whether invariant-set operations have been reached.
     reached_set_ops: bool,
@@ -184,7 +253,7 @@ struct Recorder {
     collect_resolve_typs: bool,
     events: Vec<Reach>,
     // Deduplicates monotone insertions within one recording.
-    dedup: Option<(HashSet<Fun>, HashSet<ReachedType>, HashSet<MonoTyp>)>,
+    dedup: Option<(FxHashSet<Fun>, FxHashSet<ReachedType>, FxHashSet<MonoTyp>)>,
 }
 
 impl Recorder {
@@ -249,7 +318,7 @@ fn record_datatype(ctxt: &Ctxt, rec: &mut Recorder, typ: &Typ, dt: &Dt) {
 }
 
 fn reach<A: std::hash::Hash + std::cmp::Eq + Clone>(
-    reached: &mut HashSet<A>,
+    reached: &mut FxHashSet<A>,
     worklist: &mut Vec<A>,
     id: &A,
 ) {
@@ -322,7 +391,7 @@ fn reach_opaque_type(_ctxt: &Ctxt, state: &mut State, name: &OpaqueTyName) {
 }
 
 fn reach_trait_impl(ctxt: &Ctxt, state: &mut State, imp: &ImplName) {
-    if let Some(trait_impl) = ctxt.trait_impl_map.get(imp) {
+    if let Some(trait_impl) = ctxt.index.trait_impl_map.get(imp) {
         // We only reach the impl "bounds ==> trait T(...t...)" when all of T and t have been reached.
         // Otherwise, we consider the impl irrelevant.
         for t in &trait_impl.trait_typ_args {
@@ -341,7 +410,7 @@ fn reach_assoc_type_decl(_ctxt: &Ctxt, state: &mut State, name: &(Path, Ident)) 
 }
 
 fn reach_assoc_type_impl(ctxt: &Ctxt, state: &mut State, name: &AssocTypeGroup) {
-    if ctxt.assoc_type_impl_map.contains_key(name) {
+    if ctxt.index.assoc_type_impl_map.contains_key(name) {
         reach(&mut state.reached_assoc_type_impls, &mut state.worklist_assoc_type_impls, name);
     }
 }
@@ -411,10 +480,10 @@ fn record_typ(_ctxt: &Ctxt, rec: &mut Recorder, typ: &Typ) {
 // Finds method implementations after reaching a trait method.
 fn reached_methods_of_function(ctxt: &Ctxt, state: &State, function: &Fun) -> Vec<Fun> {
     let mut method_impls: Vec<Fun> = Vec::new();
-    if let Some(self_typs) = ctxt.method_self_typs.get(function) {
+    if let Some(self_typs) = ctxt.index.method_self_typs.get(function) {
         for self_typ in self_typs {
             if *self_typ == ReachedType::None || state.reached_types.contains(self_typ) {
-                let ms = &ctxt.method_map[&(self_typ.clone(), function.clone())];
+                let ms = &ctxt.index.method_map[&(self_typ.clone(), function.clone())];
                 for method_impl in ms {
                     method_impls.push(method_impl.clone());
                 }
@@ -427,10 +496,10 @@ fn reached_methods_of_function(ctxt: &Ctxt, state: &State, function: &Fun) -> Ve
 // Finds method implementations after reaching a receiver type.
 fn reached_methods_of_type(ctxt: &Ctxt, state: &State, self_typ: &ReachedType) -> Vec<Fun> {
     let mut method_impls: Vec<Fun> = Vec::new();
-    if let Some(functions) = ctxt.method_functions.get(self_typ) {
+    if let Some(functions) = ctxt.index.method_functions.get(self_typ) {
         for function in functions {
             if state.reached_functions.contains(function) {
-                let ms = &ctxt.method_map[&(self_typ.clone(), function.clone())];
+                let ms = &ctxt.index.method_map[&(self_typ.clone(), function.clone())];
                 for method_impl in ms {
                     method_impls.push(method_impl.clone());
                 }
@@ -562,20 +631,31 @@ fn reach_atomic_update_ops(state: &mut State, ctxt: &Ctxt) {
     reach_set_ops(state, &ctxt);
 }
 
+// set operations may be needed for calls from `function` only if the caller exists
+// and its mask is not `all`
+fn caller_mask_allows_set_ops(ctxt: &Ctxt, function: &Function) -> bool {
+    match ctxt.function_map.get_non_trait_impl(&function.x.name) {
+        Some(caller) => !caller.x.mask_spec_or_default(&function.span).is_all(),
+        None => false,
+    }
+}
+
 fn maybe_record_set_ops_for_call(
     rec: &mut Recorder,
     callee_name: &Fun,
     ctxt: &Ctxt,
     function: &Function,
+    caller_allows: &std::cell::OnceCell<bool>,
 ) {
-    let caller = crate::ast_util::get_non_trait_impl(&ctxt.function_map, &function.x.name);
-    let callee = crate::ast_util::get_non_trait_impl(&ctxt.function_map, callee_name);
-    if let (Some(caller), Some(callee)) = (caller, callee) {
-        let caller_mask = caller.x.mask_spec_or_default(&function.span);
+    let caller_allows = *caller_allows.get_or_init(|| caller_mask_allows_set_ops(ctxt, function));
+    let callee = ctxt.function_map.get_non_trait_impl(callee_name);
+    if let Some(callee) = callee
+        && caller_allows
+    {
         let callee_mask = callee.x.mask_spec_or_default(&function.span);
         // If caller is `all`, we generate no set operations
         // If callee is `none`, we generate no set operations
-        if !caller_mask.is_all() && !callee_mask.is_none() {
+        if !callee_mask.is_none() {
             rec.push(Reach::SetOps);
         }
     }
@@ -609,6 +689,7 @@ fn record_function(ctxt: &Ctxt, rec: &mut Recorder, f: &Fun, function: &Function
 
     // Types in typ_bounds are visited below.
     record_generic_bounds(ctxt, rec, &function.x.typ_bounds, false);
+    let caller_allows = std::cell::OnceCell::new();
     let fe = |rec: &mut Recorder, e: &Expr| -> Result<(), VirErr> {
         // note: the visitor automatically reaches e.typ
         match &e.x {
@@ -630,9 +711,9 @@ fn record_function(ctxt: &Ctxt, rec: &mut Recorder, f: &Fun, function: &Function
                 rec.function(name);
                 if let crate::ast::CallTargetKind::DynamicResolved { resolved, .. } = kind {
                     rec.function(resolved);
-                    maybe_record_set_ops_for_call(rec, resolved, &ctxt, function);
+                    maybe_record_set_ops_for_call(rec, resolved, &ctxt, function, &caller_allows);
                 }
-                maybe_record_set_ops_for_call(rec, name, &ctxt, function);
+                maybe_record_set_ops_for_call(rec, name, &ctxt, function, &caller_allows);
             }
             ExprX::OpenInvariant(_, _, _, atomicity) => {
                 // SST -> AIR conversion for OpenInvariant may introduce
@@ -807,10 +888,10 @@ fn prefetch_functions(
     collect_monotyps: bool,
     collect_resolve_typs: bool,
     roots: &[Fun],
-    reached: &HashSet<Fun>,
-    recorded: &mut HashMap<Fun, Vec<Reach>>,
+    reached: &FxHashSet<Fun>,
+    recorded: &mut FxHashMap<Fun, Vec<Reach>>,
 ) {
-    let mut queued: HashSet<Fun> = HashSet::new();
+    let mut queued: FxHashSet<Fun> = FxHashSet::default();
     let mut frontier: Vec<Fun> = Vec::new();
     for f in roots {
         if !recorded.contains_key(f) && queued.insert(f.clone()) {
@@ -847,9 +928,9 @@ fn prefetch_functions(
                 match ev {
                     Reach::Function(g) | Reach::FunctionViaReveal(g) => enqueue(g),
                     Reach::MethodsOfFunction(g) => {
-                        if let Some(self_typs) = ctxt.method_self_typs.get(g) {
+                        if let Some(self_typs) = ctxt.index.method_self_typs.get(g) {
                             for self_typ in self_typs {
-                                for m in &ctxt.method_map[&(self_typ.clone(), g.clone())] {
+                                for m in &ctxt.index.method_map[&(self_typ.clone(), g.clone())] {
                                     enqueue(m);
                                 }
                             }
@@ -880,7 +961,7 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State, parallel: bool) {
     let collect_monotyps = state.mono_abstract_datatypes.is_some();
     let collect_resolve_typs = state.resolve_typs.is_some();
     // Recorded effects awaiting ordered replay.
-    let mut recorded: HashMap<Fun, Vec<Reach>> = HashMap::new();
+    let mut recorded: FxHashMap<Fun, Vec<Reach>> = FxHashMap::default();
     let mut rec = Recorder::new(collect_monotyps, collect_resolve_typs, false);
     loop {
         let ft = |rec: &mut Recorder, t: &Typ| -> Result<(), VirErr> {
@@ -955,27 +1036,31 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State, parallel: bool) {
                 }
                 _ => {}
             }
-            if let Some(imps) = ctxt.typ_to_trait_impls.get(&t) {
+            if let Some(imps) = ctxt.index.typ_to_trait_impls.get(&t) {
                 for imp in imps {
                     reach_trait_impl(ctxt, state, imp);
                 }
             }
             let methods = reached_methods_of_type(ctxt, state, &t);
             reach_methods(ctxt, state, methods);
-            let assoc_decls: Vec<(Path, Ident)> =
-                state.reached_assoc_type_decls.iter().cloned().collect();
-            for a in assoc_decls {
-                reach_assoc_type_impl(ctxt, state, &(t.clone(), a.clone()));
+            // Only the groups (t, a) in assoc_type_impl_map can be reached
+            // (see reach_assoc_type_impl), so visit just those with a reached a.
+            if let Some(decls) = ctxt.index.typ_assoc_decls.get(&t) {
+                for a in decls {
+                    if state.reached_assoc_type_decls.contains(a) {
+                        reach_assoc_type_impl(ctxt, state, &(t.clone(), a.clone()));
+                    }
+                }
             }
             continue;
         }
         if let Some(b) = state.worklist_bound_traits.pop() {
-            if let Some(impls) = ctxt.trait_to_trait_impls.get(&b) {
+            if let Some(impls) = ctxt.index.trait_to_trait_impls.get(&b) {
                 for imp in impls {
                     reach_trait_impl(ctxt, state, imp);
                 }
             }
-            if let Some(tr) = ctxt.trait_map.get(&b) {
+            if let Some(tr) = ctxt.index.trait_map.get(&b) {
                 // For assoc_type_trait_bounds_to_air, reach typ_bounds and assoc_typs_bounds
                 record_generic_bounds(ctxt, &mut rec, &tr.x.typ_bounds, true);
                 record_generic_bounds(ctxt, &mut rec, &tr.x.assoc_typs_bounds, true);
@@ -984,7 +1069,7 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State, parallel: bool) {
             continue;
         }
         if let Some(i) = state.worklist_trait_impls.pop() {
-            if let Some(trait_impl) = ctxt.trait_impl_map.get(&i) {
+            if let Some(trait_impl) = ctxt.index.trait_impl_map.get(&i) {
                 for bound_trait in &trait_impl.bound_traits {
                     reach_bound_trait(ctxt, state, bound_trait);
                 }
@@ -999,10 +1084,14 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State, parallel: bool) {
             continue;
         }
         if let Some(a) = state.worklist_assoc_type_decls.pop() {
-            let typs: Vec<ReachedType> =
-                state.reached_types.iter().chain([ReachedType::None].iter()).cloned().collect();
-            for t in typs {
-                reach_assoc_type_impl(ctxt, state, &(t.clone(), a.clone()));
+            // Reach (t, a) for every reached t and for t = None,
+            // visiting only the groups present in assoc_type_impl_map.
+            if let Some(typs) = ctxt.index.assoc_decl_self_typs.get(&a) {
+                for t in typs {
+                    if *t == ReachedType::None || state.reached_types.contains(t) {
+                        reach_assoc_type_impl(ctxt, state, &(t.clone(), a.clone()));
+                    }
+                }
             }
             // assoc_type_trait_bounds_to_air needs typ_bounds and assoc_typs_bounds, so reach them.
             // We could be more precise and reach only the bounds relevant to a,
@@ -1012,7 +1101,7 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State, parallel: bool) {
             continue;
         }
         if let Some(assoc_group) = state.worklist_assoc_type_impls.pop() {
-            if let Some(assoc_impls) = ctxt.assoc_type_impl_map.get(&assoc_group) {
+            if let Some(assoc_impls) = ctxt.index.assoc_type_impl_map.get(&assoc_group) {
                 for assoc_impl in assoc_impls {
                     record_generic_bounds(ctxt, &mut rec, &assoc_impl.x.typ_bounds, false);
                     crate::ast_visitor::walk_assoc_type_impl_visitor_env(
@@ -1027,7 +1116,7 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State, parallel: bool) {
             continue;
         }
         if let Some(opaque_ty_path) = state.worklist_opaque_types.pop() {
-            if let Some(opaque_type) = ctxt.opaque_ty_map.get(&opaque_ty_path) {
+            if let Some(opaque_type) = ctxt.index.opaque_ty_map.get(&opaque_ty_path) {
                 // Revist. this is probably needed, the opaque type can refer to some actual types, which, if pruned
                 // can cause problems
                 record_generic_bounds(ctxt, &mut rec, &opaque_type.x.typ_bounds, true);
@@ -1066,7 +1155,7 @@ impl AssocTypeImplX {
 }
 
 fn overapproximate_revealed_functions(
-    revealed_functions: &mut HashSet<Fun>,
+    revealed_functions: &mut FxHashSet<Fun>,
     reveal_groups: &Vec<RevealGroup>,
 ) {
     // REVIEW: this is an unnecessary overapproximation;
@@ -1077,7 +1166,7 @@ fn overapproximate_revealed_functions(
     // So we just make an overapproximation.
     // (As a result, we might unnecessarily include the body of an opaque function even if
     // we only need the opaque function's signature.)
-    let mut reveal_group_map: HashMap<Fun, RevealGroup> = HashMap::new();
+    let mut reveal_group_map: FxHashMap<Fun, RevealGroup> = FxHashMap::default();
     for f in reveal_groups {
         reveal_group_map.insert(f.x.name.clone(), f.clone());
     }
@@ -1097,7 +1186,7 @@ fn overapproximate_revealed_functions(
 }
 
 fn collect_broadcast_triggers(
-    function_map: &HashMap<Fun, Function>,
+    function_map: &FunctionTable,
     f: &Function,
 ) -> Vec<(Vec<Fun>, Vec<ReachedType>)> {
     use crate::ast::{Exprs, TriggerAnnotation, UnaryOp};
@@ -1139,9 +1228,9 @@ fn collect_broadcast_triggers(
     let mut trigs: Vec<(Vec<Fun>, Vec<ReachedType>)> = Vec::new();
     for trig in &with_triggers {
         use std::cell::RefCell;
-        let mut call_set: HashSet<Fun> = HashSet::new();
+        let mut call_set: FxHashSet<Fun> = FxHashSet::default();
         let mut calls: Vec<Fun> = Vec::new();
-        let mut typ_set: HashSet<ReachedType> = HashSet::new();
+        let mut typ_set: FxHashSet<ReachedType> = FxHashSet::default();
         let mut typs: Vec<ReachedType> = Vec::new();
         let inline_call_worklist: RefCell<Vec<Function>> = RefCell::new(Vec::new());
         typ_set.insert(ReachedType::None);
@@ -1232,6 +1321,214 @@ pub struct PruneInfo {
     pub dyn_traits: HashSet<Path>,
 }
 
+impl PruneIndex {
+    /// Index for module (bucket) prunes of `krate`, shared by all buckets of that krate.
+    pub fn new_for_buckets(krate: &Krate) -> Arc<PruneIndex> {
+        Arc::new(PruneIndex::new(krate, true, true))
+    }
+
+    // for_buckets: precompute the stripped functions and datatypes.
+    // unique_impls: assert that impl paths are unique (as required for module prunes).
+    fn new(krate: &Krate, for_buckets: bool, unique_impls: bool) -> Self {
+        let mut fn_positions: FxHashMap<Fun, Vec<usize>> = FxHashMap::default();
+        let mut module_fn_positions: FxHashMap<Path, Vec<usize>> = FxHashMap::default();
+        let mut stripped_functions: Vec<Option<Function>> = Vec::new();
+        let mut method_map: FxHashMap<(ReachedType, Fun), Vec<Fun>> = FxHashMap::default();
+        let mut method_self_typs: FxHashMap<Fun, Vec<ReachedType>> = FxHashMap::default();
+        let mut method_functions: FxHashMap<ReachedType, Vec<Fun>> = FxHashMap::default();
+        let mut seq_to_sst_funs: Vec<Fun> = Vec::new();
+        for (i, f) in krate.functions.iter().enumerate() {
+            fn_positions.entry(f.x.name.clone()).or_default().push(i);
+            if let Some(m) = &f.x.owning_module {
+                module_fn_positions.entry(m.clone()).or_default().push(i);
+            }
+            if for_buckets {
+                stripped_functions.push(f.x.body.as_ref().map(|_| {
+                    let mut function = f.x.clone();
+                    function.body = None;
+                    Spanned::new(f.span.clone(), function)
+                }));
+            }
+            // Pruning a body keeps the kind and name, so this matches the pruned functions.
+            if let FunctionKind::TraitMethodImpl { method, trait_typ_args, .. }
+            | FunctionKind::ForeignTraitMethodImpl { method, trait_typ_args, .. } = &f.x.kind
+            {
+                let self_typ = &trait_typ_args[0];
+                let key = (typ_to_reached_type(self_typ), method.clone());
+                if !method_map.contains_key(&key) {
+                    method_map.insert(key.clone(), Vec::new());
+                    method_self_typs.entry(key.1.clone()).or_default().push(key.0.clone());
+                    method_functions.entry(key.0.clone()).or_default().push(key.1.clone());
+                }
+                method_map.get_mut(&key).unwrap().push(f.x.name.clone());
+            }
+            if crate::interpreter::is_seq_to_sst_fun(&f.x.name) {
+                seq_to_sst_funs.push(f.x.name.clone());
+            }
+        }
+        let stripped_datatypes: Vec<Datatype> = if for_buckets {
+            let strip = |d: &Datatype| {
+                let mut datatype = d.x.clone();
+                datatype.variants = Arc::new(vec![]);
+                Spanned::new(d.span.clone(), datatype)
+            };
+            krate.datatypes.iter().map(strip).collect()
+        } else {
+            Vec::new()
+        };
+        let reveal_group_names: FxHashSet<Fun> =
+            krate.reveal_groups.iter().map(|g| g.x.name.clone()).collect();
+        let mut opaque_ty_map: FxHashMap<OpaqueTyName, OpaqueType> = FxHashMap::default();
+        for op in &krate.opaque_types {
+            opaque_ty_map.insert(op.x.name.clone(), op.clone());
+        }
+        let mut trait_map: FxHashMap<Path, Trait> = FxHashMap::default();
+        for tr in krate.traits.iter() {
+            trait_map.insert(tr.x.name.clone(), tr.clone());
+        }
+
+        let mut trait_to_trait_impls: FxHashMap<TraitName, Vec<ImplName>> = FxHashMap::default();
+        let mut typ_to_trait_impls: FxHashMap<ReachedType, Vec<ImplName>> = FxHashMap::default();
+        let mut trait_impl_map: FxHashMap<ImplName, ReachTraitImpl> = FxHashMap::default();
+        for imp in krate.trait_impls.iter() {
+            let mut bound_traits: Vec<TraitName> = Vec::new();
+            let mut bound_types: Vec<ReachedType> = Vec::new();
+            for bound in imp.x.typ_bounds.iter() {
+                match &**bound {
+                    crate::ast::GenericBoundX::Trait(tid, typ_args) => {
+                        match tid {
+                            TraitId::Path(path) => {
+                                bound_traits.push(path.clone());
+                            }
+                            TraitId::Sizedness(_) => {}
+                        }
+                        for t in typ_args.iter() {
+                            bound_types.push(typ_to_reached_type(t));
+                        }
+                    }
+                    crate::ast::GenericBoundX::TypEquality(path, typ_args, _name, typ) => {
+                        bound_traits.push(path.clone());
+                        for t in typ_args.iter() {
+                            bound_types.push(typ_to_reached_type(t));
+                        }
+                        bound_types.push(typ_to_reached_type(typ));
+                    }
+                    crate::ast::GenericBoundX::ConstTyp(t, s) => {
+                        bound_types.push(typ_to_reached_type(t));
+                        bound_types.push(typ_to_reached_type(s));
+                    }
+                }
+            }
+            let trait_impl = ReachTraitImpl {
+                trait_impl: imp.clone(),
+                bound_traits,
+                bound_types,
+                trait_typ_args: imp.x.trait_typ_args.iter().map(typ_to_reached_type).collect(),
+            };
+            trait_to_trait_impls
+                .entry(imp.x.trait_path.clone())
+                .or_default()
+                .push(imp.x.impl_path.clone());
+            for t in &trait_impl.trait_typ_args {
+                typ_to_trait_impls.entry(t.clone()).or_default().push(imp.x.impl_path.clone());
+            }
+            assert!(!unique_impls || !trait_impl_map.contains_key(&imp.x.impl_path));
+            trait_impl_map.insert(imp.x.impl_path.clone(), trait_impl);
+        }
+
+        let assoc_type_impl_keys: Vec<AssocTypeGroup> =
+            krate.assoc_type_impls.iter().map(|a| a.x.prune_name()).collect();
+        let mut assoc_type_impl_map: FxHashMap<AssocTypeGroup, Vec<AssocTypeImpl>> =
+            FxHashMap::default();
+        let mut typ_assoc_decls: FxHashMap<ReachedType, Vec<(Path, Ident)>> = FxHashMap::default();
+        let mut assoc_decl_self_typs: FxHashMap<(Path, Ident), Vec<ReachedType>> =
+            FxHashMap::default();
+        for (a, key) in krate.assoc_type_impls.iter().zip(assoc_type_impl_keys.iter()) {
+            if !assoc_type_impl_map.contains_key(key) {
+                assoc_type_impl_map.insert(key.clone(), Vec::new());
+                typ_assoc_decls.entry(key.0.clone()).or_default().push(key.1.clone());
+                assoc_decl_self_typs.entry(key.1.clone()).or_default().push(key.0.clone());
+            }
+            assoc_type_impl_map.get_mut(key).unwrap().push(a.clone());
+        }
+
+        PruneIndex {
+            krate: Arc::downgrade(krate),
+            fn_positions,
+            module_fn_positions,
+            for_buckets,
+            stripped_functions,
+            stripped_datatypes,
+            reveal_group_names,
+            opaque_ty_map,
+            trait_map,
+            trait_to_trait_impls,
+            typ_to_trait_impls,
+            trait_impl_map,
+            assoc_type_impl_keys,
+            assoc_type_impl_map,
+            typ_assoc_decls,
+            assoc_decl_self_typs,
+            method_map,
+            method_self_typs,
+            method_functions,
+            seq_to_sst_funs,
+        }
+    }
+}
+
+// Same body-stripping as index.stripped_functions[i] (computed here if not precomputed).
+fn function_without_body(index: &PruneIndex, i: usize, f: &Function) -> Option<Function> {
+    if index.for_buckets {
+        return index.stripped_functions[i].clone();
+    }
+    f.x.body.as_ref().map(|_| {
+        let mut function = f.x.clone();
+        function.body = None;
+        Spanned::new(f.span.clone(), function)
+    })
+}
+
+// Same as index.stripped_datatypes[i] (computed here if not precomputed).
+fn datatype_without_variants(index: &PruneIndex, i: usize, d: &Datatype) -> Datatype {
+    if index.for_buckets {
+        return index.stripped_datatypes[i].clone();
+    }
+    let mut datatype = d.x.clone();
+    datatype.variants = Arc::new(vec![]);
+    Spanned::new(d.span.clone(), datatype)
+}
+
+// Returns the functions revealed by `fuel > 0` and whether there is an assert-by-compute.
+fn scan_body_reveals(body: &Expr) -> (Vec<Fun>, bool) {
+    let mut revealed: Vec<Fun> = Vec::new();
+    let mut assert_by_compute = false;
+    crate::ast_visitor::expr_visitor_check::<(), _>(body, &mut |_scope_map, e: &Expr| {
+        match &e.x {
+            ExprX::Fuel(path, fuel, _is_broadcast_use) if *fuel > 0 => {
+                revealed.push(path.clone());
+            }
+            ExprX::AssertCompute(..) => {
+                assert_by_compute = true;
+            }
+            _ => {}
+        }
+        Ok(())
+    })
+    .expect("expr_visitor_check failed unexpectedly");
+    (revealed, assert_by_compute)
+}
+
+// Maps f over items, in parallel for large crate-level prunes.
+// Bucket prunes stay serial because they already run concurrently.
+fn prune_map<T: Sync, R: Send>(parallel: bool, items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    if parallel && items.len() >= PREFETCH_PAR_MIN {
+        crate::util::par_map_init(items, || (), |_, item| f(item))
+    } else {
+        items.iter().map(f).collect()
+    }
+}
+
 pub fn prune_krate_for_module_or_krate(
     krate: &Krate,
     crate_name: &CrateId,
@@ -1241,22 +1538,71 @@ pub fn prune_krate_for_module_or_krate(
     collect_monotyps: bool,
     collect_resolve_typs: bool,
 ) -> (Krate, PruneInfo) {
-    assert!(module.is_some() != current_crate.is_some());
+    let index = Arc::new(PruneIndex::new(krate, false, module.is_some()));
+    prune_krate_inner(
+        krate,
+        &index,
+        crate_name,
+        current_crate,
+        module,
+        fun,
+        collect_monotyps,
+        collect_resolve_typs,
+    )
+}
 
-    let mut root_modules: HashSet<Path> = HashSet::new();
-    let mut root_functions: HashSet<Fun> = HashSet::new();
+/// Same as `prune_krate_for_module_or_krate` with `current_crate = None` and `module = Some(module)`,
+/// reusing `index`, which must have been built by `PruneIndex::new_for_buckets(krate)`.
+pub fn prune_krate_for_module_with_index(
+    krate: &Krate,
+    index: &Arc<PruneIndex>,
+    crate_name: &CrateId,
+    module: Path,
+    fun: Option<&Fun>,
+    collect_monotyps: bool,
+    collect_resolve_typs: bool,
+) -> (Krate, PruneInfo) {
+    assert!(std::ptr::eq(index.krate.as_ptr(), Arc::as_ptr(krate)), "PruneIndex of another krate");
+    prune_krate_inner(
+        krate,
+        index,
+        crate_name,
+        None,
+        Some(module),
+        fun,
+        collect_monotyps,
+        collect_resolve_typs,
+    )
+}
+
+fn prune_krate_inner(
+    krate: &Krate,
+    index: &Arc<PruneIndex>,
+    crate_name: &CrateId,
+    current_crate: Option<&Krate>,
+    module: Option<Path>,
+    fun: Option<&Fun>,
+    collect_monotyps: bool,
+    collect_resolve_typs: bool,
+) -> (Krate, PruneInfo) {
+    assert!(module.is_some() != current_crate.is_some());
+    let parallel = module.is_none();
+
+    let mut root_modules: FxHashSet<Path> = FxHashSet::default();
+    // is_root[i] iff krate.functions[i] has the name of a root function
+    let mut is_root: Vec<bool> = vec![false; krate.functions.len()];
+    let mut add_root_function = |name: &Fun| {
+        for p in index.fn_positions.get(name).into_iter().flatten() {
+            is_root[*p] = true;
+        }
+    };
     if let Some(module) = &module {
         root_modules.insert(module.clone());
         if let Some(fun) = fun {
-            root_functions.insert(fun.clone());
+            add_root_function(fun);
         } else {
-            for f in &krate.functions {
-                match &f.x.owning_module {
-                    Some(m) if m == module => {
-                        root_functions.insert(f.x.name.clone());
-                    }
-                    _ => {}
-                }
+            for p in index.module_fn_positions.get(module).into_iter().flatten() {
+                add_root_function(&krate.functions[*p].x.name);
             }
         }
     } else if let Some(current_crate) = current_crate {
@@ -1264,17 +1610,16 @@ pub fn prune_krate_for_module_or_krate(
             root_modules.insert(m.x.path.clone());
         }
         for f in &current_crate.functions {
-            root_functions.insert(f.x.name.clone());
+            add_root_function(&f.x.name);
         }
     } else {
         unreachable!();
     }
     let is_root_module = |module_path: &Path| root_modules.contains(module_path);
-    let is_root_function = |function: &Function| root_functions.contains(&function.x.name);
 
     let mut state: State = Default::default();
     if collect_monotyps {
-        state.mono_abstract_datatypes = Some(HashSet::new());
+        state.mono_abstract_datatypes = Some(FxHashSet::default());
     }
     if collect_resolve_typs {
         state.resolve_typs = Some(ResolvedTypeCollection::new(module.as_ref().unwrap(), &krate));
@@ -1334,35 +1679,21 @@ pub fn prune_krate_for_module_or_krate(
     }
 
     // Collect all functions that our module reveals:
-    let mut revealed_functions: HashSet<Fun> = HashSet::new();
+    let mut revealed_functions: FxHashSet<Fun> = FxHashSet::default();
     let mut assert_by_compute = false;
-    for f in &krate.functions {
-        if is_root_function(f) {
-            if let Some(body) = &f.x.body {
-                crate::ast_visitor::expr_visitor_check::<(), _>(
-                    body,
-                    &mut |_scope_map, e: &Expr| {
-                        match &e.x {
-                            ExprX::Fuel(path, fuel, _is_broadcast_use) if *fuel > 0 => {
-                                revealed_functions.insert(path.clone());
-                            }
-                            ExprX::AssertCompute(..) => {
-                                assert_by_compute = true;
-                            }
-                            _ => {}
-                        }
-                        Ok(())
-                    },
-                )
-                .expect("expr_visitor_check failed unexpectedly");
-            }
-        }
+    let root_bodies: Vec<&Expr> = krate
+        .functions
+        .iter()
+        .zip(is_root.iter())
+        .filter_map(|(f, is_root)| if *is_root { f.x.body.as_ref() } else { None })
+        .collect();
+    for (revealed, abc) in prune_map(parallel, &root_bodies, |body| scan_body_reveals(body)) {
+        revealed_functions.extend(revealed);
+        assert_by_compute |= abc;
     }
-    let reveal_group_set: HashSet<Fun> =
-        krate.reveal_groups.iter().map(|g| g.x.name.clone()).collect();
     for f in &root_modules_reveal {
         revealed_functions.insert(f.clone());
-        if reveal_group_set.contains(f) {
+        if index.reveal_group_names.contains(f) {
             reach(&mut state.reached_functions, &mut state.worklist_reveal_groups, f);
         } else {
             reach(&mut state.reached_functions, &mut state.worklist_functions, f);
@@ -1379,10 +1710,10 @@ pub fn prune_krate_for_module_or_krate(
 
     // Collect functions and datatypes,
     // pruning all bodies and variants that are not visible to our module
-    let mut functions: Vec<Function> = Vec::new();
+    // (functions[i] is the pruned krate.functions[i]):
+    let mut functions: Vec<Function> = Vec::with_capacity(krate.functions.len());
     let mut reveal_groups: Vec<RevealGroup> = Vec::new();
     let mut datatypes: Vec<Datatype> = Vec::new();
-    let mut opaque_types: Vec<OpaqueType> = Vec::new();
     let mut traits: Vec<Trait> = Vec::new();
     for f in &krate.reveal_groups {
         if is_visible_to_or_true(&f.x.visibility, &module) {
@@ -1393,10 +1724,10 @@ pub fn prune_krate_for_module_or_krate(
         }
     }
     overapproximate_revealed_functions(&mut revealed_functions, &reveal_groups);
-    for f in &krate.functions {
-        if module.is_none() || is_root_function(f) {
+    for (i, f) in krate.functions.iter().enumerate() {
+        if module.is_none() || is_root[i] {
             functions.push(f.clone());
-            if is_root_function(f) {
+            if is_root[i] {
                 // our function
                 reach(&mut state.reached_functions, &mut state.worklist_functions, &f.x.name);
 
@@ -1431,22 +1762,23 @@ pub fn prune_krate_for_module_or_krate(
         // - function is opaque and not revealed
         // - function is exec or proof
         // (when optimizing for modules, after well-formedness checks)
-        let is_vis = is_visible_to(&f.x.visibility, &module);
-        let is_open = is_body_visible_to(&f.x.body_visibility, &module);
-        let is_non_opaque = f.x.opaqueness.get_default_fuel_for_module_path(module) != 0;
-        let is_revealed = is_non_opaque || revealed_functions.contains(&f.x.name);
-        let is_spec = f.x.mode == Mode::Spec;
-        if is_vis && is_open && is_revealed && is_spec {
+        if f.x.body.is_none() {
+            // no body to remove
             functions.push(f.clone());
-        } else if f.x.body.is_none() {
-            functions.push(f.clone());
-        } else {
-            let mut function = f.x.clone();
-            function.body = None;
-            functions.push(Spanned::new(f.span.clone(), function));
+            continue;
         }
+        let keep_body = f.x.mode == Mode::Spec
+            && is_visible_to(&f.x.visibility, &module)
+            && is_body_visible_to(&f.x.body_visibility, &module)
+            && (f.x.opaqueness.get_default_fuel_for_module_path(module) != 0
+                || revealed_functions.contains(&f.x.name));
+        functions.push(if keep_body {
+            f.clone()
+        } else {
+            function_without_body(index, i, f).expect("function with body")
+        });
     }
-    for d in &krate.datatypes {
+    for (i, d) in krate.datatypes.iter().enumerate() {
         match &d.x.owning_module {
             Some(path) if is_root_module(path) && fun.is_none() => {
                 // our datatype
@@ -1462,155 +1794,63 @@ pub fn prune_krate_for_module_or_krate(
             if is_transparent {
                 datatypes.push(d.clone());
             } else {
-                let mut datatype = d.x.clone();
-                datatype.variants = Arc::new(vec![]);
-                datatypes.push(Spanned::new(d.span.clone(), datatype));
+                datatypes.push(datatype_without_variants(index, i, d));
             }
         }
     }
 
-    for op in &krate.opaque_types {
-        opaque_types.push(op.clone());
-    }
-
-    let mut function_map: HashMap<Fun, Function> = HashMap::new();
-    let mut reveal_group_map: HashMap<Fun, RevealGroup> = HashMap::new();
-    let mut datatype_map: HashMap<Dt, Datatype> = HashMap::new();
-    let mut opaque_ty_map: HashMap<OpaqueTyName, OpaqueType> = HashMap::new();
-    let mut trait_map: HashMap<Path, Trait> = HashMap::new();
-    let mut assoc_type_impl_map: HashMap<AssocTypeGroup, Vec<AssocTypeImpl>> = HashMap::new();
-    let mut trait_to_trait_impls: HashMap<TraitName, Vec<ImplName>> = HashMap::new();
-    let mut typ_to_trait_impls: HashMap<ReachedType, Vec<ImplName>> = HashMap::new();
-    let mut trait_impl_map: HashMap<ImplName, ReachTraitImpl> = HashMap::new();
-    let mut method_map: HashMap<(ReachedType, Fun), Vec<Fun>> = HashMap::new();
-    let mut method_self_typs: HashMap<Fun, Vec<ReachedType>> = HashMap::new();
-    let mut method_functions: HashMap<ReachedType, Vec<Fun>> = HashMap::new();
-    let mut fun_to_trigger_broadcasts: HashMap<Fun, Vec<Fun>> = HashMap::new();
-    let mut typ_to_trigger_broadcasts: HashMap<ReachedType, Vec<Fun>> = HashMap::new();
-    let mut fun_revealed_broadcast_map: HashMap<Fun, ReachBroadcastFunction> = HashMap::new();
-    let mut assert_by_compute_seq_funs: Vec<Fun> = Vec::new();
-    for f in &functions {
-        function_map.insert(f.x.name.clone(), f.clone());
-    }
-    for f in &functions {
-        if let FunctionKind::TraitMethodImpl { method, trait_typ_args, .. }
-        | FunctionKind::ForeignTraitMethodImpl { method, trait_typ_args, .. } = &f.x.kind
-        {
-            let self_typ = &trait_typ_args[0];
-            let key = (typ_to_reached_type(self_typ), method.clone());
-            if !method_map.contains_key(&key) {
-                method_map.insert(key.clone(), Vec::new());
-                method_self_typs.entry(key.1.clone()).or_default().push(key.0.clone());
-                method_functions.entry(key.0.clone()).or_default().push(key.1.clone());
+    let function_map = FunctionTable { index: index.clone(), functions };
+    let mut reveal_group_map: FxHashMap<Fun, RevealGroup> = FxHashMap::default();
+    let mut datatype_map: FxHashMap<Dt, Datatype> = FxHashMap::default();
+    let mut fun_to_trigger_broadcasts: FxHashMap<Fun, Vec<Fun>> = FxHashMap::default();
+    let mut typ_to_trigger_broadcasts: FxHashMap<ReachedType, Vec<Fun>> = FxHashMap::default();
+    let mut fun_revealed_broadcast_map: FxHashMap<Fun, ReachBroadcastFunction> =
+        FxHashMap::default();
+    // The revealed functions in krate order:
+    let mut revealed_positions: Vec<usize> = revealed_functions
+        .iter()
+        .filter_map(|f| index.fn_positions.get(f))
+        .flatten()
+        .copied()
+        .collect();
+    revealed_positions.sort_unstable();
+    let revealed_fns: Vec<&Function> =
+        revealed_positions.iter().map(|i| &function_map.functions[*i]).collect();
+    let revealed_triggers =
+        prune_map(parallel, &revealed_fns, |f| collect_broadcast_triggers(&function_map, f));
+    for (f, reach_triggers) in revealed_fns.iter().zip(revealed_triggers.into_iter()) {
+        for (trig_funs, trig_typs) in &reach_triggers {
+            for term in trig_funs {
+                fun_to_trigger_broadcasts
+                    .entry(term.clone())
+                    .or_insert_with(|| Vec::new())
+                    .push(f.x.name.clone());
             }
-            method_map.get_mut(&key).unwrap().push(f.x.name.clone());
-        }
-        if revealed_functions.contains(&f.x.name) {
-            let reach_triggers = collect_broadcast_triggers(&function_map, f);
-            for (trig_funs, trig_typs) in &reach_triggers {
-                for term in trig_funs {
-                    fun_to_trigger_broadcasts
-                        .entry(term.clone())
-                        .or_insert_with(|| Vec::new())
-                        .push(f.x.name.clone());
-                }
-                for typ in trig_typs {
-                    typ_to_trigger_broadcasts
-                        .entry(typ.clone())
-                        .or_insert_with(|| Vec::new())
-                        .push(f.x.name.clone());
-                }
+            for typ in trig_typs {
+                typ_to_trigger_broadcasts
+                    .entry(typ.clone())
+                    .or_insert_with(|| Vec::new())
+                    .push(f.x.name.clone());
             }
-            let reach_broadcast = ReachBroadcastFunction { reach_triggers };
-            fun_revealed_broadcast_map.insert(f.x.name.clone(), reach_broadcast);
         }
-        if assert_by_compute && crate::interpreter::is_seq_to_sst_fun(&f.x.name) {
-            assert_by_compute_seq_funs.push(f.x.name.clone());
-        }
+        let reach_broadcast = ReachBroadcastFunction { reach_triggers };
+        fun_revealed_broadcast_map.insert(f.x.name.clone(), reach_broadcast);
     }
+    let assert_by_compute_seq_funs =
+        if assert_by_compute { index.seq_to_sst_funs.clone() } else { Vec::new() };
     for f in &reveal_groups {
         reveal_group_map.insert(f.x.name.clone(), f.clone());
     }
     for d in &datatypes {
         datatype_map.insert(d.x.name.clone(), d.clone());
     }
-    for op in &opaque_types {
-        opaque_ty_map.insert(op.x.name.clone(), op.clone());
-    }
-    for tr in krate.traits.iter() {
-        trait_map.insert(tr.x.name.clone(), tr.clone());
-    }
 
-    for imp in krate.trait_impls.iter() {
-        let mut bound_traits: Vec<TraitName> = Vec::new();
-        let mut bound_types: Vec<ReachedType> = Vec::new();
-        for bound in imp.x.typ_bounds.iter() {
-            match &**bound {
-                crate::ast::GenericBoundX::Trait(tid, typ_args) => {
-                    match tid {
-                        TraitId::Path(path) => {
-                            bound_traits.push(path.clone());
-                        }
-                        TraitId::Sizedness(_) => {}
-                    }
-                    for t in typ_args.iter() {
-                        bound_types.push(typ_to_reached_type(t));
-                    }
-                }
-                crate::ast::GenericBoundX::TypEquality(path, typ_args, _name, typ) => {
-                    bound_traits.push(path.clone());
-                    for t in typ_args.iter() {
-                        bound_types.push(typ_to_reached_type(t));
-                    }
-                    bound_types.push(typ_to_reached_type(typ));
-                }
-                crate::ast::GenericBoundX::ConstTyp(t, s) => {
-                    bound_types.push(typ_to_reached_type(t));
-                    bound_types.push(typ_to_reached_type(s));
-                }
-            }
-        }
-        let trait_impl = ReachTraitImpl {
-            trait_impl: imp.clone(),
-            bound_traits,
-            bound_types,
-            trait_typ_args: imp.x.trait_typ_args.iter().map(typ_to_reached_type).collect(),
-        };
-        if !trait_to_trait_impls.contains_key(&imp.x.trait_path) {
-            trait_to_trait_impls.insert(imp.x.trait_path.clone(), Vec::new());
-        }
-        trait_to_trait_impls.get_mut(&imp.x.trait_path).unwrap().push(imp.x.impl_path.clone());
-        for t in &trait_impl.trait_typ_args {
-            if !typ_to_trait_impls.contains_key(t) {
-                typ_to_trait_impls.insert(t.clone(), Vec::new());
-            }
-            typ_to_trait_impls.get_mut(&t).unwrap().push(imp.x.impl_path.clone());
-        }
-        assert!(module.is_none() || !trait_impl_map.contains_key(&imp.x.impl_path));
-        trait_impl_map.insert(imp.x.impl_path.clone(), trait_impl);
-    }
-
-    for a in &krate.assoc_type_impls {
-        let key = a.x.prune_name();
-        if !assoc_type_impl_map.contains_key(&key) {
-            assoc_type_impl_map.insert(key.clone(), Vec::new());
-        }
-        assoc_type_impl_map.get_mut(&key).unwrap().push(a.clone());
-    }
     let ctxt = Ctxt {
         module: module.clone(),
+        index: index.clone(),
         function_map,
         reveal_group_map,
         datatype_map,
-        opaque_ty_map,
-        trait_map,
-        trait_to_trait_impls,
-        typ_to_trait_impls,
-        trait_impl_map,
-        assoc_type_impl_map,
-        method_map,
-        method_self_typs,
-        method_functions,
         fun_to_trigger_broadcasts,
         typ_to_trigger_broadcasts,
         fun_revealed_broadcast_map,
@@ -1618,26 +1858,21 @@ pub fn prune_krate_for_module_or_krate(
         assert_by_compute_seq_funs,
     };
     // Bucket prunes stay serial because they already run concurrently and have small reach sets.
-    traverse_reachable(&ctxt, &mut state, module.is_none());
+    traverse_reachable(&ctxt, &mut state, parallel);
 
     for tr in krate.traits.iter() {
-        let traitx = tr.x.clone();
-        let assoc_typs = traitx
-            .assoc_typs
-            .iter()
-            .filter(|a| state.reached_assoc_type_decls.contains(&traitx.prune_name(a)))
-            .cloned()
-            .collect();
-        let assoc_typs = Arc::new(assoc_typs);
-        let assoc_typs_bounds = if state.reached_bound_traits.contains(&tr.x.name) {
-            traitx.assoc_typs_bounds
+        // Unreached traits are pruned; reached traits keep their assoc_typs_bounds.
+        if !state.reached_bound_traits.contains(&tr.x.name) {
+            continue;
+        }
+        let reached_decl = |a: &Ident| state.reached_assoc_type_decls.contains(&tr.x.prune_name(a));
+        if tr.x.assoc_typs.iter().all(reached_decl) {
+            traits.push(tr.clone());
         } else {
-            Arc::new(vec![])
-        };
-        traits.push(Spanned::new(
-            tr.span.clone(),
-            TraitX { assoc_typs, assoc_typs_bounds, ..traitx },
-        ));
+            let assoc_typs = tr.x.assoc_typs.iter().filter(|a| reached_decl(a)).cloned().collect();
+            let assoc_typs = Arc::new(assoc_typs);
+            traits.push(Spanned::new(tr.span.clone(), TraitX { assoc_typs, ..tr.x.clone() }));
+        }
     }
 
     let modules: Vec<Module> = krate
@@ -1664,11 +1899,20 @@ pub fn prune_krate_for_module_or_krate(
         f
     };
 
+    // The reached functions in krate order:
+    let mut reached_positions: Vec<usize> = state
+        .reached_functions
+        .iter()
+        .filter_map(|f| index.fn_positions.get(f))
+        .flatten()
+        .copied()
+        .collect();
+    reached_positions.sort_unstable();
+    let Ctxt { function_map: FunctionTable { functions, .. }, .. } = ctxt;
     let kratex = KrateX {
-        functions: functions
-            .into_iter()
-            .filter(|f| state.reached_functions.contains(&f.x.name))
-            .map(set_broadcast_only)
+        functions: reached_positions
+            .iter()
+            .map(|i| set_broadcast_only(functions[*i].clone()))
             .collect(),
         reveal_groups: reveal_groups
             .into_iter()
@@ -1678,21 +1922,20 @@ pub fn prune_krate_for_module_or_krate(
             .into_iter()
             .filter(|d| state.reached_types.contains(&ReachedType::Datatype(d.x.name.clone())))
             .collect(),
-        opaque_types: opaque_types
+        opaque_types: krate
+            .opaque_types
             .iter()
-            .filter(|a| state.reached_opaque_types.contains(&a.x.name.clone()))
+            .filter(|a| state.reached_opaque_types.contains(&a.x.name))
             .cloned()
             .collect(),
         assoc_type_impls: krate
             .assoc_type_impls
             .iter()
-            .filter(|a| state.reached_assoc_type_impls.contains(&a.x.prune_name()))
-            .cloned()
+            .zip(index.assoc_type_impl_keys.iter())
+            .filter(|(_, key)| state.reached_assoc_type_impls.contains(*key))
+            .map(|(a, _)| a.clone())
             .collect(),
-        traits: traits
-            .into_iter()
-            .filter(|t| state.reached_bound_traits.contains(&t.x.name))
-            .collect(),
+        traits,
         trait_impls: krate
             .trait_impls
             .iter()
@@ -1733,7 +1976,7 @@ pub fn prune_krate_for_module_or_krate(
         used_builtins,
         fndef_types,
         resolved_typs: res_typs,
-        dyn_traits: state.dyn_traits,
+        dyn_traits: state.dyn_traits.into_iter().collect(),
     };
     (Arc::new(kratex), prune_info)
 }

@@ -3,21 +3,19 @@ use crate::ast_util::{
     array_kind_of_typ, bool_typ, conjoin, disjoin, if_then_else, int_typ, mk_eq, mk_ineq,
     mk_int_lit_from_usize, place_to_spec_expr,
 };
-use crate::context::GlobalCtx;
 use crate::def::Spanned;
 use crate::messages::{Span, error};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub fn pattern_to_exprs(
-    ctx: &GlobalCtx,
     place: &Place,
     pattern: &Pattern,
     has_guard: bool,
     decls: &mut Vec<Stmt>,
 ) -> Result<Expr, VirErr> {
     let mut pattern_bound_decls = vec![];
-    let e = pattern_to_exprs_rec(ctx, pattern, place, &mut pattern_bound_decls, false)?;
+    let e = pattern_to_exprs_rec(pattern, place, &mut pattern_bound_decls, false)?;
 
     for pbd in pattern_bound_decls {
         if has_guard && pbd.mut_ref {
@@ -91,7 +89,6 @@ fn err_if_bad_binding(span: &Span, in_immut: bool, by_ref: ByRef) -> Result<(), 
 }
 
 fn pattern_to_exprs_rec(
-    ctx: &GlobalCtx,
     pattern: &Pattern,
     place: &Place,
     bindings: &mut Vec<ComputedPatternBinding>,
@@ -109,7 +106,7 @@ fn pattern_to_exprs_rec(
         }
         PatternX::Binding { binding, sub_pat } => {
             err_if_bad_binding(&pattern.span, in_immut, binding.by_ref)?;
-            let pattern_test = pattern_to_exprs_rec(ctx, sub_pat, place, bindings, in_immut)?;
+            let pattern_test = pattern_to_exprs_rec(sub_pat, place, bindings, in_immut)?;
             // This binding needs to go last in case we have something like this:
             //   `ref mut x @ Some(y)`
             // (which is ok if the y is bound via copy)
@@ -144,7 +141,7 @@ fn pattern_to_exprs_rec(
                     PlaceX::Field(field_opr, place.clone()),
                 );
                 let pattern_test =
-                    pattern_to_exprs_rec(ctx, &binder.a, &field_place, bindings, in_immut)?;
+                    pattern_to_exprs_rec(&binder.a, &field_place, bindings, in_immut)?;
                 let and = ExprX::Logical(LogicalOp::And, test, pattern_test);
                 test = SpannedTyped::new(&pattern.span, &t_bool, and);
             }
@@ -155,8 +152,8 @@ fn pattern_to_exprs_rec(
             let mut bindings1 = vec![];
             let mut bindings2 = vec![];
 
-            let pat1_matches = pattern_to_exprs_rec(ctx, pat1, place, &mut bindings1, in_immut)?;
-            let pat2_matches = pattern_to_exprs_rec(ctx, pat2, place, &mut bindings2, in_immut)?;
+            let pat1_matches = pattern_to_exprs_rec(pat1, place, &mut bindings1, in_immut)?;
+            let pat2_matches = pattern_to_exprs_rec(pat2, place, &mut bindings2, in_immut)?;
 
             let matches = disjoin(&pattern.span, &vec![pat1_matches.clone(), pat2_matches]);
 
@@ -198,11 +195,11 @@ fn pattern_to_exprs_rec(
             }
             Ok(conjoin(&pattern.span, &v))
         }
-        PatternX::ImmutRef(sub_pat) => pattern_to_exprs_rec(ctx, sub_pat, place, bindings, true),
+        PatternX::ImmutRef(sub_pat) => pattern_to_exprs_rec(sub_pat, place, bindings, true),
         PatternX::MutRef(sub_pat) => {
             let deref_place =
                 SpannedTyped::new(&sub_pat.span, &sub_pat.typ, PlaceX::DerefMut(place.clone()));
-            pattern_to_exprs_rec(ctx, sub_pat, &deref_place, bindings, in_immut)
+            pattern_to_exprs_rec(sub_pat, &deref_place, bindings, in_immut)
         }
         PatternX::Slice(patterns) => {
             let (kind, elem_typ) = array_kind_of_typ(&pattern.typ);
@@ -227,7 +224,7 @@ fn pattern_to_exprs_rec(
                     &elem_typ,
                     PlaceX::Index(place.clone(), idx, kind, BoundsCheck::Allow),
                 );
-                let pattern_test = pattern_to_exprs_rec(ctx, p, &index_place, bindings, in_immut)?;
+                let pattern_test = pattern_to_exprs_rec(p, &index_place, bindings, in_immut)?;
                 conjuncts.push(pattern_test);
             }
 

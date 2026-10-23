@@ -1578,6 +1578,50 @@ impl<'tcx> FunctionOrConstInfo<'tcx> {
         };
         std::iter::once(f).chain(opt_f.into_iter())
     }
+
+    /// Mutable access to the parts of a pending item that carry VIR IDs: the stub, the
+    /// autospec stub, and (for foreign functions) the already finished function.
+    pub(crate) fn parts_mut(
+        &mut self,
+    ) -> (
+        &mut vir::ast::FunctionStub,
+        Option<&mut vir::ast::FunctionStub>,
+        Option<&mut vir::ast::Function>,
+    ) {
+        match self {
+            FunctionOrConstInfo::Function(f) => {
+                (&mut f.function, f.function_for_autospec.as_mut(), None)
+            }
+            FunctionOrConstInfo::Const(c) => {
+                (&mut c.function, c.function_for_autospec.as_mut(), None)
+            }
+            FunctionOrConstInfo::ForeignFunction(f) => {
+                (&mut f.function_stub, None, Some(&mut f.function_full))
+            }
+        }
+    }
+
+    /// The finished function a foreign function already carries, if any.
+    pub(crate) fn foreign_function_full(&self) -> Option<&vir::ast::Function> {
+        match self {
+            FunctionOrConstInfo::ForeignFunction(f) => Some(&f.function_full),
+            _ => None,
+        }
+    }
+
+    /// Estimates body translation cost by the body's source length.
+    pub(crate) fn body_len(&self, tcx: rustc_middle::ty::TyCtxt<'tcx>) -> u32 {
+        let body_id = match self {
+            FunctionOrConstInfo::Function(f) => match f.body_id {
+                CheckItemFnEither::BodyId(body_id) => body_id,
+                CheckItemFnEither::ParamNames(()) => return 0,
+            },
+            FunctionOrConstInfo::Const(c) => c.body_id,
+            FunctionOrConstInfo::ForeignFunction(_) => return 0,
+        };
+        let span = tcx.hir_body(body_id).value.span.data();
+        span.hi.0.saturating_sub(span.lo.0)
+    }
 }
 
 fn get_pre_header<'tcx>(

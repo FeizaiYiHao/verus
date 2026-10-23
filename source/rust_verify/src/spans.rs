@@ -312,9 +312,8 @@ impl SpanContextX {
         locs
     }
 
-    fn pack_span(&self, span: Span) -> Vec<u64> {
+    fn pack_span_data(&self, span_data: &SpanData) -> Vec<u64> {
         // Encode as [StableCrateId, lo_hi]
-        let span_data = span.data();
         let lo_hi = ((span_data.lo.0 as u64) << 32) | (span_data.hi.0 as u64);
         return vec![self.local_crate.as_u64(), lo_hi];
     }
@@ -359,8 +358,11 @@ impl SpanContextX {
 
     /// Converts a rustc span with the supplied VIR ID.
     pub(crate) fn to_air_span_with_id(&self, span: Span, id: u64) -> vir::messages::Span {
-        let raw_span = to_raw_span(span);
-        let data = self.pack_span(span);
+        // Decode the span once for both the raw span and its packed encoding.
+        let span_data = span.data();
+        let data = self.pack_span_data(&span_data);
+        let raw_span =
+            Arc::new(RawSpanData { span: span_data, as_string: std::sync::OnceLock::new() });
         let as_string = if self.lazy_span_strings {
             vir::messages::SpanString::lazy()
         } else {

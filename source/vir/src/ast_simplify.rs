@@ -13,7 +13,7 @@ use crate::ast::{
     DatatypeTransparency, DatatypeX, Dt, Expr, ExprX, Exprs, Field, FieldOpr, Fun, Function,
     FunctionKind, Ident, IntRange, ItemKind, Krate, KrateX, LogicalOp, Mode, MultiOp, Path,
     Pattern, PatternBinding, PatternX, Place, PlaceX, SpannedTyped, Stmt, StmtX, TraitImpl, Typ,
-    TypX, UnaryOp, UnaryOpr, Variant, VariantCheck, VirErr, Visibility,
+    TypPositives, TypX, UnaryOp, UnaryOpr, Variant, VariantCheck, Variants, VirErr, Visibility,
 };
 use crate::ast_util::{
     conjoin, is_unit, mk_eq, mk_implies, place_to_spec_expr, typ_args_for_datatype_typ,
@@ -44,6 +44,20 @@ struct ClosureDatatype {
     path: Path,
 }
 
+/// Immutable inputs shared by the parallel per-function simplify workers.
+struct SimplifyEnv {
+    datatypes: Arc<HashMap<Path, (TypPositives, Variants)>>,
+}
+
+/// Per-item generated-type facts that `simplify_krate` merges in item order.
+struct StateSummary {
+    tuple_typs: HashSet<usize>,
+    closure_typs: HashMap<usize, ClosureDatatype>,
+    fndef_typs: HashSet<Fun>,
+}
+
+type PanicPayload = Box<dyn std::any::Any + Send + 'static>;
+
 struct State {
     // Counter to generate temporary variables
     next_var: u64,
@@ -69,6 +83,30 @@ impl State {
             closure_typs: HashMap::new(),
             fndef_typs: HashSet::new(),
         }
+    }
+
+    fn take_summary(&mut self) -> StateSummary {
+        StateSummary {
+            tuple_typs: std::mem::take(&mut self.tuple_typs),
+            closure_typs: std::mem::take(&mut self.closure_typs),
+            fndef_typs: std::mem::take(&mut self.fndef_typs),
+        }
+    }
+
+    /// Merges one item's facts with the same first-definition rule as `closure_type_name`.
+    fn merge_summary(&mut self, summary: StateSummary) {
+        self.tuple_typs.extend(summary.tuple_typs);
+        for (id, closure) in summary.closure_typs {
+            match self.closure_typs.entry(id) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    assert!(&e.get().enclosing_fun == &closure.enclosing_fun);
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(closure);
+                }
+            }
+        }
+        self.fndef_typs.extend(summary.fndef_typs);
     }
 
     fn reset_for_function(&mut self) {
@@ -216,7 +254,7 @@ fn rename_var(state: &State, scope_map: &VisitorScopeMap, x: &VarIdent) -> VarId
 }
 
 fn simplify_one_place(
-    _ctx: &GlobalCtx,
+    _ctx: &SimplifyEnv,
     state: &mut State,
     scope_map: &VisitorScopeMap,
     place: &Place,
@@ -327,7 +365,7 @@ fn place_to_pure_place_rec(state: &mut State, place: &Place) -> (Vec<Stmt>, Plac
 // then simplify_one_expr is called first on B and C, and then on A
 
 fn simplify_one_expr(
-    ctx: &GlobalCtx,
+    ctx: &SimplifyEnv,
     state: &mut State,
     scope_map: &VisitorScopeMap,
     expr: &Expr,
@@ -574,7 +612,6 @@ fn simplify_one_expr(
                 let has_guard = arm.x.has_guard();
 
                 let test_pattern = crate::patterns::pattern_to_exprs(
-                    ctx,
                     &place,
                     &arm.x.pattern,
                     has_guard,
@@ -715,7 +752,7 @@ fn irrefut_failure_msg(pattern_span: &Span) -> crate::messages::Message {
     error(pattern_span, "unable to prove this pattern will successfully match")
 }
 
-fn simplify_one_stmt(ctx: &GlobalCtx, state: &mut State, stmt: &Stmt) -> Result<Vec<Stmt>, VirErr> {
+fn simplify_one_stmt(state: &mut State, stmt: &Stmt) -> Result<Vec<Stmt>, VirErr> {
     match &stmt.x {
         StmtX::Decl { pattern, mode: _, init: None, els: None, assert_irrefutable } => {
             assert!(!assert_irrefutable);
@@ -756,7 +793,7 @@ fn simplify_one_stmt(ctx: &GlobalCtx, state: &mut State, stmt: &Stmt) -> Result<
             let (mut stmts, place) = place_to_pure_place(state, init);
             let mut stmts2: Vec<Stmt> = vec![];
             let pattern_check =
-                crate::patterns::pattern_to_exprs(ctx, &place, pattern, false, &mut stmts2)?;
+                crate::patterns::pattern_to_exprs(&place, pattern, false, &mut stmts2)?;
             if let Some(els) = &els {
                 assert!(!assert_irrefutable);
                 let checkx = ExprX::Unary(UnaryOp::Not, pattern_check.clone());
@@ -1208,7 +1245,7 @@ fn add_fndef_axioms_to_function(
 }
 
 fn simplify_function(
-    ctx: &GlobalCtx,
+    ctx: &SimplifyEnv,
     state: &mut State,
     function: &Function,
 ) -> Result<Function, VirErr> {
@@ -1304,7 +1341,7 @@ fn simplify_function(
         &mut map,
         state,
         &|state, map, expr| simplify_one_expr(ctx, state, map, expr),
-        &|state, _, stmt| simplify_one_stmt(ctx, state, stmt),
+        &|state, _, stmt| simplify_one_stmt(state, stmt),
         &|state, typ| simplify_one_typ(&local, state, typ),
         &|state, map, place| simplify_one_place(ctx, state, map, place),
         &|_, _, pat| Ok(pat.clone()),
@@ -1400,7 +1437,7 @@ fn mk_fun_decl(
 */
 
 fn add_tuple_auto_impl(
-    ctx: &mut GlobalCtx,
+    no_span: &Span,
     traits: &Vec<crate::ast::Trait>,
     trait_impls: &mut Vec<TraitImpl>,
     arity: usize,
@@ -1437,15 +1474,94 @@ fn add_tuple_auto_impl(
         typ_bounds: Arc::new(bounds),
         trait_path,
         trait_typ_args: Arc::new(vec![self_ty]),
-        trait_typ_arg_impls: Spanned::new(ctx.no_span.clone(), Arc::new(vec![])),
+        trait_typ_arg_impls: Spanned::new(no_span.clone(), Arc::new(vec![])),
         owning_module: None,
         auto_imported: true,
         external_trait_blanket: false,
     };
-    trait_impls.push(Spanned::new(ctx.no_span.clone(), trait_implx));
+    trait_impls.push(Spanned::new(no_span.clone(), trait_implx));
+}
+
+/// Runs one item and returns its partial summary even if it errors or panics, so the ordered merge
+/// reproduces sequential first-definition asserts before surfacing that item's error or panic.
+fn catch_item_panic<R>(
+    state: &mut State,
+    f: impl FnOnce(&mut State) -> R,
+) -> (StateSummary, Result<R, PanicPayload>) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut *state)));
+    let summary = state.take_summary();
+    if result.is_err() {
+        *state = State::new();
+    }
+    (summary, result)
+}
+
+fn resume_item_panic<R>(result: Result<R, PanicPayload>) -> R {
+    match result {
+        Ok(r) => r,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Simplifies every function on worker-local States, then merges summaries, errors, and panics
+/// into `state` in function order. Functions after the first error or panic are not simplified.
+fn simplify_functions(
+    env: &SimplifyEnv,
+    state: &mut State,
+    functions: &[Function],
+) -> Result<Vec<Function>, VirErr> {
+    let outcomes = crate::util::par_map_init_until_err(
+        functions,
+        State::new,
+        |state, f| {
+            // Reverse renames are only read for VirParam names, which only this function's
+            // renaming creates, so earlier functions' entries are never observed.
+            state.rename_vars_reverse.clear();
+            catch_item_panic(state, |state| simplify_function(env, state, f))
+        },
+        |(_, result)| !matches!(result, Ok(Ok(_))),
+    );
+    let mut out = Vec::with_capacity(functions.len());
+    for outcome in outcomes {
+        let Some((summary, result)) = outcome else {
+            return Err(crate::util::par_cancelled_err());
+        };
+        state.merge_summary(summary);
+        out.push(resume_item_panic(result)?);
+    }
+    Ok(out)
 }
 
 pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirErr> {
+    let krate = simplify_krate_body(&ctx.no_span, krate)?;
+    *ctx = after_simplify_global_ctx(ctx, &krate)?;
+    Ok(krate)
+}
+
+/// Builds the GlobalCtx for a simplified crate with the configuration of `ctx`.
+pub fn after_simplify_global_ctx(ctx: &GlobalCtx, krate: &Krate) -> Result<GlobalCtx, VirErr> {
+    crate::context::GlobalCtx::new(
+        krate,
+        ctx.crate_name.clone(),
+        ctx.no_span.clone(),
+        ctx.rlimit,
+        ctx.interpreter_log.clone(),
+        ctx.func_call_graph_log.clone(),
+        ctx.warning_ctx.clone(),
+        ctx.solver.clone(),
+        true,
+        ctx.check_api_safety,
+        ctx.axiom_usage_info,
+        ctx.no_bv_simplify,
+        ctx.report_long_running,
+    )
+}
+
+/// The crate transformation of simplify_krate, without building the after-simplify
+/// GlobalCtx. It reads no pre-simplify GlobalCtx state, so it may run concurrently with
+/// GlobalCtx::new and recursive_types::check_traits on the unsimplified crate.
+/// `no_span` must be the `no_span` of that GlobalCtx.
+pub fn simplify_krate_body(no_span: &Span, krate: &Krate) -> Result<Krate, VirErr> {
     let KrateX {
         functions,
         reveal_groups,
@@ -1466,13 +1582,14 @@ pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirEr
     state.tuple_type_name(0);
 
     let mut datatypes = vec_map_result(&datatypes, |d| simplify_datatype(&mut state, d))?;
-    ctx.datatypes = Arc::new(
+    let simplified_datatypes = Arc::new(
         datatypes
             .iter()
             .map(|d| (d.x.name.expect_path(), (d.x.typ_params.clone(), d.x.variants.clone())))
             .collect(),
     );
-    let functions = vec_map_result(functions, |f| simplify_function(ctx, &mut state, f))?;
+    let env = SimplifyEnv { datatypes: simplified_datatypes };
+    let functions = simplify_functions(&env, &mut state, functions)?;
     let mut trait_impls = vec_map_result(&trait_impls, |t| simplify_trait_impl(&mut state, t))?;
     let mut assoc_type_impls =
         vec_map_result(&assoc_type_impls, |a| simplify_assoc_type_impl(&mut state, a))?;
@@ -1486,11 +1603,32 @@ pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirEr
         .filter(|f| state.fndef_typs.contains(&f.x.name))
         .map(|f| (&f.x.name, f))
         .collect();
+    let fndef_funs = &fndef_funs;
+    let fndef_typs = &state.fndef_typs;
+    // Functions after the first error or panic are not given fndef axioms.
+    let results = crate::util::par_map_init_until_err(
+        &functions,
+        State::new,
+        |state, f| {
+            if need_fndef_axiom(fndef_typs, f) {
+                let (summary, result) = catch_item_panic(state, |state| {
+                    add_fndef_axioms_to_function(fndef_funs, state, f, fn_once_trait_in_scope)
+                });
+                (summary, result.map(Some))
+            } else {
+                (state.take_summary(), Ok(None))
+            }
+        },
+        |(_, result)| matches!(result, Err(_) | Ok(Some(Err(_)))),
+    );
     let mut new_functions: Vec<Function> = Vec::with_capacity(functions.len());
-    for f in functions.iter() {
-        if need_fndef_axiom(&state.fndef_typs, f) {
-            let (f2, tis, ai) =
-                add_fndef_axioms_to_function(&fndef_funs, &mut state, f, fn_once_trait_in_scope)?;
+    for (f, result) in functions.iter().zip(results) {
+        let Some((summary, result)) = result else {
+            return Err(crate::util::par_cancelled_err());
+        };
+        state.merge_summary(summary);
+        if let Some(result) = resume_item_panic(result) {
+            let (f2, tis, ai) = result?;
             trait_impls.extend(tis);
             if let Some(ai) = ai {
                 assoc_type_impls.push(ai);
@@ -1543,7 +1681,7 @@ pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirEr
             },
             destructor: false,
         };
-        datatypes.push(Spanned::new(ctx.no_span.clone(), datatypex));
+        datatypes.push(Spanned::new(no_span.clone(), datatypex));
 
         let tuple_path = crate::path![CrateId::Core => "marker", "Tuple"];
         let clone_path = crate::path![CrateId::Core => "clone", "Clone"];
@@ -1551,17 +1689,24 @@ pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirEr
         //let send_path = crate::path![CrateId::Core => "marker", "Send"];
         //let sync_path = crate::path![CrateId::Core => "marker", "Sync"];
         //let unpin_path = crate::path![CrateId::Core => "marker", "Unpin"];
-        add_tuple_auto_impl(ctx, &traits, &mut trait_impls, arity, false, tuple_path);
-        add_tuple_auto_impl(ctx, &traits, &mut trait_impls, arity, true, clone_path);
-        add_tuple_auto_impl(ctx, &traits, &mut trait_impls, arity, true, copy_path);
+        add_tuple_auto_impl(no_span, &traits, &mut trait_impls, arity, false, tuple_path);
+        add_tuple_auto_impl(no_span, &traits, &mut trait_impls, arity, true, clone_path);
+        add_tuple_auto_impl(no_span, &traits, &mut trait_impls, arity, true, copy_path);
         // TODO when when we have full support for auto traits:
-        //add_tuple_auto_impl(ctx, &traits, &mut trait_impls, arity, true, send_path);
-        //add_tuple_auto_impl(ctx, &traits, &mut trait_impls, arity, true, sync_path);
-        //add_tuple_auto_impl(ctx, &traits, &mut trait_impls, arity, true, unpin_path);
+        //add_tuple_auto_impl(no_span, &traits, &mut trait_impls, arity, true, send_path);
+        //add_tuple_auto_impl(no_span, &traits, &mut trait_impls, arity, true, sync_path);
+        //add_tuple_auto_impl(no_span, &traits, &mut trait_impls, arity, true, unpin_path);
     }
 
     let mut closures: Vec<_> = state.closure_typs.into_iter().collect();
     closures.sort_by_key(|kv| kv.0);
+    // First index per name, matching the previous linear `find`.
+    let mut function_index: HashMap<&Fun, usize> = HashMap::new();
+    if !closures.is_empty() {
+        for (i, f) in functions.iter().enumerate() {
+            function_index.entry(&f.x.name).or_insert(i);
+        }
+    }
     for (id, closure) in closures {
         // Right now, we translate the closure type into an a global datatype.
         //
@@ -1585,7 +1730,7 @@ pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirEr
 
         let variants = Arc::new(vec![]);
 
-        let function = functions.iter().find(|f| f.x.name == closure.enclosing_fun).unwrap();
+        let function = &functions[*function_index.get(&closure.enclosing_fun).unwrap()];
 
         let typ_params: crate::ast::TypPositives = Arc::new(
             function
@@ -1610,7 +1755,7 @@ pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirEr
             sized_constraint: None,
             destructor: false,
         };
-        datatypes.push(Spanned::new(ctx.no_span.clone(), datatypex));
+        datatypes.push(Spanned::new(no_span.clone(), datatypex));
 
         // Add a trait bound, `ClosureType: {Fn, FnMut, FnOnce}`, and the corresponding
         // `<ClosureType as FnOnce<Args>>::Output = ReturnType` associated-type impl.
@@ -1636,12 +1781,12 @@ pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirEr
             typ_bounds: function.x.typ_bounds.clone(),
             trait_path: closure.kind.trait_path(),
             trait_typ_args: trait_typ_args.clone(),
-            trait_typ_arg_impls: Spanned::new(ctx.no_span.clone(), Arc::new(vec![])),
+            trait_typ_arg_impls: Spanned::new(no_span.clone(), Arc::new(vec![])),
             owning_module: None,
             auto_imported: true,
             external_trait_blanket: false,
         };
-        trait_impls.push(Spanned::new(ctx.no_span.clone(), trait_implx));
+        trait_impls.push(Spanned::new(no_span.clone(), trait_implx));
 
         // The `Output` associated type is defined on the `FnOnce` trait (and
         // inherited by `Fn` and `FnMut`), so we always use the `FnOnce` trait
@@ -1658,7 +1803,7 @@ pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirEr
                 typ: closure.output.clone(),
                 impl_paths: Arc::new(vec![]),
             };
-            assoc_type_impls.push(Spanned::new(ctx.no_span.clone(), assoc_typ_implx));
+            assoc_type_impls.push(Spanned::new(no_span.clone(), assoc_typ_implx));
         }
     }
 
@@ -1680,21 +1825,6 @@ pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirEr
         path_as_rust_names: path_as_rust_names.clone(),
         arch: arch.clone(),
     });
-    *ctx = crate::context::GlobalCtx::new(
-        &krate,
-        ctx.crate_name.clone(),
-        ctx.no_span.clone(),
-        ctx.rlimit,
-        ctx.interpreter_log.clone(),
-        ctx.func_call_graph_log.clone(),
-        ctx.warning_ctx.clone(),
-        ctx.solver.clone(),
-        true,
-        ctx.check_api_safety,
-        ctx.axiom_usage_info,
-        ctx.no_bv_simplify,
-        ctx.report_long_running,
-    )?;
     Ok(krate)
 }
 
@@ -1757,4 +1887,75 @@ pub fn krate_merge_arch(krate: &Krate, other_krates: &[Krate]) -> Result<Arch, V
         }
     }
     Ok(Arch { word_bits })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{FunX, IntRange};
+
+    fn mk_fun(name: &'static str) -> Fun {
+        let segments = Arc::new(vec![Arc::new(name.to_string())]);
+        Arc::new(FunX { path: Arc::new(crate::ast::PathX { krate: CrateId::Internal, segments }) })
+    }
+
+    fn closure_summary(
+        closure_typs: &HashMap<usize, ClosureDatatype>,
+    ) -> Vec<(usize, Fun, usize, ClosureKind, Path)> {
+        let mut v: Vec<_> = closure_typs
+            .iter()
+            .map(|(id, c)| (*id, c.enclosing_fun.clone(), c.args.len(), c.kind, c.path.clone()))
+            .collect();
+        v.sort_by_key(|x| x.0);
+        v
+    }
+
+    fn sorted<T: Ord + Clone>(s: &HashSet<T>) -> Vec<T> {
+        let mut v: Vec<T> = s.iter().cloned().collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn merged_worker_summaries_match_sequential_state() {
+        let f = mk_fun("f");
+        let g = mk_fun("g");
+        let int: Typ = Arc::new(TypX::Int(IntRange::Int));
+        let args: Typs = Arc::new(vec![int.clone()]);
+        let args2: Typs = Arc::new(vec![int.clone(), int.clone()]);
+
+        // Sequential: both items' effects on one State.
+        let mut sequential = State::new();
+        sequential.tuple_type_name(3);
+        sequential.closure_type_name(f.clone(), args.clone(), int.clone(), ClosureKind::Fn, 7);
+        sequential.fndef_typs.insert(g.clone());
+        sequential.tuple_type_name(2);
+        sequential.closure_type_name(f.clone(), args2.clone(), int.clone(), ClosureKind::FnMut, 7);
+        sequential.closure_type_name(g.clone(), args2.clone(), int.clone(), ClosureKind::FnOnce, 5);
+        sequential.fndef_typs.insert(f.clone());
+
+        // Parallel: each item on a worker-local State, merged in item order.
+        let mut w1 = State::new();
+        w1.tuple_type_name(3);
+        w1.closure_type_name(f.clone(), args.clone(), int.clone(), ClosureKind::Fn, 7);
+        w1.fndef_typs.insert(g.clone());
+        let mut w2 = State::new();
+        w2.tuple_type_name(2);
+        w2.closure_type_name(f.clone(), args2.clone(), int.clone(), ClosureKind::FnMut, 7);
+        w2.closure_type_name(g.clone(), args2.clone(), int.clone(), ClosureKind::FnOnce, 5);
+        w2.fndef_typs.insert(f.clone());
+        let mut merged = State::new();
+        merged.merge_summary(w1.take_summary());
+        merged.merge_summary(w2.take_summary());
+        assert!(w1.tuple_typs.is_empty() && w1.closure_typs.is_empty() && w1.fndef_typs.is_empty());
+
+        assert_eq!(sorted(&merged.tuple_typs), sorted(&sequential.tuple_typs));
+        assert_eq!(sorted(&merged.fndef_typs), sorted(&sequential.fndef_typs));
+        // The ordered merge keeps the first definition per closure id.
+        assert_eq!(
+            closure_summary(&merged.closure_typs),
+            closure_summary(&sequential.closure_typs)
+        );
+        assert_eq!(closure_summary(&merged.closure_typs)[1].3, ClosureKind::Fn);
+    }
 }

@@ -5,7 +5,7 @@ use crate::resolve_traits::{ResolutionResult, ResolvedItem, resolve_trait_item};
 use crate::reveal_hide::RevealHideResult;
 use crate::rust_to_vir_base::{
     bitwidth_and_signedness_of_integer_type, is_smt_arith, is_type_std_rc_or_arc_or_ref,
-    typ_of_expr_adjusted, typ_of_node_unadjusted,
+    symbol_ident, typ_of_expr_adjusted, typ_of_node_unadjusted,
 };
 use crate::rust_to_vir_expr::{
     check_lit_int, closure_param_typs, closure_to_vir, expr_to_vir, expr_to_vir_consume,
@@ -18,7 +18,6 @@ use crate::verus_items::{
     SpecGhostTrackedItem, SpecItem, SpecLiteralItem, SpecOrdItem, UnaryOpItem, VerusItem,
 };
 use crate::{unsupported_err, unsupported_err_unless};
-use air::ast_util::str_ident;
 use rustc_ast::LitKind;
 use rustc_hir::{Block, BlockCheckMode, Expr, ExprKind, QPath, StmtKind};
 use rustc_middle::ty::{GenericArg, GenericArgKind, TyKind, TypingEnv};
@@ -40,7 +39,6 @@ use vir::ast_util::{
     const_int_from_string, mk_tuple_typ, mk_tuple_x, typ_to_diagnostic_str, types_equal,
     undecorate_typ, unit_typ, unpack_tuple,
 };
-use vir::def::field_ident_from_rust;
 
 pub(crate) fn fn_call_to_vir<'tcx>(
     bctx: &BodyCtxt<'tcx>,
@@ -507,14 +505,16 @@ fn verus_item_to_vir<'tcx, 'a>(
 ) -> Result<vir::ast::Expr, VirErr> {
     // DO NOT use f_name to find items (i.e. do not use f_name == "core::cmp::Eq"),
     // use `crate::verus_item::get_rust_item` instead
-    let f_name = tcx.def_path_str(f);
+    // Only error messages print f_name, so compute it on demand.
+    let f_name = || tcx.def_path_str(f);
     let args_len = args.len();
 
     if !bctx.in_ghost && uncompilable_verus_fn(verus_item) {
         return err_span(
             expr.span,
             format!(
-                "cannot use `{f_name}`{:} in executable context",
+                "cannot use `{}`{:} in executable context",
+                f_name(),
                 match verus_item {
                     VerusItem::Expr(ExprItem::IsSmallerThanLexicographic) =>
                         " (of the `decreases_to!` macro)",
@@ -531,12 +531,12 @@ fn verus_item_to_vir<'tcx, 'a>(
             expr.span,
             format!(
                 "{} should never be used except through open_atomic_invariant or open_local_invariant macro",
-                f_name
+                f_name()
             ),
         ),
         VerusItem::OpenAtomicUpdate(_) => err_span(
             expr.span,
-            format!("{f_name} should never be used except through open_atomic_update macro"),
+            format!("{} should never be used except through open_atomic_update macro", f_name()),
         ),
         VerusItem::UnaryOp(UnaryOpItem::SpecLiteral(SpecLiteralItem::Decimal)) => {
             record_spec_fn(bctx, expr);
@@ -545,7 +545,7 @@ fn verus_item_to_vir<'tcx, 'a>(
             let s = get_string_lit_arg(&args[0], &f_name)?;
             match &*expr_typ()? {
                 TypX::Float(32) => {
-                    let f: f32 = match s.to_string().parse() {
+                    let f: f32 = match s.parse() {
                         Ok(f) => f,
                         Err(err) => {
                             return err_span(arg.span, format!("float out of range {}", err));
@@ -554,7 +554,7 @@ fn verus_item_to_vir<'tcx, 'a>(
                     mk_expr(ExprX::Const(Constant::Float32(f32::to_bits(f))))
                 }
                 TypX::Float(64) => {
-                    let f: f64 = match s.to_string().parse() {
+                    let f: f64 = match s.parse() {
                         Ok(f) => f,
                         Err(err) => {
                             return err_span(arg.span, format!("float out of range {}", err));
@@ -597,7 +597,7 @@ fn verus_item_to_vir<'tcx, 'a>(
                 // TODO: negative literals for is_spec_literal_int and is_spec_literal_integer
                 if spec_literal_item == &SpecLiteralItem::Integer {
                     // TODO: big integers for int, nat
-                    let i: u128 = match s.to_string().parse() {
+                    let i: u128 = match s.parse() {
                         Ok(i) => i,
                         Err(err) => {
                             return err_span(arg.span, format!("integer out of range {}", err));
@@ -1062,7 +1062,7 @@ fn verus_item_to_vir<'tcx, 'a>(
                 } else {
                     None
                 } {
-                    mk_expr(ExprX::RevealString(Arc::new(s.to_string())))
+                    mk_expr(ExprX::RevealString(symbol_ident(s)))
                 } else {
                     err_span(args[0].span, "string literal expected".to_string())
                 }
@@ -1097,7 +1097,7 @@ fn verus_item_to_vir<'tcx, 'a>(
                         &args
                     );
                     let s = get_string_lit_arg(&args[0], &f_name)?;
-                    mk_expr(ExprX::AirStmt(Arc::new(s)))
+                    mk_expr(ExprX::AirStmt(s))
                 } else {
                     err_span(
                         expr.span,
@@ -1327,7 +1327,7 @@ fn verus_item_to_vir<'tcx, 'a>(
                     check_variant_field(bctx, expr.span, args[0], &variant_name, None)?;
 
                 mk_expr(ExprX::UnaryOpr(
-                    UnaryOpr::IsVariant { datatype: adt_path, variant: str_ident(&variant_name) },
+                    UnaryOpr::IsVariant { datatype: adt_path, variant: variant_name },
                     adt_arg,
                 ))
             }
@@ -1349,7 +1349,7 @@ fn verus_item_to_vir<'tcx, 'a>(
                 mk_expr(ExprX::UnaryOpr(
                     UnaryOpr::Field(FieldOpr {
                         datatype: adt_path,
-                        variant: str_ident(&variant_name),
+                        variant: variant_name,
                         field: variant_field.unwrap(),
                         get_variant: true,
                         check: VariantCheck::Recommends,
@@ -1371,12 +1371,11 @@ fn verus_item_to_vir<'tcx, 'a>(
                     &bctx.types.expr_ty(expr),
                 )?;
 
-                let field_ident = str_ident(&field_name);
                 mk_expr(ExprX::UnaryOpr(
                     UnaryOpr::Field(FieldOpr {
                         datatype: adt_path,
-                        variant: field_ident.clone(),
-                        field: field_ident_from_rust(&field_ident),
+                        variant: field_name.clone(),
+                        field: field_name,
                         get_variant: true,
                         check: VariantCheck::None,
                     }),
@@ -1397,8 +1396,8 @@ fn verus_item_to_vir<'tcx, 'a>(
                     arg1,
                     typ_args[0].clone(),
                     typ_args[1].clone(),
-                    str_ident(&variant_name),
-                    str_ident(&field_name),
+                    variant_name,
+                    field_name,
                 ))
             }
         },
@@ -3021,15 +3020,15 @@ fn check_ieee_float_operands(span: Span, operands: &[&vir::ast::Expr]) -> Result
 
 fn get_string_lit_arg<'tcx>(
     arg: &'tcx Expr<'tcx>,
-    fn_name_for_error_msg: &str,
-) -> Result<String, VirErr> {
+    fn_name_for_error_msg: &dyn Fn() -> String,
+) -> Result<vir::ast::Ident, VirErr> {
     match arg {
         Expr { kind: ExprKind::Lit(Spanned { node: LitKind::Str(s, _), .. }), .. } => {
-            Ok(s.to_string())
+            Ok(symbol_ident(*s))
         }
         _ => err_span(
             arg.span,
-            format!("Verus verus_builtin `{fn_name_for_error_msg:}` requires a string literal"),
+            format!("Verus verus_builtin `{}` requires a string literal", fn_name_for_error_msg()),
         ),
     }
 }
@@ -3039,7 +3038,7 @@ pub(crate) fn check_variant_field<'tcx>(
     span: Span,
     adt_arg: &'tcx Expr<'tcx>,
     variant_name: &String,
-    field_name_typ: Option<(String, &rustc_middle::ty::Ty<'tcx>)>,
+    field_name_typ: Option<(vir::ast::Ident, &rustc_middle::ty::Ty<'tcx>)>,
 ) -> Result<(vir::ast::Dt, Option<vir::ast::Ident>), VirErr> {
     let tcx = bctx.ctxt.tcx;
 
@@ -3072,7 +3071,7 @@ pub(crate) fn check_variant_field<'tcx>(
             );
         }
         let variant = adt.non_enum_variant();
-        let field_opt = variant.fields.iter().find(|f| f.ident(tcx).as_str() == variant_name);
+        let field_opt = variant.fields.iter().find(|f| *symbol_ident(f.name) == *variant_name);
         if field_opt.is_none() {
             return err_span(span, format!("no field `{variant_name:}` for this union"));
         }
@@ -3082,7 +3081,7 @@ pub(crate) fn check_variant_field<'tcx>(
 
     // Enum case:
 
-    let variant_opt = adt.variants().iter().find(|v| v.ident(tcx).as_str() == variant_name);
+    let variant_opt = adt.variants().iter().find(|v| *symbol_ident(v.name) == *variant_name);
     let Some(variant) = variant_opt else {
         return err_span(span, format!("no variant `{variant_name:}` for this datatype"));
     };
@@ -3091,7 +3090,7 @@ pub(crate) fn check_variant_field<'tcx>(
         None => Ok((adt_path, None)),
         Some((field_name, expected_field_typ)) => {
             // The 'get_variant_field' case
-            let field_opt = variant.fields.iter().find(|f| f.ident(tcx).as_str() == field_name);
+            let field_opt = variant.fields.iter().find(|f| symbol_ident(f.name) == field_name);
             let Some(field) = field_opt else {
                 return err_span(span, format!("no field `{field_name:}` for this variant"));
             };
@@ -3104,9 +3103,7 @@ pub(crate) fn check_variant_field<'tcx>(
                 return err_span(span, "field has the wrong type");
             }
 
-            let field_ident = field_ident_from_rust(&field_name);
-
-            Ok((adt_path, Some(field_ident)))
+            Ok((adt_path, Some(field_name)))
         }
     }
 }
@@ -3138,7 +3135,7 @@ fn check_union_field<'tcx>(
 
     let variant = adt.non_enum_variant();
 
-    let field_opt = variant.fields.iter().find(|f| f.ident(tcx).as_str() == field_name);
+    let field_opt = variant.fields.iter().find(|f| *symbol_ident(f.name) == *field_name);
     let Some(field) = field_opt else {
         return err_span(span, format!("no field `{field_name:}` for this union"));
     };

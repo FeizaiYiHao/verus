@@ -1,6 +1,8 @@
-use crate::{erase::ResolvedCall, verus_items::VerusItems};
+use crate::{
+    erase::ResolvedCall,
+    verus_items::{VerusItems, WorkerCache},
+};
 use air::messages::MessageLevel;
-use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::{DynSend, DynSync, Lock, RwLock};
 use rustc_hir::Attribute;
 use rustc_hir::HirId;
@@ -99,17 +101,22 @@ pub struct ContextX<'tcx> {
     /// Item-local span IDs, or `None` for the shared span counter.
     local_span_ids: Option<AtomicU64>,
     pub(crate) next_read_kind_id: Arc<AtomicU64>,
-    // Per-compilation lookup caches.
-    externals_available_cache: Arc<RwLock<HashMap<DefId, bool>>>,
-    get_field_many_variants_cache: Arc<RwLock<HashMap<DefId, bool>>>,
-    mid_ty_cache: Arc<RwLock<FxHashMap<(Ty<'tcx>, DefId), Typ>>>,
+    // Per-compilation lookup caches, one map per rustc worker thread.
+    externals_available_cache: Arc<WorkerCache<DefId, bool>>,
+    get_field_many_variants_cache: Arc<WorkerCache<DefId, bool>>,
+    mid_ty_cache: Arc<WorkerCache<(Ty<'tcx>, DefId), Typ>>,
+    /// Path registrations in `name_def_id_map` already made by this worker thread.
+    recorded_path_def_ids: Arc<WorkerCache<DefId, Path>>,
 }
 
 // SAFETY: `crate_to_vir` shares this context only when rustc enables dynamic thread
 // safety. TyCtxt satisfies rustc's marker traits; shared mutable accumulators,
-// caches, maps, and counters are protected by Lock, RwLock, or atomics. The remaining
-// fields are immutable or synchronized Arcs. VIR's erased span payload is Send + Sync but
-// lacks rustc's marker implementations, which prevents a derived implementation here.
+// maps, and counters are protected by Lock, RwLock, or atomics. Lookup caches and
+// `VerusItems` memo tables are rustc `WorkerLocal` maps (each worker thread only
+// touches its own `RefCell`, never borrowed across a query or recursive call) or
+// sharded `RwLock`s. The remaining fields are immutable or synchronized Arcs. VIR's
+// erased span payload is Send + Sync but lacks rustc's marker implementations, which
+// prevents a derived implementation here.
 unsafe impl<'tcx> DynSend for ContextX<'tcx> {}
 // SAFETY: The same ownership and synchronization guarantees apply to shared references.
 unsafe impl<'tcx> DynSync for ContextX<'tcx> {}
@@ -184,9 +191,10 @@ impl<'tcx> ContextX<'tcx> {
             name_def_id_map: Arc::new(RwLock::new(HashMap::new())),
             local_span_ids: None,
             next_read_kind_id: Arc::new(AtomicU64::new(0)),
-            externals_available_cache: Arc::new(RwLock::new(HashMap::new())),
-            get_field_many_variants_cache: Arc::new(RwLock::new(HashMap::new())),
-            mid_ty_cache: Arc::new(RwLock::new(FxHashMap::default())),
+            externals_available_cache: Arc::new(WorkerCache::new()),
+            get_field_many_variants_cache: Arc::new(WorkerCache::new()),
+            mid_ty_cache: Arc::new(WorkerCache::new()),
+            recorded_path_def_ids: Arc::new(WorkerCache::new()),
         }
     }
 
@@ -211,6 +219,7 @@ impl<'tcx> ContextX<'tcx> {
             externals_available_cache: self.externals_available_cache.clone(),
             get_field_many_variants_cache: self.get_field_many_variants_cache.clone(),
             mid_ty_cache: self.mid_ty_cache.clone(),
+            recorded_path_def_ids: self.recorded_path_def_ids.clone(),
         }
     }
 
@@ -261,8 +270,8 @@ impl<'tcx> ContextX<'tcx> {
 
     /// Caches successful attribute parsing that emits no diagnostics.
     pub(crate) fn is_get_field_many_variants(&self, f: DefId) -> Result<bool, VirErr> {
-        if let Some(b) = self.get_field_many_variants_cache.borrow().get(&f) {
-            return Ok(*b);
+        if let Some(b) = self.get_field_many_variants_cache.get(&f) {
+            return Ok(b);
         }
         // Verus attributes are `Unparsed` where get_all_attrs is acceptable per its
         // deprecation message.
@@ -272,20 +281,20 @@ impl<'tcx> ContextX<'tcx> {
         let n_diagnostics = diagnostics.len();
         let b = crate::attributes::is_get_field_many_variants(f_attrs, Some(&mut *diagnostics))?;
         if diagnostics.len() == n_diagnostics {
-            self.get_field_many_variants_cache.borrow_mut().insert(f, b);
+            self.get_field_many_variants_cache.insert(f, b);
         }
         Ok(b)
     }
 
     /// Caches external-declaration availability by definition.
     pub(crate) fn externals_available_without_declaration(&self, def_id: DefId) -> bool {
-        if let Some(b) = self.externals_available_cache.borrow().get(&def_id) {
-            return *b;
+        if let Some(b) = self.externals_available_cache.get(&def_id) {
+            return b;
         }
         let b = crate::attributes::get_externals_available_without_declaration_walk_parents(
             self.tcx, def_id,
         );
-        self.externals_available_cache.borrow_mut().insert(def_id, b);
+        self.externals_available_cache.insert(def_id, b);
         b
     }
 
@@ -329,12 +338,23 @@ impl<'tcx> ContextX<'tcx> {
         }
     }
 
-    // Avoids taking the write lock for an idempotent path registration.
+    // Registers `path -> def_id` in the shared map. When several definitions share a path
+    // (e.g. a tuple struct and its constructor), the minimum `(krate, index)` wins, so the
+    // final map is independent of the order in which items and workers register paths and
+    // is the same at every `-Zthreads` value. (Serial upstream kept the last registration.)
+    // Because the stored value only ever decreases, re-registering a pair this worker
+    // already recorded cannot change the map and skips both locks; otherwise the write
+    // lock is taken only when the read lock shows that `def_id` would win.
     fn record_path_def_id(&self, path: Path, def_id: DefId) {
-        if self.name_def_id_map.borrow().get(&path) == Some(&def_id) {
-            return;
+        if let Some(recorded) = self.recorded_path_def_ids.get(&def_id) {
+            if Arc::ptr_eq(&recorded, &path) || recorded == path {
+                return;
+            }
         }
-        self.name_def_id_map.borrow_mut().insert(path, def_id);
+        if path_def_id_wins(def_id, self.name_def_id_map.borrow().get(&path)) {
+            merge_path_def_id(&mut self.name_def_id_map.borrow_mut(), path.clone(), def_id);
+        }
+        self.recorded_path_def_ids.insert(def_id, path);
     }
 
     pub(crate) fn def_id_to_vir_path(&self, def_id: DefId) -> Path {
@@ -390,7 +410,7 @@ impl<'tcx> ContextX<'tcx> {
             return typ;
         }
         let key = (*ty, param_env_src);
-        let cached = self.mid_ty_cache.borrow().get(&key).cloned();
+        let cached = self.mid_ty_cache.get(&key);
         if let Some(typ) = cached {
             if record_path {
                 if let (TyKind::Adt(adt_def, _), TypX::Datatype(Dt::Path(path), _, _)) =
@@ -412,12 +432,31 @@ impl<'tcx> ContextX<'tcx> {
         );
         self.record_path_def_ids(local);
         let typ = typ?;
-        self.mid_ty_cache.borrow_mut().insert(key, typ.clone());
+        self.mid_ty_cache.insert(key, typ.clone());
         Ok(typ)
     }
 
     pub(crate) fn unique_read_kind_id(&self) -> u64 {
         self.next_read_kind_id.fetch_add(1, Ordering::SeqCst)
+    }
+}
+
+/// Order key for resolving several definitions registered under one path.
+fn path_def_id_key(def_id: DefId) -> (u32, u32) {
+    (def_id.krate.as_u32(), def_id.index.as_u32())
+}
+
+/// Whether registering `def_id` changes a path entry currently holding `old`.
+fn path_def_id_wins(def_id: DefId, old: Option<&DefId>) -> bool {
+    old.map_or(true, |old| path_def_id_key(def_id) < path_def_id_key(*old))
+}
+
+/// Inserts `path -> def_id` unless the entry already holds a definition with a smaller key.
+/// The result after any sequence of merges is the per-path minimum, whatever the order.
+fn merge_path_def_id(map: &mut HashMap<Path, DefId>, path: Path, def_id: DefId) {
+    let entry = map.entry(path).or_insert(def_id);
+    if path_def_id_wins(def_id, Some(entry)) {
+        *entry = def_id;
     }
 }
 
@@ -498,6 +537,77 @@ impl<'tcx> BodyCtxt<'tcx> {
             Err(_err) => {
                 // This should have already been reported by rustc
                 crate::internal_err!(span, "unresolved loop label");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustc_span::def_id::{CrateNum, DefIndex};
+    use vir::ast::PathX;
+
+    fn def_id(krate: u32, index: u32) -> DefId {
+        DefId { krate: CrateNum::from_u32(krate), index: DefIndex::from_u32(index) }
+    }
+
+    fn path(name: &str) -> Path {
+        Arc::new(PathX {
+            krate: CrateId::Internal,
+            segments: Arc::new(vec![Arc::new(name.into())]),
+        })
+    }
+
+    #[test]
+    fn path_def_id_conflicts_keep_the_minimum_key() {
+        assert!(path_def_id_wins(def_id(1, 9), None));
+        assert!(path_def_id_wins(def_id(0, 9), Some(&def_id(1, 0))));
+        assert!(path_def_id_wins(def_id(1, 3), Some(&def_id(1, 4))));
+        assert!(!path_def_id_wins(def_id(1, 4), Some(&def_id(1, 4))));
+        assert!(!path_def_id_wins(def_id(2, 0), Some(&def_id(1, 9))));
+    }
+
+    /// Every registration order, including repeats as made by several workers, yields the
+    /// same map; repeating a registration already merged leaves the map unchanged.
+    #[test]
+    fn merged_path_def_ids_are_order_independent() {
+        let regs = [
+            (path("a"), def_id(1, 7)),
+            (path("a"), def_id(0, 9)),
+            (path("a"), def_id(1, 2)),
+            (path("b"), def_id(3, 1)),
+            (path("a"), def_id(0, 9)),
+            (path("b"), def_id(2, 5)),
+        ];
+        let mut expected = HashMap::new();
+        expected.insert(path("a"), def_id(0, 9));
+        expected.insert(path("b"), def_id(2, 5));
+        let n = regs.len();
+        let mut perm: Vec<usize> = (0..n).collect();
+        // Heap's algorithm over all 720 orders.
+        let mut c = vec![0; n];
+        let check = |perm: &[usize]| {
+            let mut map = HashMap::new();
+            for &i in perm {
+                merge_path_def_id(&mut map, regs[i].0.clone(), regs[i].1);
+            }
+            assert_eq!(map, expected, "order {perm:?}");
+            for &i in perm {
+                assert!(!path_def_id_wins(regs[i].1, map.get(&regs[i].0)));
+            }
+        };
+        check(&perm);
+        let mut i = 0;
+        while i < n {
+            if c[i] < i {
+                perm.swap(if i % 2 == 0 { 0 } else { c[i] }, i);
+                check(&perm);
+                c[i] += 1;
+                i = 0;
+            } else {
+                c[i] = 0;
+                i += 1;
             }
         }
     }

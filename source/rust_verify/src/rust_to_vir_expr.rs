@@ -54,7 +54,7 @@ The file `rustc_mir_build/src/thir/cx/expr.rs` is particularly useful.
 
 use crate::attributes::{
     Attr, GhostBlockAttr, get_ghost_block_opt, get_proof_note_annotation, get_trigger,
-    get_var_mode, parse_attrs, parse_attrs_opt,
+    get_var_mode_parsed, parse_attrs, parse_attrs_opt,
 };
 use crate::context::{BodyCtxt, Context, HeaderSetting};
 use crate::erase::{MiscCall, ResolvedCall};
@@ -62,8 +62,8 @@ use crate::fn_call_to_vir::{const_var_to_vir, fn_call_to_vir};
 use crate::rust_intrinsics_to_vir::int_intrinsic_constant_to_vir;
 use crate::rust_to_vir_base::{
     bitwidth_and_signedness_of_integer_type, get_impl_paths_for_clauses, get_range, is_integer_ty,
-    is_smt_arith, is_smt_equality, local_to_var, mid_ty_simplify, mk_range, ty_is_vec,
-    typ_of_expr_adjusted, typ_of_node_unadjusted,
+    is_smt_arith, is_smt_equality, local_to_var, mid_ty_simplify, mk_range, symbol_ident,
+    ty_is_vec, typ_of_expr_adjusted, typ_of_node_unadjusted,
 };
 use crate::rust_to_vir_ctor::{resolve_braces_ctor, resolve_ctor};
 use crate::util::{err_span, slice_vec_map_result, vec_map_result};
@@ -73,7 +73,6 @@ use crate::verus_items::{
 };
 use crate::{unsupported_err, unsupported_err_unless};
 use air::ast::Binder;
-use air::ast_util::str_ident;
 use rustc_ast::LitKind;
 use rustc_hir::def::{CtorKind, DefKind, Res};
 use rustc_hir::{
@@ -107,7 +106,7 @@ use vir::ast_util::{
     bool_typ, ident_binder, mk_tuple_field_opr, mk_tuple_typ, mk_tuple_x, str_unique_var,
     typ_to_diagnostic_str, types_equal, undecorate_typ,
 };
-use vir::def::{field_ident_from_rust, positional_field_ident};
+use vir::def::positional_field_ident;
 use vir::messages::WarningAllow;
 
 /// Enum representing either an `Expr` (value expression) or a `Place` (place expression).
@@ -630,7 +629,6 @@ pub(crate) fn patexpr_to_vir<'tcx>(
     pat_typ: &Typ,
     pat_expr: &PatExpr<'tcx>,
 ) -> Result<PatternX, VirErr> {
-    let tcx = bctx.ctxt.tcx;
     match pat_expr.kind {
         PatExprKind::Lit { lit, negated } => {
             patexpr_unsupported_type_err(bctx, span, pat)?;
@@ -665,7 +663,7 @@ pub(crate) fn patexpr_to_vir<'tcx>(
                 Res::Err => err_span(span, format!("Couldn't resolve {qpath:#?}")),
                 _ => match resolve_ctor(bctx.ctxt.tcx, res) {
                     Some((ctor, CtorKind::Const)) => {
-                        let variant_name = str_ident(&ctor.variant_def.ident(tcx).as_str());
+                        let variant_name = symbol_ident(ctor.variant_def.name);
                         let vir_path = bctx.ctxt.def_id_to_vir_path(ctor.adt_def_id);
                         Ok(PatternX::Constructor(
                             Dt::Path(vir_path),
@@ -709,10 +707,9 @@ pub(crate) fn expr_tuple_datatype_ctor_to_vir<'tcx>(
     args_slice: &[Expr<'tcx>],
     fun_span: Span,
 ) -> Result<vir::ast::Expr, VirErr> {
-    let tcx = bctx.ctxt.tcx;
     let expr_typ = typ_of_node_unadjusted(bctx, expr.span, &expr.hir_id)?;
 
-    let variant_name = str_ident(&ctor.variant_def.ident(tcx).as_str());
+    let variant_name = symbol_ident(ctor.variant_def.name);
     let vir_path = bctx.ctxt.def_id_to_vir_path(ctor.adt_def_id);
 
     let vir_fields = Arc::new(
@@ -895,7 +892,7 @@ pub(crate) fn pattern_to_vir_unadjusted<'tcx>(
                 crate::internal_err!(pat.span, "expected Fn constructor")
             };
 
-            let variant_name = str_ident(&ctor.variant_def.ident(tcx).as_str());
+            let variant_name = symbol_ident(ctor.variant_def.name);
             let vir_path = bctx.ctxt.def_id_to_vir_path(ctor.adt_def_id);
 
             let (n_wildcards, pos_to_insert_wildcards) =
@@ -916,13 +913,13 @@ pub(crate) fn pattern_to_vir_unadjusted<'tcx>(
             let res = bctx.types.qpath_res(qpath, pat.hir_id);
             let ty = bctx.types.node_type(pat.hir_id);
             let ctor = resolve_braces_ctor(tcx, res, ty, false, pat.span)?;
-            let variant_name = str_ident(&ctor.variant_def.ident(tcx).as_str());
+            let variant_name = symbol_ident(ctor.variant_def.name);
             let vir_path = bctx.ctxt.def_id_to_vir_path(ctor.adt_def_id);
 
             let mut binders: Vec<Binder<vir::ast::Pattern>> = Vec::new();
             for fpat in pats.iter() {
                 let pattern = pattern_to_vir(bctx, &fpat.pat)?;
-                let ident = field_ident_from_rust(fpat.ident.as_str());
+                let ident = symbol_ident(fpat.ident.name);
                 let binder = ident_binder(&ident, &pattern);
                 binders.push(binder);
             }
@@ -2070,14 +2067,14 @@ pub(crate) fn expr_cast_enum_int_to_vir<'tcx>(
             expr.span,
             "Enum variant should not contain any fields."
         );
-        let variant_name = vdef.name.to_string();
+        let variant_name = symbol_ident(vdef.name);
         let (adt_path, _) =
             crate::fn_call_to_vir::check_variant_field(bctx, expr.span, expr, &variant_name, None)?;
 
         let pattern = bctx.spanned_typed_new(
             expr.span,
             &place_vir.typ,
-            PatternX::Constructor(adt_path, Arc::new(variant_name), Arc::new(vec![])),
+            PatternX::Constructor(adt_path, variant_name, Arc::new(vec![])),
         );
         let guard =
             bctx.spanned_typed_new(expr.span, &bool_typ(), ExprX::Const(Constant::Bool(true)));
@@ -3134,16 +3131,16 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                 let datatype_path = bctx.ctxt.def_id_to_vir_path(adt_def.did());
                 let hir_def = bctx.ctxt.tcx.adt_def(adt_def.did());
                 let variant = hir_def.variants().iter().next().unwrap();
-                let field_name = field_ident_from_rust(&name.as_str());
+                let field_name = symbol_ident(name.name);
                 match variant.ctor_kind() {
                     Some(rustc_hir::def::CtorKind::Fn) => {}
                     None => {}
                     Some(rustc_hir::def::CtorKind::Const) => panic!("unexpected tuple constructor"),
                 }
                 let variant_name = if adt_def.is_union() {
-                    str_ident(name.as_str())
+                    field_name.clone()
                 } else {
-                    str_ident(&variant.ident(tcx).as_str())
+                    symbol_ident(variant.name)
                 };
                 let check =
                     if adt_def.is_union() { VariantCheck::Union } else { VariantCheck::None };
@@ -3157,7 +3154,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
             } else {
                 if let TyKind::Tuple(t_args) = lhs_ty.kind() {
                     let field: usize =
-                        str::parse(&name.as_str()).expect("integer index into tuple");
+                        str::parse(&symbol_ident(name.name)).expect("integer index into tuple");
                     mk_tuple_field_opr(t_args.len(), field)
                 } else {
                     unsupported_err!(expr.span, "field_of_non_adt", expr)
@@ -3413,7 +3410,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                     .iter()
                     .map(|f| -> Result<_, VirErr> {
                         let vir = expr_to_vir_consume(bctx, f.expr)?;
-                        let ident = field_ident_from_rust(f.ident.as_str());
+                        let ident = symbol_ident(f.ident.name);
                         Ok(ident_binder(&ident, &vir))
                     })
                     .collect::<Result<Vec<_>, _>>()?,
@@ -3679,7 +3676,7 @@ fn lit_to_vir<'tcx>(
         }
         LitKind::Byte(b) => mk_lit_int(false, u128::from(b), typ),
         LitKind::Str(s, _str_style) => {
-            let c = vir::ast::Constant::StrSlice(Arc::new(s.to_string()));
+            let c = vir::ast::Constant::StrSlice(symbol_ident(s));
             mk_expr(ExprX::Const(c))
         }
         LitKind::ByteStr(bs, _str_style) => {
@@ -4013,8 +4010,11 @@ pub(crate) fn let_stmt_to_vir<'tcx>(
     els: &Option<&Block<'tcx>>,
     attrs: &[Attribute],
 ) -> Result<Vec<vir::ast::Stmt>, VirErr> {
-    let mode = get_var_mode(bctx.mode, attrs);
-    let parsed_attrs = parse_attrs_opt(attrs, None);
+    // Parse once. Parsing yields the same attributes with or without a diagnostics sink, so
+    // its deprecation warnings are buffered and emitted where they were originally reported.
+    let mut attr_diagnostics = Vec::new();
+    let parsed_attrs = parse_attrs_opt(attrs, Some(&mut attr_diagnostics));
+    let mode = get_var_mode_parsed(bctx.mode, &parsed_attrs);
     let infer_mode = parsed_attrs.contains(&Attr::InferMode);
     let prophetic = parsed_attrs.contains(&Attr::Prophetic);
     let els = if let Some(els) = els {
@@ -4034,9 +4034,8 @@ pub(crate) fn let_stmt_to_vir<'tcx>(
         None => None,
     };
 
-    let unwrapped_binding =
-        parse_attrs_opt(attrs, Some(&mut *bctx.ctxt.diagnostics.lock().unwrap()))
-            .contains(&Attr::UnwrappedBinding);
+    bctx.ctxt.diagnostics.lock().unwrap().extend(attr_diagnostics);
+    let unwrapped_binding = parsed_attrs.contains(&Attr::UnwrappedBinding);
     if unwrapped_binding {
         let pat_typ = &bctx.types.node_type(pattern.hir_id);
         if let TyKind::Adt(AdtDef(adt_def_data), _args) = pat_typ.kind() {
@@ -4880,7 +4879,7 @@ fn ctor_tail_get_taken_fields<'tcx>(
         );
         let rk = if bctx.is_copy(ty) { vir::ast::ReadKind::Copy } else { vir::ast::ReadKind::Move };
         let rk = UnfinalizedReadKind { preliminary_kind: rk, id: bctx.ctxt.unique_read_kind_id() };
-        let ident = field_ident_from_rust(field_def.name.as_str());
+        let ident = symbol_ident(field_def.name);
         taken_fields.push((ident, rk));
     }
 

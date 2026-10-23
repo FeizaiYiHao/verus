@@ -2317,15 +2317,44 @@ where
     visitor.visit_assoc_type_impl(assoc)
 }
 
+/// Hashes the address of a node for the identity-keyed mark sets below.
+/// Node addresses are aligned, so a folded multiply spreads the varying middle bits
+/// into both the low bits (bucket index) and the high bits (control byte).
+#[derive(Default)]
+struct PtrHasher(u64);
+
+impl std::hash::Hasher for PtrHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.write_u64(*b as u64);
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        let m = ((self.0 ^ n) as u128).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 = (m as u64) ^ ((m >> 64) as u64);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+}
+
+type PtrSet<T> = std::collections::HashSet<*const T, std::hash::BuildHasherDefault<PtrHasher>>;
+
 // Marks each node whose subtree contains a selected expression. Types cannot
 // contain expressions and do not need to be visited.
 #[derive(Default)]
 struct TargetAncestorMarks {
     count: usize,
-    exprs: std::collections::HashSet<*const SpannedTyped<ExprX>>,
-    stmts: std::collections::HashSet<*const Spanned<StmtX>>,
-    places: std::collections::HashSet<*const SpannedTyped<PlaceX>>,
-    patterns: std::collections::HashSet<*const SpannedTyped<PatternX>>,
+    exprs: PtrSet<SpannedTyped<ExprX>>,
+    stmts: PtrSet<Spanned<StmtX>>,
+    places: PtrSet<SpannedTyped<PlaceX>>,
+    patterns: PtrSet<SpannedTyped<PatternX>>,
 }
 
 struct MarkTargetAncestorsVisitor<'a, FX, FSX> {

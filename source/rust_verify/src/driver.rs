@@ -365,6 +365,7 @@ pub fn run(
             None
         },
         pipelined_erasure_process: None,
+        import_decoding: None,
     };
     let status = run_compiler(rustc_args_verify.clone(), true, false, &mut verifier_callbacks);
     let VerifierCallbacksEraseMacro {

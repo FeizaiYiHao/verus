@@ -6,8 +6,7 @@ use crate::context::Context;
 use crate::rust_to_vir_func::FunctionOrConstInfo;
 use crate::rust_to_vir_func::finish_item;
 use crate::verifier::FuncDetails;
-use air::messages::{ArcDynMessage, Diagnostics};
-use std::cell::RefCell;
+use air::messages::Diagnostics;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -58,7 +57,7 @@ pub(crate) struct Query<'r, 'tcx> {
     cache_unchecked_functions: HashMap<Fun, Res<Function>>,
     /// Translations of every function or const, computed ahead of the function queries and
     /// replayed (taken) by get_unchecked_function, indexed like `PreCrate::infos`
-    prefetched_translations: Vec<Option<PrefetchedTranslation>>,
+    prefetched_translations: Vec<Option<crate::rust_to_vir::FinishOutput>>,
     /// Index into `PreCrate::infos` of each stub name, built with `prefetched_translations`
     prefetched_info_index: HashMap<Fun, usize>,
     /// Completed functions
@@ -366,11 +365,16 @@ impl<'r, 'tcx> Query<'r, 'tcx> {
         };
         let mut new_functions = vec![];
         let result = match prefetched {
-            // Report exactly what finish_item and the flush below would have reported.
-            Some(PrefetchedTranslation { functions, diagnostics, error }) => {
-                for (msg, level) in diagnostics.iter() {
-                    self.reporter.report_as(msg, *level);
-                }
+            // Add exactly what finish_item would have added to the context.
+            Some(crate::rust_to_vir::FinishOutput {
+                functions,
+                mut erasure_info,
+                diagnostics,
+                error,
+                ..
+            }) => {
+                ctxt.erasure_info.borrow_mut().append(&mut erasure_info);
+                ctxt.diagnostics.lock().unwrap().extend(diagnostics);
                 new_functions = functions;
                 match error {
                     None => Ok(()),
@@ -479,11 +483,9 @@ impl<'r, 'tcx> Query<'r, 'tcx> {
         Ok((function, erasure_modes, resolution_info, dyn_compatability_checks))
     }
 
-    /// Translates every function or const ahead of the function queries, in `infos` order
-    /// (so with the IDs that serial translation assigns), without reporting anything.
-    /// get_unchecked_function replays each translation where the serial pipeline would have
-    /// run it. If a translation panics, it and the later ones are left to
-    /// get_unchecked_function, which reproduces the panic at the serial point.
+    /// Translates every function or const ahead of the function queries, without reporting
+    /// anything (see rust_to_vir::prefetch_finish_infos). get_unchecked_function replays each
+    /// translation where the serial pipeline would have run it.
     fn prefetch_translations(&mut self) {
         let Ok(pre_crate) = self.get_pre_crate() else { return };
         // Items whose translation has already run keep the serial order: only prefetch if
@@ -491,24 +493,13 @@ impl<'r, 'tcx> Query<'r, 'tcx> {
         if !self.prefetched_info_index.is_empty() || !self.cache_unchecked_functions.is_empty() {
             return;
         }
-        let ctxt = &pre_crate.ctxt;
-        for (i, info) in pre_crate.infos.iter().enumerate() {
-            let translate = || {
-                let mut functions = vec![];
-                let error = finish_item(ctxt, info, &mut functions).err();
-                let recorded = RecordedDiagnostics::default();
-                ctxt.flush_diagnostics(&recorded);
-                PrefetchedTranslation { functions, diagnostics: recorded.0.into_inner(), error }
-            };
-            let Ok(translation) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(translate))
-            else {
-                break;
-            };
+        let outputs = crate::rust_to_vir::prefetch_finish_infos(&pre_crate.ctxt, &pre_crate.infos);
+        for (i, info) in pre_crate.infos.iter().enumerate().take(outputs.len()) {
             for stub in info.iter_stubs() {
                 self.prefetched_info_index.insert(stub.x.name.clone(), i);
             }
-            self.prefetched_translations.push(Some(translation));
         }
+        self.prefetched_translations = outputs.into_iter().map(Some).collect();
     }
 
     /// The translated function `fun`, if its translation is prefetched, not yet replayed,
@@ -745,38 +736,6 @@ impl<'r, 'tcx> Query<'r, 'tcx> {
             merge_erasure_modes(&mut e, erasure_modes);
         }
         Ok(Arc::new(e))
-    }
-}
-
-/// A function or const translated ahead of time: what get_unchecked_function would have
-/// produced and reported for it.
-struct PrefetchedTranslation {
-    functions: Vec<Function>,
-    /// Calls to `report_as` made by flushing the context's diagnostics after translation.
-    diagnostics: Vec<(ArcDynMessage, MessageLevel)>,
-    error: Option<VirErr>,
-}
-
-/// Records `report_as` calls (the only kind the context's diagnostics flush makes) to replay
-/// them later.
-#[derive(Default)]
-struct RecordedDiagnostics(RefCell<Vec<(ArcDynMessage, MessageLevel)>>);
-
-impl Diagnostics for RecordedDiagnostics {
-    fn report(&self, _msg: &ArcDynMessage) {
-        unreachable!("diagnostics flush only calls report_as")
-    }
-
-    fn report_now(&self, _msg: &ArcDynMessage) {
-        unreachable!("diagnostics flush only calls report_as")
-    }
-
-    fn report_as(&self, msg: &ArcDynMessage, msg_as: MessageLevel) {
-        self.0.borrow_mut().push((msg.clone(), msg_as));
-    }
-
-    fn report_as_now(&self, _msg: &ArcDynMessage, _msg_as: MessageLevel) {
-        unreachable!("diagnostics flush only calls report_as")
     }
 }
 

@@ -1,8 +1,13 @@
 use crate::util::{err_span, vir_err_span_str};
 use rustc_ast::token::{LitKind, TokenKind};
 use rustc_ast::tokenstream::{TokenStream, TokenTree};
+use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::{AttrArgs, Attribute};
-use rustc_span::Span;
+use rustc_middle::ty::TyCtxt;
+use rustc_span::def_id::{DefId, LocalDefId};
+use rustc_span::{Span, Symbol};
+use std::cell::RefCell;
+use std::rc::Rc;
 use vir::ast::{AcceptRecursiveType, Mode, TriggerAnnotation, VirErr, VirErrAs};
 use vir::messages::WarningAllow;
 
@@ -37,11 +42,11 @@ fn token_stream_to_trees(span: Span, stream: &TokenStream) -> Result<Box<[AttrTr
         };
         match token.kind {
             TokenKind::Literal(lit) => {
-                let text = lit.symbol.as_str().to_string();
+                let text = symbol_string(lit.symbol);
                 trees.push(AttrTree::Lit(lit.kind, text));
             }
             TokenKind::Ident(symbol, _) => {
-                let name = symbol.as_str().to_string();
+                let name = symbol_string(symbol);
                 match &token_trees.get(i + 1) {
                     Some(TokenTree::Delimited(_, _, _, token_stream)) => {
                         i += 1;
@@ -60,7 +65,7 @@ fn token_stream_to_trees(span: Span, stream: &TokenStream) -> Result<Box<[AttrTr
                                         {
                                             TokenKind::Ident(symbol, _) => {
                                                 i += 2;
-                                                segments.push(symbol.as_str().to_string());
+                                                segments.push(symbol_string(symbol));
                                             }
                                             _ => return Err(()),
                                         },
@@ -132,77 +137,113 @@ enum AttrPrefix {
     Rustc,
 }
 
+/// Returns the text of `sym` without taking the global symbol interner lock on repeats.
+fn symbol_string(sym: Symbol) -> String {
+    (*crate::rust_to_vir_base::symbol_ident(sym)).clone()
+}
+
+/// Attribute path segments that `attr_to_tree` recognizes.
+#[derive(Clone, Copy)]
+struct AttrSymbols {
+    verifier: Symbol,
+    verus: Symbol,
+    internal: Symbol,
+    spec: Symbol,
+    proof: Symbol,
+    exec: Symbol,
+}
+
+thread_local! {
+    /// Interned attribute segments, tagged with the owning session.
+    static ATTR_SYMBOLS: std::cell::Cell<Option<(usize, AttrSymbols)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Returns the recognized segments interned in the current session. Symbol equality is
+/// equivalent to text equality within a session and avoids the symbol interner lock.
+fn attr_symbols() -> AttrSymbols {
+    let tag = crate::verus_items::session_cache_tag();
+    if let Some((cache_tag, syms)) = ATTR_SYMBOLS.get() {
+        if cache_tag == tag {
+            return syms;
+        }
+    }
+    let syms = AttrSymbols {
+        verifier: Symbol::intern("verifier"),
+        verus: Symbol::intern("verus"),
+        internal: Symbol::intern("internal"),
+        spec: Symbol::intern("spec"),
+        proof: Symbol::intern("proof"),
+        exec: Symbol::intern("exec"),
+    };
+    ATTR_SYMBOLS.set(Some((tag, syms)));
+    syms
+}
+
 fn attr_to_tree(attr: &Attribute) -> Result<Option<(AttrPrefix, Span, AttrTree)>, VirErr> {
-    match attr {
-        Attribute::Unparsed(item) => match &item.path.segments[..] {
-            [segment] if segment.as_str() == "verifier" => match &item.args {
-                // TODO(main_new) MacArgs::Delimited(_, _, token_stream) => {
-                // TODO(main_new)     let trees: Box<[AttrTree]> = token_stream_to_trees(attr.span, token_stream)
-                // TODO(main_new)         .map_err(|_| vir_err_span_str(attr.span, "invalid verifier attribute"))?;
-                // TODO(main_new)     if trees.len() != 1 {
-                // TODO(main_new)         return err_span(attr.span, "invalid verifier attribute");
-                // TODO(main_new)     }
-                // TODO(main_new)     let mut trees = trees.into_vec().into_iter();
-                // TODO(main_new)     let tree: AttrTree = trees
-                // TODO(main_new)         .next()
-                // TODO(main_new)         .ok_or(vir_err_span_str(attr.span, "invalid verifier attribute"))?;
-                // TODO(main_new)     Ok(Some((AttrPrefix::Verifier, attr.span, tree)))
-                // TODO(main_new) }
-                _ => return err_span(attr.span(), "invalid verifier attribute"),
-            },
-            [prefix_segment, segment] if prefix_segment.as_str() == "verifier" => {
-                attr_args_to_tree(attr.span(), segment.to_string(), &item.args)
-                    .map(|tree| Some((AttrPrefix::Verifier, attr.span(), tree)))
-                    .map_err(|_| vir_err_span_str(attr.span(), "invalid verifier attribute"))
-            }
-            [prefix_segment, segment] if prefix_segment.as_str() == "verus" => {
-                let name = segment.to_string();
-                match &*name {
-                    "internal" => match &item.args {
-                        AttrArgs::Delimited(delim) => {
-                            let trees: Box<[AttrTree]> =
-                                token_stream_to_trees(attr.span(), &delim.tokens).map_err(
-                                    |_| vir_err_span_str(attr.span(), "invalid verus attribute"),
-                                )?;
-                            if trees.len() != 1 {
-                                return err_span(attr.span(), "invalid verus attribute");
-                            }
-                            let mut trees = trees.into_vec().into_iter();
-                            let tree: AttrTree = trees.next().ok_or_else(|| {
-                                vir_err_span_str(attr.span(), "invalid verus attribute")
-                            })?;
-                            Ok(Some((AttrPrefix::Verus(VerusPrefix::Internal), attr.span(), tree)))
-                        }
-                        _ => return err_span(attr.span(), "invalid verus attribute"),
-                    },
-                    _ => attr_args_to_tree(attr.span(), name, &item.args)
-                        .map(|tree| Some((AttrPrefix::Verus(VerusPrefix::None), attr.span(), tree)))
-                        .map_err(|_| vir_err_span_str(attr.span(), "invalid verifier attribute")),
-                }
-            }
-            [segment]
-                if segment.as_str() == "spec"
-                    || segment.as_str() == "proof"
-                    || segment.as_str() == "exec" =>
-            {
-                return err_span(
-                    attr.span(),
-                    "attributes spec, proof, exec are not supported anymore; use the verus! macro instead",
-                );
-            }
-            [segment] if segment.as_str().starts_with("rustc_") => {
-                if !RUSTC_ATTRS_OK_TO_IGNORE.contains(&segment.as_str()) {
-                    Ok(Some((
-                        AttrPrefix::Rustc,
-                        attr.span(),
-                        AttrTree::Fun(attr.span(), segment.as_str().into(), None),
-                    )))
-                } else {
-                    Ok(None)
-                }
-            }
-            _ => Ok(None),
+    let Attribute::Unparsed(item) = attr else { return Ok(None) };
+    let syms = attr_symbols();
+    match &item.path.segments[..] {
+        [segment] if *segment == syms.verifier => match &item.args {
+            // TODO(main_new) MacArgs::Delimited(_, _, token_stream) => {
+            // TODO(main_new)     let trees: Box<[AttrTree]> = token_stream_to_trees(attr.span, token_stream)
+            // TODO(main_new)         .map_err(|_| vir_err_span_str(attr.span, "invalid verifier attribute"))?;
+            // TODO(main_new)     if trees.len() != 1 {
+            // TODO(main_new)         return err_span(attr.span, "invalid verifier attribute");
+            // TODO(main_new)     }
+            // TODO(main_new)     let mut trees = trees.into_vec().into_iter();
+            // TODO(main_new)     let tree: AttrTree = trees
+            // TODO(main_new)         .next()
+            // TODO(main_new)         .ok_or(vir_err_span_str(attr.span, "invalid verifier attribute"))?;
+            // TODO(main_new)     Ok(Some((AttrPrefix::Verifier, attr.span, tree)))
+            // TODO(main_new) }
+            _ => return err_span(attr.span(), "invalid verifier attribute"),
         },
+        [prefix_segment, segment] if *prefix_segment == syms.verifier => {
+            attr_args_to_tree(attr.span(), symbol_string(*segment), &item.args)
+                .map(|tree| Some((AttrPrefix::Verifier, attr.span(), tree)))
+                .map_err(|_| vir_err_span_str(attr.span(), "invalid verifier attribute"))
+        }
+        [prefix_segment, segment] if *prefix_segment == syms.verus && *segment == syms.internal => {
+            match &item.args {
+                AttrArgs::Delimited(delim) => {
+                    let trees: Box<[AttrTree]> = token_stream_to_trees(attr.span(), &delim.tokens)
+                        .map_err(|_| vir_err_span_str(attr.span(), "invalid verus attribute"))?;
+                    if trees.len() != 1 {
+                        return err_span(attr.span(), "invalid verus attribute");
+                    }
+                    let mut trees = trees.into_vec().into_iter();
+                    let tree: AttrTree = trees
+                        .next()
+                        .ok_or_else(|| vir_err_span_str(attr.span(), "invalid verus attribute"))?;
+                    Ok(Some((AttrPrefix::Verus(VerusPrefix::Internal), attr.span(), tree)))
+                }
+                _ => return err_span(attr.span(), "invalid verus attribute"),
+            }
+        }
+        [prefix_segment, segment] if *prefix_segment == syms.verus => {
+            attr_args_to_tree(attr.span(), symbol_string(*segment), &item.args)
+                .map(|tree| Some((AttrPrefix::Verus(VerusPrefix::None), attr.span(), tree)))
+                .map_err(|_| vir_err_span_str(attr.span(), "invalid verifier attribute"))
+        }
+        [segment] if *segment == syms.spec || *segment == syms.proof || *segment == syms.exec => {
+            return err_span(
+                attr.span(),
+                "attributes spec, proof, exec are not supported anymore; use the verus! macro instead",
+            );
+        }
+        [segment] => {
+            let name = crate::rust_to_vir_base::symbol_ident(*segment);
+            if name.starts_with("rustc_") && !RUSTC_ATTRS_OK_TO_IGNORE.contains(&name.as_str()) {
+                Ok(Some((
+                    AttrPrefix::Rustc,
+                    attr.span(),
+                    AttrTree::Fun(attr.span(), (*name).clone(), None),
+                )))
+            } else {
+                Ok(None)
+            }
+        }
         _ => Ok(None),
     }
 }
@@ -972,41 +1013,66 @@ pub(crate) fn parse_attrs_opt(
     }
 }
 
-pub(crate) fn parse_attrs_walk_parents<'tcx>(
-    tcx: rustc_middle::ty::TyCtxt<'tcx>,
-    mut def_id: rustc_span::def_id::DefId,
-) -> Vec<Attr> {
-    let mut vattrs: Vec<Attr> = Vec::new();
+type ParsedDefAttrs = (usize, FxHashMap<DefId, Rc<Vec<Attr>>>);
+
+thread_local! {
+    /// Successfully parsed attributes of local definitions, tagged with the owning session.
+    static PARSED_DEF_ATTRS: RefCell<ParsedDefAttrs> = RefCell::new((0, FxHashMap::default()));
+}
+
+/// Returns `parse_attrs_opt(tcx.hir_attrs(def_id), None)` for a local definition.
+/// Without a diagnostics sink parsing is a pure function of the definition's attributes,
+/// so successful results are memoized per thread; parse errors are recomputed every time.
+fn parsed_local_def_attrs<'tcx>(tcx: TyCtxt<'tcx>, did: LocalDefId) -> Rc<Vec<Attr>> {
+    let def_id = did.to_def_id();
+    let tag = crate::verus_items::session_cache_tag();
+    let cached = PARSED_DEF_ATTRS.with_borrow_mut(|(cache_tag, attrs)| {
+        if *cache_tag != tag {
+            *cache_tag = tag;
+            attrs.clear();
+        }
+        attrs.get(&def_id).cloned()
+    });
+    if let Some(attrs) = cached {
+        return attrs;
+    }
+    match parse_attrs(tcx.hir_attrs(tcx.local_def_id_to_hir_id(did)), None) {
+        Ok(attrs) => {
+            let attrs = Rc::new(attrs);
+            PARSED_DEF_ATTRS.with_borrow_mut(|(_, cache)| cache.insert(def_id, attrs.clone()));
+            attrs
+        }
+        Err(_) => Rc::new(vec![]),
+    }
+}
+
+/// Visits the parsed attributes of `def_id` and then of each parent, innermost first,
+/// and returns the first `Some` produced by `f`.
+fn find_attr_walk_parents<'tcx, R>(
+    tcx: TyCtxt<'tcx>,
+    mut def_id: DefId,
+    mut f: impl FnMut(&Attr) -> Option<R>,
+) -> Option<R> {
     loop {
         if let Some(did) = def_id.as_local() {
-            let hir_id = tcx.local_def_id_to_hir_id(did);
-            let attrs = tcx.hir_attrs(hir_id);
-            vattrs.extend(parse_attrs_opt(attrs, None));
-        }
-        if let Some(id) = tcx.opt_parent(def_id) {
-            def_id = id;
-        } else {
-            return vattrs;
-        }
-    }
-}
-
-fn is_allow_walk_parents<'tcx>(
-    tcx: rustc_middle::ty::TyCtxt<'tcx>,
-    def_id: rustc_span::def_id::DefId,
-    allow: &WarningAllow,
-) -> bool {
-    for attr in parse_attrs_walk_parents(tcx, def_id) {
-        if let Attr::Allow(a) = &attr {
-            if a == allow {
-                return true;
+            let attrs = parsed_local_def_attrs(tcx, did);
+            if let Some(r) = attrs.iter().find_map(&mut f) {
+                return Some(r);
             }
         }
+        def_id = tcx.opt_parent(def_id)?;
     }
-    false
 }
 
-struct WarningDefId<'tcx>(rustc_middle::ty::TyCtxt<'tcx>, rustc_span::def_id::DefId);
+fn is_allow_walk_parents<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, allow: &WarningAllow) -> bool {
+    find_attr_walk_parents(tcx, def_id, |attr| match attr {
+        Attr::Allow(a) if a == allow => Some(()),
+        _ => None,
+    })
+    .is_some()
+}
+
+struct WarningDefId<'tcx>(TyCtxt<'tcx>, DefId);
 
 impl<'tcx> vir::messages::CheckAllowForWarning for WarningDefId<'tcx> {
     fn allowed(&self, allow: &WarningAllow) -> bool {
@@ -1016,8 +1082,8 @@ impl<'tcx> vir::messages::CheckAllowForWarning for WarningDefId<'tcx> {
 }
 
 pub(crate) fn warning_maybe<'tcx, S: Into<String>>(
-    tcx: rustc_middle::ty::TyCtxt<'tcx>,
-    def_id: rustc_span::def_id::DefId,
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
     span: Span,
     allow: &WarningAllow,
     note: impl FnOnce() -> S,
@@ -1033,88 +1099,80 @@ pub(crate) fn warning_maybe<'tcx, S: Into<String>>(
 }
 
 pub(crate) fn warning_config_walk_parents<'tcx>(
-    tcx: rustc_middle::ty::TyCtxt<'tcx>,
-    def_id: rustc_span::def_id::DefId,
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
 ) -> vir::context::WarningConfig {
     let mut allows = Vec::new();
-    for attr in parse_attrs_walk_parents(tcx, def_id) {
+    find_attr_walk_parents(tcx, def_id, |attr| {
         if let Attr::Allow(allow) = attr {
             allows.push(allow.clone());
         }
-    }
+        None::<()>
+    });
     vir::context::WarningConfig(allows)
 }
 
 pub(crate) fn get_loop_isolation_walk_parents<'tcx>(
-    tcx: rustc_middle::ty::TyCtxt<'tcx>,
-    def_id: rustc_span::def_id::DefId,
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
 ) -> Option<bool> {
-    for attr in parse_attrs_walk_parents(tcx, def_id) {
-        if let Attr::LoopIsolation(flag) = attr {
-            return Some(flag);
-        }
-    }
-    None
+    find_attr_walk_parents(tcx, def_id, |attr| match attr {
+        Attr::LoopIsolation(flag) => Some(*flag),
+        _ => None,
+    })
 }
 
 pub(crate) fn migrate_postconditions_walk_parents<'tcx>(
-    tcx: rustc_middle::ty::TyCtxt<'tcx>,
-    def_id: rustc_span::def_id::DefId,
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
 ) -> Option<bool> {
-    for attr in parse_attrs_walk_parents(tcx, def_id) {
-        if let Attr::MigratePostconditionsWithMutRefs(flag) = attr {
-            return Some(flag);
-        }
-    }
-    None
+    find_attr_walk_parents(tcx, def_id, |attr| match attr {
+        Attr::MigratePostconditionsWithMutRefs(flag) => Some(*flag),
+        _ => None,
+    })
 }
 
 pub(crate) fn get_allow_complex_invariants_walk_parents<'tcx>(
-    tcx: rustc_middle::ty::TyCtxt<'tcx>,
-    def_id: rustc_span::def_id::DefId,
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
 ) -> Option<bool> {
-    for attr in parse_attrs_walk_parents(tcx, def_id) {
-        if let Attr::AllowComplexInvariants = attr {
-            return Some(true);
-        }
-    }
-    None
+    find_attr_walk_parents(tcx, def_id, |attr| match attr {
+        Attr::AllowComplexInvariants => Some(true),
+        _ => None,
+    })
 }
 
 pub(crate) fn get_auto_ext_equal_walk_parents<'tcx>(
-    tcx: rustc_middle::ty::TyCtxt<'tcx>,
-    def_id: rustc_span::def_id::DefId,
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
 ) -> vir::ast::AutoExtEqual {
-    for attr in parse_attrs_walk_parents(tcx, def_id) {
-        if let Attr::AutoExtEqual(auto_ext_equal) = attr {
-            return auto_ext_equal;
-        }
-    }
-    vir::ast::AutoExtEqual::default()
+    find_attr_walk_parents(tcx, def_id, |attr| match attr {
+        Attr::AutoExtEqual(auto_ext_equal) => Some(auto_ext_equal.clone()),
+        _ => None,
+    })
+    .unwrap_or_else(vir::ast::AutoExtEqual::default)
 }
 
 pub(crate) fn get_allow_exec_allows_no_decreases_clause_walk_parents<'tcx>(
-    tcx: rustc_middle::ty::TyCtxt<'tcx>,
-    def_id: rustc_span::def_id::DefId,
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
 ) -> bool {
-    for attr in parse_attrs_walk_parents(tcx, def_id) {
-        if let Attr::ExecAllowNoDecreasesClause = attr {
-            return true;
-        }
-    }
-    false
+    find_attr_walk_parents(tcx, def_id, |attr| match attr {
+        Attr::ExecAllowNoDecreasesClause => Some(true),
+        _ => None,
+    })
+    .unwrap_or(false)
 }
 
 pub(crate) fn get_externals_available_without_declaration_walk_parents<'tcx>(
-    tcx: rustc_middle::ty::TyCtxt<'tcx>,
-    def_id: rustc_span::def_id::DefId,
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
 ) -> bool {
-    for attr in parse_attrs_walk_parents(tcx, def_id) {
-        if let Attr::ExternalsAvailableWithoutDeclaration(flag) = attr {
-            return flag;
-        }
-    }
-    false
+    find_attr_walk_parents(tcx, def_id, |attr| match attr {
+        Attr::ExternalsAvailableWithoutDeclaration(flag) => Some(*flag),
+        _ => None,
+    })
+    .unwrap_or(false)
 }
 
 pub(crate) fn get_ghost_block_opt(attrs: &[Attribute]) -> Option<GhostBlockAttr> {
@@ -1148,13 +1206,11 @@ pub(crate) fn is_loop_isolation_boundary(attrs: &[Attribute]) -> bool {
 }
 
 pub(crate) fn get_mode_opt(attrs: &[Attribute]) -> Option<Mode> {
-    for attr in parse_attrs_opt(attrs, None) {
-        match attr {
-            Attr::Mode(m) => return Some(m),
-            _ => {}
-        }
-    }
-    None
+    parsed_mode_opt(&parse_attrs_opt(attrs, None))
+}
+
+fn parsed_mode_opt(attrs: &[Attr]) -> Option<Mode> {
+    attrs.iter().find_map(|attr| if let Attr::Mode(m) = attr { Some(*m) } else { None })
 }
 
 pub(crate) fn get_mode(default_mode: Mode, attrs: &[Attribute]) -> Mode {
@@ -1162,8 +1218,13 @@ pub(crate) fn get_mode(default_mode: Mode, attrs: &[Attribute]) -> Mode {
 }
 
 pub(crate) fn get_var_mode(function_mode: Mode, attrs: &[Attribute]) -> Mode {
+    get_var_mode_parsed(function_mode, &parse_attrs_opt(attrs, None))
+}
+
+/// `get_var_mode` for attributes already parsed by `parse_attrs_opt`.
+pub(crate) fn get_var_mode_parsed(function_mode: Mode, attrs: &[Attr]) -> Mode {
     let default_mode = if function_mode == Mode::Proof { Mode::Spec } else { function_mode };
-    get_mode(default_mode, attrs)
+    parsed_mode_opt(attrs).unwrap_or(default_mode)
 }
 
 pub(crate) fn get_ret_mode(function_mode: Mode, attrs: &[Attribute]) -> Mode {

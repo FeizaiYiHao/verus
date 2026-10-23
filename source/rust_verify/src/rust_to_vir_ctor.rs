@@ -1,3 +1,4 @@
+use crate::rust_to_vir_base::symbol_ident;
 use crate::unsupported_err;
 use rustc_hir::def::{CtorKind, CtorOf, DefKind, Res};
 use rustc_middle::ty::{Ty, TyCtxt, TyKind, VariantDef};
@@ -22,7 +23,7 @@ pub(crate) struct Ctor<'tcx> {
 impl<'tcx> Ctor<'tcx> {
     pub(crate) fn variant_name(
         &self,
-        tcx: TyCtxt<'tcx>,
+        _tcx: TyCtxt<'tcx>,
         fields: &'tcx [rustc_hir::ExprField<'tcx>],
     ) -> vir::ast::Ident {
         match &self.kind {
@@ -31,11 +32,9 @@ impl<'tcx> Ctor<'tcx> {
                 // VIR representation has one variant per field.
                 // Use the name of the VIR variant (same as the field name).
                 assert!(fields.len() == 1);
-                air::ast_util::str_ident(fields[0].ident.as_str())
+                symbol_ident(fields[0].ident.name)
             }
-            AdtKind::Struct | AdtKind::Enum => {
-                air::ast_util::str_ident(&self.variant_def.ident(tcx).as_str())
-            }
+            AdtKind::Struct | AdtKind::Enum => symbol_ident(self.variant_def.name),
         }
     }
 }

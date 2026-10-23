@@ -1,8 +1,12 @@
 use air::ast::Ident;
-use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxHasher};
+use rustc_data_structures::sync::WorkerLocal;
 use rustc_middle::ty::{IntTy, TyCtxt, TyKind, UintTy};
 use rustc_span::def_id::DefId;
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{collections::HashMap, sync::Arc};
 use vir::ast::CrateId;
 
@@ -813,24 +817,129 @@ pub(crate) struct VerusItems {
     // RustPrivate items also map to an underlying Rust DefId (in addition to the Verus DefId):
     pub(crate) name_to_rust_private_id: HashMap<VerusItem, DefId>,
     /// Cached Rust-item classifications by definition.
-    rust_item_cache: RwLock<FxHashMap<DefId, Option<RustItem>>>,
+    rust_item_cache: WorkerCache<DefId, Option<RustItem>>,
     /// Cached VIR paths by definition.
-    pub(crate) vir_path_cache: RwLock<FxHashMap<DefId, Option<vir::ast::Path>>>,
+    pub(crate) vir_path_cache: WorkerCache<DefId, Option<vir::ast::Path>>,
+    /// Local definitions whose friendly path registration has completed.
+    pub(crate) friendly_path_registered: ShardedSet<DefId>,
 }
 
 impl VerusItems {
     /// Returns the cached Rust-item classification for `def_id`.
     pub(crate) fn get_rust_item<'tcx>(&self, tcx: TyCtxt<'tcx>, def_id: DefId) -> Option<RustItem> {
-        if let Some(r) = self.rust_item_cache.read().unwrap().get(&def_id) {
-            return *r;
+        if let Some(r) = self.rust_item_cache.get(&def_id) {
+            return r;
         }
         let r = get_rust_item(tcx, def_id);
-        self.rust_item_cache.write().unwrap().insert(def_id, r);
+        self.rust_item_cache.insert(def_id, r);
         r
     }
 }
 
+/// Lock-free memo table with one map per rustc worker thread.
+///
+/// Cached values must depend only on the key and the current session's `tcx`, so the
+/// copies computed independently by different workers are identical. `get` and `insert`
+/// release their borrow before returning; callers compute misses (which may run rustc
+/// queries, steal parallel jobs, or recurse into the same cache) without a borrow held.
+/// Construction and access must happen on threads registered with the rustc worker
+/// registry, which rustc_interface guarantees for the compiler thread and pool workers.
+pub(crate) struct WorkerCache<K, V>(WorkerLocal<RefCell<FxHashMap<K, V>>>);
+
+// A panic can interrupt a cache operation only between whole `get`/`insert` calls, whose
+// borrows are released during unwinding; entries are pure memoized values, so a map seen
+// after a caught panic is at worst missing an entry, which is recomputed identically.
+impl<K, V> std::panic::UnwindSafe for WorkerCache<K, V> {}
+impl<K, V> std::panic::RefUnwindSafe for WorkerCache<K, V> {}
+
+impl<K: Eq + Hash, V: Clone> WorkerCache<K, V> {
+    pub(crate) fn new() -> Self {
+        WorkerCache(WorkerLocal::new(|_| RefCell::new(FxHashMap::default())))
+    }
+
+    pub(crate) fn get(&self, key: &K) -> Option<V> {
+        self.0.borrow().get(key).cloned()
+    }
+
+    pub(crate) fn insert(&self, key: K, value: V) {
+        self.0.borrow_mut().insert(key, value);
+    }
+}
+
+const SET_SHARDS: usize = 32;
+
+/// Shared set split into independently locked shards selected by key hash.
+pub(crate) struct ShardedSet<K>([RwLock<FxHashSet<K>>; SET_SHARDS]);
+
+impl<K: Eq + Hash> ShardedSet<K> {
+    pub(crate) fn new() -> Self {
+        ShardedSet(std::array::from_fn(|_| RwLock::new(FxHashSet::default())))
+    }
+
+    fn shard(&self, key: &K) -> &RwLock<FxHashSet<K>> {
+        let mut hasher = FxHasher::default();
+        key.hash(&mut hasher);
+        &self.0[(hasher.finish() >> 32) as usize % SET_SHARDS]
+    }
+
+    pub(crate) fn contains(&self, key: &K) -> bool {
+        self.shard(key).read().unwrap().contains(key)
+    }
+
+    pub(crate) fn insert(&self, key: K) {
+        self.shard(&key).write().unwrap().insert(key);
+    }
+}
+
+/// Session epochs handed out so far; a session's epoch is fixed when it starts translation.
+static SESSION_EPOCH: AtomicUsize = AtomicUsize::new(0);
+/// Thread-local tags are distinct across threads, sessions, and epochs; 0 is never issued.
+static NEXT_SESSION_TAG: AtomicUsize = AtomicUsize::new(1);
+
+thread_local! {
+    /// `(SessionGlobals address, epoch, tag)` of the last `session_cache_tag` on this thread.
+    static SESSION_TAG: std::cell::Cell<(usize, usize, usize)> =
+        const { std::cell::Cell::new((0, 0, 0)) };
+}
+
+/// Starts a new session epoch. Called once per session before translation touches any
+/// session-tagged cache, so a later session whose `SessionGlobals` reuse a freed address
+/// gets a different tag (no ABA).
+pub(crate) fn begin_session_cache_epoch() {
+    SESSION_EPOCH.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Returns this thread's tag for the pair `(globals, epoch)`: equal tags on one thread
+/// mean an equal pair, and the tag is never 0.
+fn session_tag_for(globals: usize, epoch: usize) -> usize {
+    SESSION_TAG.with(|cell| {
+        let (last_globals, last_epoch, tag) = cell.get();
+        if (last_globals, last_epoch) == (globals, epoch) {
+            return tag;
+        }
+        let tag = NEXT_SESSION_TAG.fetch_add(1, Ordering::Relaxed);
+        cell.set((globals, epoch, tag));
+        tag
+    })
+}
+
+/// Identifies the current rustc session for thread-local caches of session-scoped values
+/// (`Symbol`, `DefId`, `Span`), so entries never leak into a later session on the same thread.
+/// The identity is the pair (`SessionGlobals` address, session epoch); the epoch rules out
+/// a later session that reuses the address. Sessions that never call
+/// `begin_session_cache_epoch` (the trait-conflict and erasure rustc runs, which do not use
+/// these caches) are distinguished by address only. A concurrent session starting its epoch
+/// only changes the tag, which clears caches. The returned `usize` is a per-thread
+/// encoding of the pair (see `session_tag_for`), so callers can keep a `usize` tag.
+pub(crate) fn session_cache_tag() -> usize {
+    let globals = rustc_span::with_session_globals(|globals| {
+        globals as *const rustc_span::SessionGlobals as usize
+    });
+    session_tag_for(globals, SESSION_EPOCH.load(Ordering::Acquire))
+}
+
 pub(crate) fn from_diagnostic_items(tcx: TyCtxt) -> VerusItems {
+    begin_session_cache_epoch();
     let diagnostic_items = &tcx.all_diagnostic_items(());
     let verus_item_map: HashMap<&str, VerusItem> = verus_items_map().into_iter().collect();
     let diagnostic_name_to_id = &diagnostic_items.name_to_id;
@@ -875,8 +984,9 @@ pub(crate) fn from_diagnostic_items(tcx: TyCtxt) -> VerusItems {
         id_to_name,
         name_to_id,
         name_to_rust_private_id,
-        rust_item_cache: RwLock::new(FxHashMap::default()),
-        vir_path_cache: RwLock::new(FxHashMap::default()),
+        rust_item_cache: WorkerCache::new(),
+        vir_path_cache: WorkerCache::new(),
+        friendly_path_registered: ShardedSet::new(),
     }
 }
 
@@ -1106,4 +1216,40 @@ pub(crate) fn get_rust_item_str(rust_path: Option<&str>) -> Option<RustItem> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_tag_changes_exactly_with_the_pair() {
+        let a = session_tag_for(0x1000, 7);
+        assert_ne!(a, 0);
+        assert_eq!(session_tag_for(0x1000, 7), a);
+        let b = session_tag_for(0x1000, 8);
+        assert!(b != a && b != 0);
+        let c = session_tag_for(0x2000, 8);
+        assert!(c != a && c != b);
+        assert_eq!(session_tag_for(0x2000, 8), c);
+        // Returning to an earlier pair issues a fresh tag, which only clears caches.
+        assert!(![a, b, c].contains(&session_tag_for(0x1000, 7)));
+    }
+
+    /// Two sessions run one after the other on one thread, as when `SessionGlobals` are
+    /// reallocated at the same address, get different tags once each starts its epoch.
+    #[test]
+    fn session_cache_tag_distinguishes_sequential_sessions() {
+        let session = || {
+            rustc_span::create_default_session_globals_then(|| {
+                begin_session_cache_epoch();
+                let tag = session_cache_tag();
+                assert_eq!(session_cache_tag(), tag);
+                tag
+            })
+        };
+        let first = session();
+        let second = session();
+        assert_ne!(first, second);
+    }
 }

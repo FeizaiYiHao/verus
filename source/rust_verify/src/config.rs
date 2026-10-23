@@ -120,6 +120,20 @@ pub struct ArgsX {
     pub axiom_usage_info: bool,
     pub check_api_safety: bool,
     pub no_bv_simplify: bool,
+    /// Decode direct imported library files on background threads while rustc parses
+    /// (on unless `-V import-decode-sequential[=on|off]` is on)
+    pub import_decode_early: bool,
+    /// With import_decode_early: also decode sequentially at the join and compare
+    pub import_decode_check: bool,
+    /// Lower every AST owner to HIR in parallel before the first HIR access
+    /// (`-V parallel-hir-lowering[=on|off]`)
+    pub parallel_hir_lowering: bool,
+    /// Skip dropping front-end temporaries at the end of VIR construction
+    /// (`-V frontend-no-drop[=on|off]`, experimental)
+    pub frontend_no_drop: bool,
+    /// Run the privacy checks of all modules in parallel (with -Zthreads > 1)
+    /// (`-V parallel-privacy[=on|off]`, experimental)
+    pub parallel_privacy: bool,
 }
 
 impl ArgsX {
@@ -169,6 +183,11 @@ impl ArgsX {
             axiom_usage_info: Default::default(),
             check_api_safety: Default::default(),
             no_bv_simplify: Default::default(),
+            import_decode_early: true,
+            import_decode_check: Default::default(),
+            parallel_hir_lowering: Default::default(),
+            frontend_no_drop: true,
+            parallel_privacy: true,
         }
     }
 }
@@ -420,6 +439,11 @@ pub fn parse_args_with_imports(
     const EXTENDED_AXIOM_USAGE_INFO: &str = "axiom-usage-info";
     const EXTENDED_CHECK_API_SAFETY: &str = "check-api-safety";
     const EXTENDED_NO_BV_SIMPLIFY: &str = "no-bv-simplify";
+    const EXTENDED_IMPORT_DECODE_SEQUENTIAL: &str = "import-decode-sequential";
+    const EXTENDED_IMPORT_DECODE_CHECK: &str = "import-decode-check";
+    const EXTENDED_PARALLEL_HIR_LOWERING: &str = "parallel-hir-lowering";
+    const EXTENDED_FRONTEND_NO_DROP: &str = "frontend-no-drop";
+    const EXTENDED_PARALLEL_PRIVACY: &str = "parallel-privacy";
     const EXTENDED_KEYS: &[(&str, &str)] = &[
         (EXTENDED_IGNORE_UNEXPECTED_SMT, "Ignore unexpected SMT output"),
         (
@@ -446,6 +470,26 @@ pub fn parse_args_with_imports(
         (
             EXTENDED_NO_BV_SIMPLIFY,
             "internal option to disable simplification of bit-vector assertions before sending to the SMT solver",
+        ),
+        (
+            EXTENDED_IMPORT_DECODE_SEQUENTIAL,
+            "[=on|off]: decode imported library files sequentially after macro expansion, instead of on background threads while rustc parses and expands the crate (default: off)",
+        ),
+        (
+            EXTENDED_IMPORT_DECODE_CHECK,
+            "also decode every imported library file sequentially and report an error if the background results differ",
+        ),
+        (
+            EXTENDED_PARALLEL_HIR_LOWERING,
+            "[=on|off]: lower the crate's AST owners to HIR in parallel (with -Zthreads > 1) before the first HIR access; syntax-context ids in span strings may differ (default: off)",
+        ),
+        (
+            EXTENDED_FRONTEND_NO_DROP,
+            "[=on|off]: do not free front-end temporaries at the end of VIR construction (experimental, default: on)",
+        ),
+        (
+            EXTENDED_PARALLEL_PRIVACY,
+            "[=on|off]: run the privacy checks of all modules in parallel (with -Zthreads > 1); privacy errors may be reported in a different order (experimental, default: on)",
         ),
     ];
 
@@ -675,6 +719,13 @@ pub fn parse_args_with_imports(
     } else {
         solver.default_encoding()
     };
+    let on_off = |key: &str, default: bool| match extended.get(key) {
+        None => default,
+        Some(None) => true,
+        Some(Some(v)) if v == "on" => true,
+        Some(Some(v)) if v == "off" => false,
+        Some(Some(_)) => error(format!("-V {key} expects no value, `=on`, or `=off`")),
+    };
 
     let args = ArgsX {
         verify_root: matches.opt_present(OPT_VERIFY_ROOT),
@@ -853,7 +904,19 @@ pub fn parse_args_with_imports(
         axiom_usage_info: extended.contains_key(EXTENDED_AXIOM_USAGE_INFO),
         check_api_safety: extended.contains_key(EXTENDED_CHECK_API_SAFETY),
         no_bv_simplify: extended.contains_key(EXTENDED_NO_BV_SIMPLIFY),
+        import_decode_early: !on_off(EXTENDED_IMPORT_DECODE_SEQUENTIAL, false),
+        import_decode_check: extended.contains_key(EXTENDED_IMPORT_DECODE_CHECK),
+        parallel_hir_lowering: on_off(EXTENDED_PARALLEL_HIR_LOWERING, false),
+        frontend_no_drop: on_off(EXTENDED_FRONTEND_NO_DROP, true),
+        parallel_privacy: on_off(EXTENDED_PARALLEL_PRIVACY, true),
     };
+
+    if args.import_decode_check && !args.import_decode_early {
+        error(format!(
+            "-V {} and -V {} are mutually exclusive",
+            EXTENDED_IMPORT_DECODE_CHECK, EXTENDED_IMPORT_DECODE_SEQUENTIAL
+        ))
+    }
 
     if args.compile && args.no_erasure_check {
         error("--compile and --no-erasure-check are mutually exclusive".to_string())

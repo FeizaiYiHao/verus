@@ -64,10 +64,10 @@ pub struct GlobalCtx {
     /// Maps call-graph nodes to positions in `func_call_sccs`.
     pub func_call_scc_index: Arc<HashMap<Node, usize>>,
     pub(crate) datatype_graph: Arc<Graph<crate::recursive_types::TypNode>>,
-    pub(crate) datatype_graph_span_infos: Vec<Span>,
-    pub trait_impl_to_extensions: HashMap<Path, Vec<Path>>,
+    pub(crate) datatype_graph_span_infos: Arc<Vec<Span>>,
+    pub trait_impl_to_extensions: Arc<HashMap<Path, Vec<Path>>>,
     /// Map TSpec to T
-    pub(crate) extension_to_trait: HashMap<Path, Path>,
+    pub(crate) extension_to_trait: Arc<HashMap<Path, Path>>,
     pub(crate) warning_ctx: Arc<WarningCtx>,
     /// Connects quantifier identifiers to the original expression
     pub qid_map: RefCell<HashMap<String, BndInfo>>,
@@ -292,15 +292,16 @@ pub(crate) struct GraphBuilder<T: std::cmp::Eq + std::hash::Hash + Clone> {
     pub(crate) replace_with: HashMap<T, T>,
 }
 
-impl<T: std::cmp::Eq + std::hash::Hash + Clone> GraphBuilder<T> {
-    pub(crate) fn replace(&self, value: T) -> T {
-        if let Some(value) = self.replace_with.get(&value) { value.clone() } else { value }
+impl GraphBuilder<Node> {
+    pub(crate) fn replace(&self, value: Node) -> Node {
+        // Shared with the parallel call-graph recorder, so the two cannot diverge.
+        crate::recursion::replace_node(&self.replace_with, value)
     }
-    pub(crate) fn add_node(&mut self, value: T) {
+    pub(crate) fn add_node(&mut self, value: Node) {
         let value = self.replace(value);
         self.graph.add_node(value);
     }
-    pub(crate) fn add_edge(&mut self, src: T, dst: T) {
+    pub(crate) fn add_edge(&mut self, src: Node, dst: Node) {
         let src = self.replace(src);
         let dst = self.replace(dst);
         self.graph.add_edge(src, dst);
@@ -497,7 +498,35 @@ impl GlobalCtx {
             }
         }
 
-        for f in &krate.functions {
+        // Discover each function's call-graph edges in parallel against the read-only
+        // replace_with map, then replay them below in krate.functions order. Replay performs
+        // the same add_node/add_edge sequence and span_infos pushes as a sequential build,
+        // so node indices, SCCs, and SpanInfo indices are unchanged.
+        // Errors and panics are surfaced at the first failing function in that order; functions
+        // after it are not expanded.
+        let call_graph_records = {
+            let replace_with = &func_call_graph.replace_with;
+            crate::util::par_map_init_until_err(
+                &krate.functions,
+                || (),
+                |_, f| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        crate::recursion::expand_call_graph(
+                            &func_map,
+                            &trait_map,
+                            &trait_impl_map,
+                            &trait_impl_from_extension,
+                            &reveal_group_set,
+                            replace_with,
+                            f,
+                        )
+                    }))
+                },
+                |record| !matches!(record, Ok(Ok(_))),
+            )
+        };
+        for (f, record) in krate.functions.iter().zip(call_graph_records) {
+            let record = record.expect("functions up to the first failure are expanded");
             fun_bounds.insert(f.x.name.clone(), f.x.typ_bounds.clone());
             let fun_node = Node::Fun(f.x.name.clone());
             let fndef_impl_node = Node::TraitImpl(ImplPath::FnDefImplPath(f.x.name.clone()));
@@ -507,16 +536,10 @@ impl GlobalCtx {
 
             fun_attrs.insert(f.x.name.clone(), f.x.attrs.clone());
 
-            crate::recursion::expand_call_graph(
-                &func_map,
-                &trait_map,
-                &trait_impl_map,
-                &trait_impl_from_extension,
-                &reveal_group_set,
-                &mut func_call_graph,
-                &mut span_infos,
-                f,
-            )?;
+            match record {
+                Ok(record) => record?.replay(&mut func_call_graph, &mut span_infos),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
         }
 
         for group in &krate.reveal_groups {
@@ -535,6 +558,13 @@ impl GlobalCtx {
                 }
             }
         }
+        // Functions grouped by owning module, each group in krate.functions order
+        let mut module_functions: HashMap<&Path, Vec<&Function>> = HashMap::new();
+        for f in &krate.functions {
+            if let Some(owning_module) = &f.x.owning_module {
+                module_functions.entry(owning_module).or_default().push(f);
+            }
+        }
         for module in &krate.modules {
             let module_reveal_node = Node::ModuleReveal(module.x.path.clone());
             func_call_graph.add_node(module_reveal_node.clone());
@@ -548,11 +578,7 @@ impl GlobalCtx {
                     func_call_graph.add_edge(module_reveal_node.clone(), target);
                 }
             }
-            for f in krate
-                .functions
-                .iter()
-                .filter(|f| f.x.owning_module.as_ref() == Some(&module.x.path))
-            {
+            for f in module_functions.get(&module.x.path).into_iter().flatten() {
                 let source = Node::Fun(f.x.name.clone());
                 func_call_graph.add_node(source.clone());
                 func_call_graph.add_edge(source, module_reveal_node.clone());
@@ -575,49 +601,87 @@ impl GlobalCtx {
         // In the final call graph, we add the edge Fun(f4) --> TraitImpl,
         // based on the fact that f4 calls one of { f1, f3 },
         // but the TraitImpl does not depend on f4.
-        let mut preliminary_call_graph = func_call_graph.graph.clone();
-        preliminary_call_graph.compute_sccs();
-        let preliminary_sccs = preliminary_call_graph.sort_sccs();
-        let order: HashMap<Node, usize> =
-            preliminary_sccs.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
-        for scc in preliminary_sccs {
-            for node_f4 in preliminary_call_graph.get_scc_nodes(&scc) {
-                if !matches!(&node_f4, Node::Fun(_)) {
-                    continue;
-                }
-                use crate::recursion::get_edges_from;
-                'f1: for node_f1 in get_edges_from(&preliminary_call_graph, &node_f4) {
-                    if let Node::Fun(f1) = &node_f1 {
-                        if let Some(trait_impl) = method_impl_map.get(f1) {
-                            let impl_path = ImplPath::TraitImplPath(trait_impl.clone());
-                            let trait_impl = Node::TraitImpl(impl_path);
-                            let trait_impl = func_call_graph.replace(trait_impl);
-                            // Do we already have f4 --> trait_impl?
-                            for ti in get_edges_from(&func_call_graph.graph, &node_f4) {
-                                if *ti == trait_impl {
-                                    continue 'f1;
+        // The preliminary SCCs are computed in place on func_call_graph.graph (no clone):
+        // fixups are only discovered while the SCCs are current, and are added afterwards as
+        // edges between existing nodes, before reset_sccs + compute_sccs below.
+        func_call_graph.graph.compute_sccs();
+        let (preliminary_sccs, order) = func_call_graph.graph.sort_sccs_with_order();
+        // A fixup only adds edges from node_f4 itself, so each node_f4's fixups are discovered in
+        // parallel against the graph as it is before any fixup, then added in the sequential
+        // order. Panics surface at the first panicking node_f4 in that order; nodes after it are
+        // not examined.
+        let f4_nodes: Vec<Node> = preliminary_sccs
+            .iter()
+            .flat_map(|scc| func_call_graph.graph.get_scc_nodes(scc))
+            .filter(|node| matches!(node, Node::Fun(_)))
+            .collect();
+        let fixups = {
+            let func_call_graph = &func_call_graph;
+            let preliminary_call_graph = &func_call_graph.graph;
+            crate::util::par_map_init_until_err(
+                &f4_nodes,
+                crate::scc::Visited::new,
+                |visited, node_f4| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        use crate::recursion::get_edges_from;
+                        let mut added: Vec<Node> = Vec::new();
+                        // The graph is not mutated while fixups are discovered.
+                        let edges_f4 = get_edges_from(preliminary_call_graph, node_f4);
+                        'f1: for node_f1 in edges_f4.iter() {
+                            if let Node::Fun(f1) = node_f1 {
+                                if let Some(trait_impl) = method_impl_map.get(f1) {
+                                    let impl_path = ImplPath::TraitImplPath(trait_impl.clone());
+                                    let trait_impl = Node::TraitImpl(impl_path);
+                                    let trait_impl = func_call_graph.replace(trait_impl);
+                                    // Do we already have f4 --> trait_impl?
+                                    if edges_f4.iter().any(|ti| **ti == trait_impl) {
+                                        continue 'f1;
+                                    }
+                                    if added.contains(&trait_impl) {
+                                        continue 'f1;
+                                    }
+                                    // Is there a path trait_impl --*--> f4?
+                                    if preliminary_call_graph.can_reach_with(
+                                        visited,
+                                        &trait_impl,
+                                        node_f4,
+                                        Some(&order),
+                                    ) {
+                                        continue 'f1;
+                                    }
+                                    // Add f4 --> trait_impl
+                                    added.push(trait_impl);
                                 }
                             }
-                            // Is there a path trait_impl --*--> f4?
-                            if preliminary_call_graph.can_reach(&trait_impl, &node_f4, Some(&order))
-                            {
-                                continue 'f1;
-                            }
-                            // Add f4 --> trait_impl
-                            func_call_graph.add_edge(node_f4.clone(), trait_impl);
                         }
+                        added
+                    }))
+                },
+                |fixup| fixup.is_err(),
+            )
+        };
+        for (node_f4, fixup) in f4_nodes.iter().zip(fixups) {
+            match fixup.expect("nodes up to the first panic are examined") {
+                Ok(added) => {
+                    for trait_impl in added {
+                        func_call_graph.add_edge(node_f4.clone(), trait_impl);
                     }
                 }
+                Err(panic) => std::panic::resume_unwind(panic),
             }
         }
         // Now make the final call graph with the extra edges
         let mut func_call_graph = func_call_graph.graph;
+        func_call_graph.reset_sccs();
         func_call_graph.compute_sccs();
         let func_call_sccs = func_call_graph.sort_sccs();
+        // Like datatype_graph below, the SCC index is only read after simplification.
         let mut func_call_scc_index: HashMap<Node, usize> = HashMap::new();
-        for (i, scc_rep) in func_call_sccs.iter().enumerate() {
-            for node in func_call_graph.get_scc_nodes(scc_rep) {
-                func_call_scc_index.insert(node, i);
+        if after_simplify {
+            for (i, scc_rep) in func_call_sccs.iter().enumerate() {
+                for node in func_call_graph.get_scc_nodes(scc_rep) {
+                    func_call_scc_index.insert(node, i);
+                }
             }
         }
 
@@ -727,7 +791,17 @@ impl GlobalCtx {
         }
         let qid_map = RefCell::new(HashMap::new());
 
-        let datatype_graph = crate::recursive_types::build_datatype_graph(krate, &mut span_infos);
+        // The pre-simplify GlobalCtx is only read by check_traits and simplify_krate, neither of
+        // which reads datatype_graph or func_call_scc_index; simplify_krate replaces it with an
+        // after_simplify GlobalCtx.
+        // span_infos still holds every call-graph SpanInfo entry that check_traits indexes.
+        let datatype_graph = if after_simplify {
+            crate::recursive_types::build_datatype_graph(krate, &mut span_infos)
+        } else {
+            let mut empty = Graph::new();
+            empty.compute_sccs();
+            empty
+        };
 
         Ok(GlobalCtx {
             chosen_triggers,
@@ -739,9 +813,9 @@ impl GlobalCtx {
             func_call_sccs: Arc::new(func_call_sccs),
             func_call_scc_index: Arc::new(func_call_scc_index),
             datatype_graph: Arc::new(datatype_graph),
-            datatype_graph_span_infos: span_infos,
-            extension_to_trait,
-            trait_impl_to_extensions,
+            datatype_graph_span_infos: Arc::new(span_infos),
+            extension_to_trait: Arc::new(extension_to_trait),
+            trait_impl_to_extensions: Arc::new(trait_impl_to_extensions),
             warning_ctx,
             qid_map,
             rlimit,

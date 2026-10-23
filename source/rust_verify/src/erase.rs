@@ -1,9 +1,10 @@
 use vir::messages::AstId;
 
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir::HirId;
 
 use crate::context::ErasureInfo;
-use vir::ast::{Datatype, Fun, FunctionStub, Mode, Path};
+use vir::ast::{Datatype, Fun, FunctionStub, Mode, Path, PathX};
 use vir::modes::ErasureModes;
 
 use crate::verus_items::{DummyCaptureItem, VerusItem, VerusItems};
@@ -131,9 +132,7 @@ fn mode_to_var_erase(var_mode: Mode, mode: Mode, shadow_check: bool) -> VarErasu
 /// REVIEW: it might simpler to skip the ResolvedCall call entirely and have the original
 /// traversal generate CallErasure values.
 fn resolved_call_to_call_erase(
-    _span: Span,
-    functions: &HashMap<Fun, FunctionStub>,
-    _datatypes: &HashMap<Path, Datatype>,
+    functions: &mut FunctionLookup,
     resolved_call: &ResolvedCall,
     ctor_mode: Option<Mode>,
     in_ghost: bool,
@@ -146,7 +145,7 @@ fn resolved_call_to_call_erase(
             // Note: in principle, the unresolved function ufun should always be present,
             // but we currently allow external declarations of resolved trait functions
             // without a corresponding external trait declaration.
-            let Some(f) = functions.get(ufun).or_else(|| functions.get(rfun)) else {
+            let Some(f) = functions.get(ufun, rfun) else {
                 if *assume_external {
                     let erase = CallErasure::Call(NodeErase::Keep);
                     let force_treat_as_inhabited = false;
@@ -216,6 +215,69 @@ fn resolved_call_to_call_erase(
     Ok((call_erasure, force_treat_as_inhabited))
 }
 
+/// Looks up the declaration of a called function, memoized by the addresses of the
+/// unresolved and resolved paths. Calls to the same function usually share their path
+/// allocations, and equal addresses imply equal names.
+struct FunctionLookup<'a> {
+    functions: &'a HashMap<Fun, FunctionStub>,
+    by_path_addr: FxHashMap<(*const PathX, *const PathX), Option<&'a FunctionStub>>,
+}
+
+impl<'a> FunctionLookup<'a> {
+    fn get(&mut self, ufun: &Fun, rfun: &Fun) -> Option<&'a FunctionStub> {
+        let functions = &self.functions;
+        let key = (Arc::as_ptr(&ufun.path), Arc::as_ptr(&rfun.path));
+        *self
+            .by_path_addr
+            .entry(key)
+            .or_insert_with(|| functions.get(ufun).or_else(|| functions.get(rfun)))
+    }
+}
+
+/// The HirIds of one VIR node; almost every node has at most one.
+#[derive(Default)]
+enum HirIds {
+    #[default]
+    Zero,
+    One(HirId),
+    Many(Vec<HirId>),
+}
+
+impl HirIds {
+    fn push(&mut self, hir_id: HirId) {
+        *self = match std::mem::take(self) {
+            HirIds::Zero => HirIds::One(hir_id),
+            HirIds::One(first) => HirIds::Many(vec![first, hir_id]),
+            HirIds::Many(mut hir_ids) => {
+                hir_ids.push(hir_id);
+                HirIds::Many(hir_ids)
+            }
+        };
+    }
+
+    fn as_slice(&self) -> &[HirId] {
+        match self {
+            HirIds::Zero => &[],
+            HirIds::One(hir_id) => std::slice::from_ref(hir_id),
+            HirIds::Many(hir_ids) => hir_ids,
+        }
+    }
+}
+
+/// Groups source HirIds by VIR node id in HIR order. Generated nodes have a known
+/// ID but no source HIR targets for erasure.
+fn hir_ids_by_ast_id(ids: &[(Option<HirId>, AstId)]) -> FxHashMap<AstId, HirIds> {
+    let mut map = FxHashMap::<AstId, HirIds>::default();
+    map.reserve(ids.len());
+    for (hir_id, vir_id) in ids {
+        let hir_ids = map.entry(*vir_id).or_default();
+        if let Some(hir_id) = hir_id {
+            hir_ids.push(*hir_id);
+        }
+    }
+    map
+}
+
 fn get_binder_hir_id<'tcx>(
     tcx: rustc_middle::ty::TyCtxt<'tcx>,
     hir_id: HirId,
@@ -238,58 +300,30 @@ fn get_binder_hir_id<'tcx>(
 pub(crate) fn setup_verus_ctxt_for_thir_erasure<'tcx>(
     tcx: rustc_middle::ty::TyCtxt<'tcx>,
     verus_items: &VerusItems,
-    datatypes: &HashMap<Path, Datatype>,
+    _datatypes: &HashMap<Path, Datatype>,
     functions: &HashMap<Fun, FunctionStub>,
     erasure_hints: &ErasureInfo,
     erasure_modes: &ErasureModes,
 ) -> Result<(), VirErr> {
-    let mut local_id_to_hir: HashMap<AstId, Vec<HirId>> =
-        HashMap::with_capacity(erasure_hints.local_hir_vir_ids.len());
-    for (hir_id, vir_id) in &erasure_hints.local_hir_vir_ids {
-        if !local_id_to_hir.contains_key(vir_id) {
-            local_id_to_hir.insert(*vir_id, vec![]);
-        }
-        // Generated nodes have a known ID but no source HIR targets for erasure.
-        if let Some(hir_id) = hir_id {
-            local_id_to_hir.get_mut(vir_id).unwrap().push(*hir_id);
-        }
-    }
-    let mut binder_id_to_hir: HashMap<AstId, Vec<HirId>> =
-        HashMap::with_capacity(erasure_hints.binder_hir_vir_ids.len());
-    for (hir_id, vir_id) in &erasure_hints.binder_hir_vir_ids {
-        if !binder_id_to_hir.contains_key(vir_id) {
-            binder_id_to_hir.insert(*vir_id, vec![]);
-        }
-        if let Some(hir_id) = hir_id {
-            binder_id_to_hir.get_mut(vir_id).unwrap().push(*hir_id);
-        }
-    }
-    let mut ctor_id_to_hir: HashMap<AstId, Vec<HirId>> =
-        HashMap::with_capacity(erasure_hints.ctor_hir_vir_ids.len());
-    for (hir_id, vir_id) in &erasure_hints.ctor_hir_vir_ids {
-        if !ctor_id_to_hir.contains_key(vir_id) {
-            ctor_id_to_hir.insert(*vir_id, vec![]);
-        }
-        if let Some(hir_id) = hir_id {
-            ctor_id_to_hir.get_mut(vir_id).unwrap().push(*hir_id);
-        }
-    }
+    let local_id_to_hir = hir_ids_by_ast_id(&erasure_hints.local_hir_vir_ids);
+    let binder_id_to_hir = hir_ids_by_ast_id(&erasure_hints.binder_hir_vir_ids);
+    let ctor_id_to_hir = hir_ids_by_ast_id(&erasure_hints.ctor_hir_vir_ids);
 
-    let shadow_check: HashSet<HirId> = erasure_hints.shadow_check.iter().copied().collect();
-    let mut locals = HashMap::<HirId, VarErasure>::new();
+    let shadow_check: FxHashSet<HirId> = erasure_hints.shadow_check.iter().copied().collect();
+    let mut locals = HashMap::<HirId, VarErasure>::with_capacity(erasure_modes.local_modes.len());
     for (span, (var_mode, mode)) in erasure_modes.local_modes.iter() {
         if crate::spans::from_raw_span(&span.raw_span).is_none() {
             continue;
         }
-        if !local_id_to_hir.contains_key(&span.id) {
+        let Some(hir_ids) = local_id_to_hir.get(&span.id) else {
             dbg!(span);
             dbg!(mode);
             return Err(vir::messages::error(
                 span,
                 "Verus Internal Error: setup_verus_ctxt_for_thir_erasure failed, var lookup failed",
             ));
-        }
-        for hir_id in &local_id_to_hir[&span.id] {
+        };
+        for hir_id in hir_ids.as_slice() {
             locals.insert(
                 *hir_id,
                 mode_to_var_erase(*var_mode, *mode, shadow_check.contains(hir_id)),
@@ -297,20 +331,20 @@ pub(crate) fn setup_verus_ctxt_for_thir_erasure<'tcx>(
         }
     }
 
-    let mut binders = HashMap::<HirId, VarErasure>::new();
+    let mut binders = HashMap::<HirId, VarErasure>::with_capacity(erasure_modes.binder_modes.len());
     for (span, mode) in erasure_modes.binder_modes.iter() {
         if crate::spans::from_raw_span(&span.raw_span).is_none() {
             continue;
         }
-        if !binder_id_to_hir.contains_key(&span.id) {
+        let Some(hir_ids) = binder_id_to_hir.get(&span.id) else {
             dbg!(span);
             dbg!(mode);
             return Err(vir::messages::error(
                 span,
                 "Verus Internal Error: setup_verus_ctxt_for_thir_erasure failed, binder lookup failed",
             ));
-        }
-        for hir_id in &binder_id_to_hir[&span.id] {
+        };
+        for hir_id in hir_ids.as_slice() {
             binders.insert(
                 *hir_id,
                 match mode {
@@ -326,12 +360,12 @@ pub(crate) fn setup_verus_ctxt_for_thir_erasure<'tcx>(
             continue;
         }
         if let Some(hir_ids) = local_id_to_hir.get(&span.id) {
-            for hir_id in hir_ids.iter() {
+            for hir_id in hir_ids.as_slice() {
                 locals.insert(*hir_id, VarErasure::Erase);
             }
         }
         if let Some(hir_ids) = binder_id_to_hir.get(&span.id) {
-            for hir_id in hir_ids.iter() {
+            for hir_id in hir_ids.as_slice() {
                 binders.insert(*hir_id, VarErasure::Erase);
             }
         }
@@ -353,38 +387,34 @@ pub(crate) fn setup_verus_ctxt_for_thir_erasure<'tcx>(
         }
     }
 
-    let mut ctor_modes = HashMap::<HirId, Mode>::new();
+    let mut ctor_modes = FxHashMap::<HirId, Mode>::default();
+    ctor_modes.reserve(erasure_modes.ctor_modes.len());
     for (span, mode) in erasure_modes.ctor_modes.iter() {
         if crate::spans::from_raw_span(&span.raw_span).is_none() {
             continue;
         }
-        if !ctor_id_to_hir.contains_key(&span.id) {
+        let Some(hir_ids) = ctor_id_to_hir.get(&span.id) else {
             dbg!(span);
             dbg!(mode);
             return Err(vir::messages::error(
                 span,
                 "Verus Internal Error: setup_verus_ctxt_for_thir_erasure failed, ctor lookup failed",
             ));
-        }
-        for hir_id in &ctor_id_to_hir[&span.id] {
+        };
+        for hir_id in hir_ids.as_slice() {
             ctor_modes.insert(*hir_id, *mode);
         }
     }
 
+    let mut functions = FunctionLookup { functions, by_path_addr: FxHashMap::default() };
+
     let mut calls =
         HashMap::<HirId, (CallErasure, bool)>::with_capacity(erasure_hints.resolved_calls.len());
     let mut loop_erasure = HashMap::<HirId, LoopErasure>::new();
-    for (hir_id, span_data, resolved_call, in_ghost) in &erasure_hints.resolved_calls {
-        let span = span_data.span();
+    for (hir_id, _span_data, resolved_call, in_ghost) in &erasure_hints.resolved_calls {
         let ctor_mode = ctor_modes.get(hir_id).cloned();
-        let (call_erasure, force_treat_as_inhabited) = resolved_call_to_call_erase(
-            span,
-            &functions,
-            datatypes,
-            resolved_call,
-            ctor_mode,
-            *in_ghost,
-        )?;
+        let (call_erasure, force_treat_as_inhabited) =
+            resolved_call_to_call_erase(&mut functions, resolved_call, ctor_mode, *in_ghost)?;
         let _found = calls.insert(*hir_id, (call_erasure, force_treat_as_inhabited));
         // REVIEW: we should check that that there aren't conflicting entries, but right now,
         // there are some redundant traversals

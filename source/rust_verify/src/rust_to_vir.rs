@@ -20,9 +20,13 @@ use crate::rust_to_vir_impl::ExternalInfo;
 use crate::util::{err_span, err_span_vec};
 use crate::verus_items::{self, VerusItem};
 use crate::{unsupported_err, unsupported_err_vec, unsupported_err_vec_unless};
-use rustc_data_structures::sync::IntoDynSyncSend;
+use renumber::{LOCAL_ID_TAG, Renumber, local_id_counts};
+use rustc_data_structures::sync::{DynSend, DynSync, IntoDynSyncSend};
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+mod renumber;
 
 use rustc_ast::IsAuto;
 use rustc_hir::def::DefKind;
@@ -633,6 +637,249 @@ fn translate_crate_item<'tcx>(
     ItemOutput { vir, state, infos, erasure_info, diagnostics, errors, next_ids }
 }
 
+/// Caps translation workers. Shared rustc interners and query caches limit scaling: on a
+/// large crate at -Zthreads=16, 12 workers took about 0.98x and 16 about 1.06x the time of 8.
+const MAX_PARALLEL_ITEM_JOBS: usize = 12;
+
+/// Estimates item translation cost by the item's source length.
+fn item_len<'tcx>(tcx: rustc_middle::ty::TyCtxt<'tcx>, item: &crate::external::CrateItem) -> u32 {
+    let span = match (&item.verif, item.id) {
+        (VerifOrExternal::VerusAware { .. }, GeneralItemId::ItemId(id)) => tcx.hir_item(id).span,
+        (VerifOrExternal::VerusAware { .. }, GeneralItemId::ForeignItemId(id)) => {
+            tcx.hir_foreign_item(id).span
+        }
+        _ => return 0,
+    };
+    let span = span.data();
+    span.hi.0.saturating_sub(span.lo.0)
+}
+
+/// Runs `f` on every unit with up to `n_jobs` workers that claim one unit at a time,
+/// costliest first, and returns the results in unit order.
+///
+/// A panicking unit is caught in its worker, so the other workers keep claiming units and
+/// the payload is kept. Afterwards the payload of the lowest panicking unit index is
+/// resumed, which is the unit serial translation would have panicked in (assuming each
+/// unit panics deterministically). Units above the lowest panic seen so far are skipped, as
+/// serial translation would never reach them. A `FatalErrorMarker` payload yields to the
+/// lowest other payload, as in rustc's parallel guard: a wait on a query that another unit
+/// poisoned by panicking raises `FatalErrorMarker`, which must not hide that unit's panic.
+/// (If a unit genuinely raised `FatalErrorMarker`, a panic from an already started higher
+/// unit can therefore win; either way the run fails.)
+fn par_units<R: Send>(
+    n_jobs: usize,
+    costs: &[u32],
+    f: impl Fn(usize) -> R + DynSync + DynSend,
+) -> Vec<R> {
+    let n = costs.len();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(costs[i]));
+    let next = AtomicUsize::new(0);
+    // Lowest unit index that has panicked so far, or `n`.
+    let first_panic = AtomicUsize::new(n);
+    let by_job: Vec<Vec<(usize, IntoDynSyncSend<std::thread::Result<R>>)>> =
+        rustc_data_structures::sync::par_map(0..n_jobs.clamp(1, n.max(1)), |_| {
+            let mut out = Vec::new();
+            loop {
+                let k = next.fetch_add(1, Ordering::Relaxed);
+                if k >= n {
+                    break;
+                }
+                let i = order[k];
+                if i > first_panic.load(Ordering::Relaxed) {
+                    continue;
+                }
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(i)));
+                if r.is_err() {
+                    first_panic.fetch_min(i, Ordering::Relaxed);
+                }
+                out.push((i, IntoDynSyncSend(r)));
+            }
+            out
+        });
+    let mut results: Vec<Option<std::thread::Result<R>>> = (0..n).map(|_| None).collect();
+    for (i, r) in by_job.into_iter().flatten() {
+        results[i] = Some(r.0);
+    }
+    // Every unit below the lowest panic ran: `first_panic` only decreases, so it never
+    // skipped them.
+    let mut outputs = Vec::with_capacity(n);
+    let mut fatal = None;
+    for (i, r) in results.into_iter().enumerate() {
+        match r {
+            Some(Err(payload)) if payload.is::<rustc_span::fatal_error::FatalErrorMarker>() => {
+                fatal.get_or_insert(payload);
+            }
+            Some(Err(payload)) => std::panic::resume_unwind(payload),
+            Some(Ok(r)) => outputs.push(r),
+            None if fatal.is_some() => {}
+            None => unreachable!("unit {i} skipped below the lowest panicking unit"),
+        }
+    }
+    if let Some(payload) = fatal {
+        std::panic::resume_unwind(payload);
+    }
+    outputs
+}
+
+/// Assigns consecutive crate-wide ID ranges to forks in unit order and advances the shared
+/// counters past them.
+fn assign_id_ranges<'tcx>(
+    ctxt: &ContextX<'tcx>,
+    next_ids: impl Iterator<Item = (u64, u64)>,
+) -> Vec<Renumber> {
+    let first = ctxt.peek_next_ids();
+    let (mut span_id, mut read_kind_id) = first;
+    let renumbers = next_ids
+        .map(|ids| {
+            let counts = local_id_counts(ids);
+            let renumber = Renumber::new((span_id, read_kind_id), counts);
+            span_id += counts.0;
+            read_kind_id += counts.1;
+            renumber
+        })
+        .collect();
+    ctxt.advance_ids(span_id - first.0, read_kind_id - first.1);
+    renumbers
+}
+
+/// Renumbers each output with its range, in parallel, preserving order.
+fn par_renumber<T: Send>(
+    outputs: Vec<T>,
+    renumbers: Vec<Renumber>,
+    f: impl Fn(&mut T, Renumber) + DynSync + DynSend,
+) -> Vec<T> {
+    let units = outputs.into_iter().zip(renumbers).map(IntoDynSyncSend);
+    let outputs: Vec<IntoDynSyncSend<T>> =
+        rustc_data_structures::sync::par_map(units, |unit: IntoDynSyncSend<(T, Renumber)>| {
+            let (mut out, renumber) = unit.0;
+            f(&mut out, renumber);
+            IntoDynSyncSend(out)
+        });
+    outputs.into_iter().map(|out| out.0).collect()
+}
+
+fn renumber_item_output(out: &mut ItemOutput<'_>, r: Renumber) {
+    r.krate(&mut out.vir);
+    out.state.module_reveals.iter_mut().for_each(|(_, _, reveals)| r.module_reveals(reveals));
+    for info in out.infos.iter_mut() {
+        let (stub, autospec, function_full) = info.parts_mut();
+        r.function_stub(stub);
+        autospec.into_iter().for_each(|stub| r.function_stub(stub));
+        function_full.into_iter().for_each(|function| r.function(function));
+    }
+    r.erasure_info(&mut out.erasure_info);
+    out.diagnostics.iter_mut().for_each(|d| r.message_as(d));
+    out.errors.iter_mut().for_each(|e| r.message(e));
+}
+
+/// Outputs of finishing one function or const, which the serial pipeline would have added to
+/// the shared context (erasure info, diagnostics) or returned (functions, error).
+pub(crate) struct FinishOutput {
+    pub(crate) functions: Vec<vir::ast::Function>,
+    pub(crate) erasure_info: ErasureInfo,
+    pub(crate) diagnostics: Vec<vir::ast::VirErrAs>,
+    pub(crate) error: Option<VirErr>,
+    /// Fork-local next span and read-kind IDs.
+    next_ids: (u64, u64),
+}
+
+/// Finishes one function or const in a fork of `ctxt` that keeps its outputs separate.
+/// With `local_ids`, the fork allocates tagged IDs; otherwise it shares `ctxt`'s counters.
+fn finish_info<'tcx>(
+    ctxt: &ContextX<'tcx>,
+    info: &FunctionOrConstInfo<'tcx>,
+    local_ids: Option<(u64, u64)>,
+) -> FinishOutput {
+    let ctxt: Context<'tcx> = Rc::new(ctxt.fork_for_item(local_ids));
+    let mut functions = Vec::new();
+    let error = crate::rust_to_vir_func::finish_item(&ctxt, info, &mut functions).err();
+    let erasure_info = std::mem::take(&mut *ctxt.erasure_info.borrow_mut());
+    let diagnostics = std::mem::take(&mut *ctxt.diagnostics.lock().unwrap());
+    FinishOutput { functions, erasure_info, diagnostics, error, next_ids: ctxt.peek_next_ids() }
+}
+
+fn renumber_finish_output(out: &mut FinishOutput, r: Renumber) {
+    out.functions.iter_mut().for_each(|f| r.function(f));
+    r.erasure_info(&mut out.erasure_info);
+    out.diagnostics.iter_mut().for_each(|d| r.message_as(d));
+    out.error.iter_mut().for_each(|e| r.message(e));
+}
+
+/// Finishes every function or const of `infos` without reporting anything, with the IDs that
+/// finishing them one at a time in `infos` order on `ctxt` would assign, and returns the
+/// outputs in `infos` order. The caller replays each output where the serial pipeline would
+/// have finished that item. With rustc's parallel mode the items are finished in parallel
+/// forks with tagged IDs, which are then renumbered; otherwise they are finished in order.
+///
+/// If finishing an item panics, only the outputs of the items before it are returned (none in
+/// parallel mode); the caller finishes the remaining items serially, which reproduces the
+/// panic where the serial pipeline would raise it.
+pub(crate) fn prefetch_finish_infos<'tcx>(
+    ctxt: &ContextX<'tcx>,
+    infos: &[Arc<FunctionOrConstInfo<'tcx>>],
+) -> Vec<FinishOutput> {
+    let tcx = ctxt.tcx;
+    if !rustc_data_structures::sync::is_dyn_thread_safe() {
+        // Shared counters: IDs are consumed in `infos` order, as serially.
+        let mut outputs = Vec::with_capacity(infos.len());
+        for info in infos {
+            let finish = || finish_info(ctxt, info, None);
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(finish)) {
+                Ok(out) => outputs.push(out),
+                Err(_) => break,
+            }
+        }
+        return outputs;
+    }
+    let n_jobs = tcx.sess.opts.jobs.frontend.map_or(1, |n| n.get()).min(MAX_PARALLEL_ITEM_JOBS);
+    let costs: Vec<u32> = infos.iter().map(|info| info.body_len(tcx)).collect();
+    let tagged = Some((LOCAL_ID_TAG, LOCAL_ID_TAG));
+    let shared = IntoDynSyncSend(infos);
+    let Ok(outputs) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        par_units(n_jobs, &costs, |i| finish_info(ctxt, &shared[i], tagged))
+    })) else {
+        // No IDs were consumed.
+        return Vec::new();
+    };
+    let renumbers = assign_id_ranges(ctxt, outputs.iter().map(|out| out.next_ids));
+    let outputs = par_renumber(outputs, renumbers, renumber_finish_output);
+    if cfg!(debug_assertions) {
+        for out in outputs.iter() {
+            renumber::assert_untagged("finished functions", &out.functions);
+            renumber::assert_untagged_erasure_info(&out.erasure_info);
+            for d in out.diagnostics.iter() {
+                let (vir::ast::VirErrAs::Warning(m) | vir::ast::VirErrAs::Note(m)) = d;
+                renumber::assert_untagged("diagnostic", m);
+            }
+            renumber::assert_untagged("error", &out.error);
+        }
+    }
+    outputs
+}
+
+/// Checks that no tagged ID survived renumbering in the merged outputs.
+fn assert_untagged_outputs<'tcx>(
+    ctxt: &ContextX<'tcx>,
+    vir: &KrateX,
+    infos: &[FunctionOrConstInfo<'tcx>],
+    errors: &[VirErr],
+) {
+    renumber::assert_untagged("krate", vir);
+    for info in infos {
+        renumber::assert_untagged("function stub", &info.iter_stubs().collect::<Vec<_>>());
+        if let Some(function) = info.foreign_function_full() {
+            renumber::assert_untagged("foreign function", function);
+        }
+    }
+    renumber::assert_untagged_erasure_info(&ctxt.erasure_info.borrow());
+    for d in ctxt.diagnostics.lock().unwrap().iter() {
+        let (vir::ast::VirErrAs::Warning(m) | vir::ast::VirErrAs::Note(m)) = d;
+        renumber::assert_untagged("diagnostic", m);
+    }
+    renumber::assert_untagged("errors", errors);
+}
+
 pub(crate) fn crate_to_vir<'a, 'tcx>(
     mut ctxtx: ContextX<'tcx>,
     imported: &Vec<Krate>,
@@ -739,82 +986,21 @@ pub(crate) fn crate_to_vir<'a, 'tcx>(
     )
     .map_err(|e| vec![e])?;
 
-    // Item-local outputs are merged in crate order. A counting pass assigns deterministic
-    // span and read-kind ID ranges before the output-producing pass.
+    // Item-local outputs are merged in crate order. Parallel forks allocate tagged IDs, which
+    // are renumbered into the ranges that serial translation would have assigned.
     let n_items = crate_items.items.len();
     let ext_map: &HashMap<Path, Path> = &state.external_info.external_trait_extension_impl_map;
-    let outputs: Vec<ItemOutput<'tcx>> = if rustc_data_structures::sync::is_dyn_thread_safe() {
+    let parallel = rustc_data_structures::sync::is_dyn_thread_safe();
+    let n_jobs = tcx.sess.opts.jobs.frontend.map_or(1, |n| n.get()).min(MAX_PARALLEL_ITEM_JOBS);
+    let outputs: Vec<ItemOutput<'tcx>> = if parallel {
         let ctxt_ref: &ContextX<'tcx> = &ctxt;
-        // Limits contention in shared translation caches.
-        const MAX_PARALLEL_ITEM_JOBS: usize = 8;
-        // Retains enough work units to balance uneven item costs.
-        const MAX_ITEM_GROUPS: usize = 128;
-        let group_size = n_items.div_ceil(MAX_ITEM_GROUPS).max(1);
-        let n_groups = n_items.div_ceil(group_size);
-        let n_jobs = n_groups.clamp(1, MAX_PARALLEL_ITEM_JOBS);
-        let next_group = std::sync::atomic::AtomicUsize::new(0);
-        let counts_by_job: Vec<Vec<(usize, (u64, u64))>> =
-            rustc_data_structures::sync::par_map(0..n_jobs, |_| {
-                let mut job_counts = Vec::with_capacity(n_items.div_ceil(n_jobs));
-                loop {
-                    let group = next_group.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if group >= n_groups {
-                        break;
-                    }
-                    let start = group * group_size;
-                    let end = (start + group_size).min(n_items);
-                    for i in start..end {
-                        let out =
-                            translate_crate_item(ctxt_ref, ext_map, crate_items, i, Some((0, 0)));
-                        job_counts.push((i, out.next_ids));
-                    }
-                }
-                job_counts
-            });
-        let mut counts = vec![(0, 0); n_items];
-        for job_counts in counts_by_job {
-            for (i, count) in job_counts {
-                counts[i] = count;
-            }
-        }
-        let (first_span_id, first_read_kind_id) = ctxt.peek_next_ids();
-        let mut first_ids: Vec<(u64, u64)> = Vec::with_capacity(n_items);
-        let (mut span_id, mut read_kind_id) = (first_span_id, first_read_kind_id);
-        for (span_ids, read_kind_ids) in counts {
-            first_ids.push((span_id, read_kind_id));
-            span_id += span_ids;
-            read_kind_id += read_kind_ids;
-        }
-        let first_ids_ref: &Vec<(u64, u64)> = &first_ids;
-        let next_group = std::sync::atomic::AtomicUsize::new(0);
-        let outputs_by_job: Vec<Vec<(usize, IntoDynSyncSend<ItemOutput<'tcx>>)>> =
-            rustc_data_structures::sync::par_map(0..n_jobs, |_| {
-                let mut job_outputs = Vec::with_capacity(n_items.div_ceil(n_jobs));
-                loop {
-                    let group = next_group.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if group >= n_groups {
-                        break;
-                    }
-                    let start = group * group_size;
-                    let end = (start + group_size).min(n_items);
-                    for i in start..end {
-                        let out = translate_crate_item(
-                            ctxt_ref,
-                            ext_map,
-                            crate_items,
-                            i,
-                            Some(first_ids_ref[i]),
-                        );
-                        job_outputs.push((i, IntoDynSyncSend(out)));
-                    }
-                }
-                job_outputs
-            });
-        ctxt.advance_ids(span_id - first_span_id, read_kind_id - first_read_kind_id);
-        let mut indexed_outputs: Vec<(usize, IntoDynSyncSend<ItemOutput<'tcx>>)> =
-            outputs_by_job.into_iter().flatten().collect();
-        indexed_outputs.sort_unstable_by_key(|(i, _)| *i);
-        indexed_outputs.into_iter().map(|(_, out)| out.0).collect()
+        let costs: Vec<u32> = crate_items.items.iter().map(|item| item_len(tcx, item)).collect();
+        let tagged = Some((LOCAL_ID_TAG, LOCAL_ID_TAG));
+        let outputs = par_units(n_jobs, &costs, |i| {
+            translate_crate_item(ctxt_ref, ext_map, crate_items, i, tagged)
+        });
+        let renumbers = assign_id_ranges(&ctxt, outputs.iter().map(|out| out.next_ids));
+        par_renumber(outputs, renumbers, renumber_item_output)
     } else {
         (0..n_items).map(|i| translate_crate_item(&ctxt, ext_map, crate_items, i, None)).collect()
     };
@@ -878,6 +1064,9 @@ pub(crate) fn crate_to_vir<'a, 'tcx>(
         }
     }
 
+    if parallel && cfg!(debug_assertions) {
+        assert_untagged_outputs(&ctxt, &vir, &infos, &errors);
+    }
     if errors.len() > 0 {
         return Err(errors);
     }
@@ -924,4 +1113,111 @@ pub(crate) fn crate_to_vir<'a, 'tcx>(
         infos: infos,
         fun_name_to_info,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::par_units;
+    use rustc_span::fatal_error::FatalErrorMarker;
+    use std::sync::Mutex;
+
+    #[derive(Debug, PartialEq)]
+    enum Outcome {
+        Unit(usize),
+        Fatal,
+    }
+
+    /// `par_units` reads rustc's process-wide thread-safety mode; every test in this binary
+    /// uses the parallel mode.
+    fn init() {
+        rustc_data_structures::sync::set_dyn_thread_safe_mode(true);
+    }
+
+    /// Runs `par_units` and returns the units in run order and the results or the resumed
+    /// payload. Units in `panics` panic with their index, units in `fatal` raise
+    /// `FatalErrorMarker`.
+    fn run(
+        n_jobs: usize,
+        costs: &[u32],
+        panics: &[usize],
+        fatal: &[usize],
+    ) -> (Vec<usize>, Result<Vec<usize>, Outcome>) {
+        init();
+        let ran = Mutex::new(Vec::new());
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            par_units(n_jobs, costs, |i| {
+                ran.lock().unwrap().push(i);
+                if panics.contains(&i) {
+                    std::panic::panic_any(Outcome::Unit(i));
+                }
+                if fatal.contains(&i) {
+                    std::panic::resume_unwind(Box::new(FatalErrorMarker));
+                }
+                i * 10
+            })
+        }));
+        let r = r.map_err(|p| {
+            if p.is::<FatalErrorMarker>() {
+                Outcome::Fatal
+            } else {
+                *p.downcast::<Outcome>().expect("unit payload")
+            }
+        });
+        (ran.into_inner().unwrap(), r.map(|v| v.iter().map(|x| x / 10).collect()))
+    }
+
+    #[test]
+    fn par_units_returns_results_in_unit_order() {
+        let (ran, r) = run(1, &[1, 5, 0, 3], &[], &[]);
+        assert_eq!(ran, vec![1, 3, 0, 2]);
+        assert_eq!(r, Ok(vec![0, 1, 2, 3]));
+        assert_eq!(run(1, &[], &[], &[]), (vec![], Ok(vec![])));
+        assert_eq!(run(4, &[], &[], &[]), (vec![], Ok(vec![])));
+        let costs: Vec<u32> = (0..300).map(|i| (i * 37 % 101) as u32).collect();
+        let (mut ran, r) = run(8, &costs, &[], &[]);
+        assert_eq!(r, Ok((0..300).collect()));
+        ran.sort();
+        assert_eq!(ran, (0..300).collect::<Vec<_>>());
+    }
+
+    /// The lowest panicking index is resumed with its own payload even when a higher unit
+    /// panicked first; units below the lowest panic all run.
+    #[test]
+    fn par_units_resumes_the_lowest_panicking_unit() {
+        let (ran, r) = run(1, &[0, 1, 2, 3, 4], &[1, 3], &[]);
+        assert_eq!(ran, vec![4, 3, 2, 1, 0]);
+        assert_eq!(r, Err(Outcome::Unit(1)));
+        let costs: Vec<u32> = (0..300).map(|i| (i * 37 % 101) as u32).collect();
+        for _ in 0..20 {
+            let (ran, r) = run(8, &costs, &[250, 41, 177, 42], &[]);
+            assert_eq!(r, Err(Outcome::Unit(41)));
+            assert!((0..41).all(|i| ran.contains(&i)));
+        }
+    }
+
+    /// Units above a panicking unit are skipped once it has panicked.
+    #[test]
+    fn par_units_skips_units_above_a_panic() {
+        let (ran, r) = run(1, &[4, 0, 3, 2, 1], &[0, 2], &[]);
+        assert_eq!(ran, vec![0]);
+        assert_eq!(r, Err(Outcome::Unit(0)));
+        let (ran, r) = run(1, &[1, 4, 3, 2, 0], &[1], &[]);
+        assert_eq!(ran, vec![1, 0]);
+        assert_eq!(r, Err(Outcome::Unit(1)));
+    }
+
+    /// `FatalErrorMarker` yields to another unit's panic, but is resumed when it is the only
+    /// kind of payload.
+    #[test]
+    fn par_units_prefers_a_panic_over_fatal_error_marker() {
+        let (ran, r) = run(1, &[0, 1, 2, 3], &[3], &[1]);
+        assert_eq!(ran, vec![3, 2, 1, 0]);
+        assert_eq!(r, Err(Outcome::Unit(3)));
+        let (ran, r) = run(1, &[0, 1, 2, 3], &[], &[1, 2]);
+        assert_eq!(ran, vec![3, 2, 1, 0]);
+        assert_eq!(r, Err(Outcome::Fatal));
+        let (ran, r) = run(1, &[3, 2, 1, 0], &[3], &[1]);
+        assert_eq!(ran, vec![0, 1]);
+        assert_eq!(r, Err(Outcome::Fatal));
+    }
 }

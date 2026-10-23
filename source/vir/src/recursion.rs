@@ -13,7 +13,7 @@ use crate::def::{
     FUEL_PARAM, FUEL_TYPE, Spanned, decrease_at_entry, rename_rec_param, unique_bound, unique_local,
 };
 use crate::messages::{Span, error};
-use crate::scc::Graph;
+use crate::scc::{FxHashMap, Graph, NodeIndex};
 use crate::sst::{
     BndX, CallFun, Dest, Exp, ExpX, Exps, InternalFun, LocalDecl, LocalDeclX, Stm, StmX,
     UniqueIdent,
@@ -23,9 +23,10 @@ use crate::util::vec_map_result;
 use air::ast_util::str_typ;
 use air::messages::Diagnostics;
 use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::sync::Arc;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
     Fun(Fun),
     Datatype(Dt),
@@ -39,6 +40,28 @@ pub enum Node {
     // This is used to replace an X --> Y edge with X --> SpanInfo --> Y edges
     // to give more precise span information than X or Y alone provide
     SpanInfo { span_infos_index: usize, text: String },
+}
+
+// Same as the derived Hash, except that SpanInfo hashes only span_infos_index:
+// equal nodes still hash equally (the derived Eq also compares the index),
+// and each SpanInfo index is allocated once, so the text never needs hashing.
+impl std::hash::Hash for Node {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Node::Fun(fun) => fun.hash(state),
+            Node::Datatype(dt) => dt.hash(state),
+            Node::Trait(path) => path.hash(state),
+            Node::TraitImpl(impl_path) => impl_path.hash(state),
+            Node::TraitReqEns(impl_path, b) => {
+                impl_path.hash(state);
+                b.hash(state);
+            }
+            Node::ModuleReveal(path) => path.hash(state),
+            Node::Crate(krate) => krate.hash(state),
+            Node::SpanInfo { span_infos_index, text: _ } => span_infos_index.hash(state),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -468,23 +491,164 @@ pub(crate) fn check_termination_stm(
     Ok((decls, Arc::new(stm_assigns), stm_block))
 }
 
+/// Node merge used by `GraphBuilder::replace` (context.rs) and the parallel call-graph recorder:
+/// the node-merge map only has Trait and TraitImpl keys, so other nodes skip the lookup.
+pub(crate) fn replace_node(replace_with: &HashMap<Node, Node>, value: Node) -> Node {
+    if !matches!(value, Node::Trait(_) | Node::TraitImpl(_)) {
+        return value;
+    }
+    if let Some(value) = replace_with.get(&value) { value.clone() } else { value }
+}
+
+/// Call-graph edges and span infos discovered for one function, recorded in discovery order.
+/// Nodes are already merged by `replace_node` and interned locally: `nodes` lists each
+/// distinct node once, in first-mention order, with its graph hash precomputed in `hashes`
+/// (so the sequential replay does not hash), and `edges` refers to them by local index.
+/// SpanInfo nodes carry indices local to `span_infos`; `replay` rebases (and rehashes) them.
+pub(crate) struct CallGraphRecord {
+    nodes: Vec<Node>,
+    // hashes[i] == Graph::<Node>::hash_value(&nodes[i]) (for SpanInfo: of the local index)
+    hashes: Vec<u64>,
+    edges: Vec<(u32, u32)>,
+    span_infos: Vec<Span>,
+}
+
+// Records up to this many distinct nodes are deduplicated by scanning `hashes`
+const RECORD_LINEAR_DEDUP: usize = 32;
+
+// a and b share their (Arc) allocation, so a == b
+fn same_allocation(a: &Node, b: &Node) -> bool {
+    match (a, b) {
+        (Node::Fun(x), Node::Fun(y)) => Arc::ptr_eq(x, y),
+        (Node::Trait(x), Node::Trait(y)) => Arc::ptr_eq(x, y),
+        (
+            Node::TraitImpl(ImplPath::TraitImplPath(x)),
+            Node::TraitImpl(ImplPath::TraitImplPath(y)),
+        ) => Arc::ptr_eq(x, y),
+        _ => false,
+    }
+}
+
+struct CallGraphRecorder<'a> {
+    record: CallGraphRecord,
+    replace_with: &'a HashMap<Node, Node>,
+    // Local index of each node, only filled once there are more than RECORD_LINEAR_DEDUP
+    // nodes (never iterated)
+    node_index: FxHashMap<Node, u32>,
+}
+
+impl<'a> CallGraphRecorder<'a> {
+    fn new(replace_with: &'a HashMap<Node, Node>) -> CallGraphRecorder<'a> {
+        let record = CallGraphRecord {
+            nodes: Vec::new(),
+            hashes: Vec::new(),
+            edges: Vec::new(),
+            span_infos: Vec::new(),
+        };
+        CallGraphRecorder { record, replace_with, node_index: FxHashMap::default() }
+    }
+
+    fn local(&mut self, node: Node) -> u32 {
+        let node = replace_node(self.replace_with, node);
+        let r = &mut self.record;
+        let len = r.nodes.len();
+        if len <= RECORD_LINEAR_DEDUP {
+            // Most repeated mentions reuse the same allocation (e.g. f_node), found without
+            // hashing; equal allocations mean equal nodes, and nodes are distinct.
+            for i in 0..len {
+                if same_allocation(&r.nodes[i], &node) {
+                    return i as u32;
+                }
+            }
+        }
+        let hash = crate::scc::FxBuildHasher::default().hash_one(&node);
+        let new_index = u32::try_from(len).expect("call graph record size");
+        if len <= RECORD_LINEAR_DEDUP {
+            for i in 0..len {
+                if r.hashes[i] == hash && r.nodes[i] == node {
+                    return i as u32;
+                }
+            }
+        } else {
+            if self.node_index.is_empty() {
+                for (i, n) in r.nodes.iter().enumerate() {
+                    // nodes are distinct, so this keeps every index
+                    self.node_index.insert(n.clone(), i as u32);
+                }
+            }
+            if let Some(i) = self.node_index.get(&node) {
+                return *i;
+            }
+            self.node_index.insert(node.clone(), new_index);
+        }
+        r.nodes.push(node);
+        r.hashes.push(hash);
+        new_index
+    }
+
+    fn add_edge(&mut self, src: Node, dst: Node) {
+        let src = self.local(src);
+        let dst = self.local(dst);
+        self.record.edges.push((src, dst));
+    }
+}
+
+impl CallGraphRecord {
+    /// Applies the recorded edges to `call_graph` in recorded order, exactly as if they had
+    /// been added directly with `call_graph.add_edge`, with SpanInfo indices shifted past the
+    /// existing `span_infos`. (`expand_call_graph` already applied `call_graph.replace`, via
+    /// `replace_node` on the same `replace_with` map; `replace` commutes with the SpanInfo
+    /// rebase, which only changes SpanInfo nodes.)
+    /// Each distinct node is looked up once. This preserves node indices: add_edge creates
+    /// global nodes in order of first mention, and a node that is new to the global graph is
+    /// first mentioned at its first local mention, so interning the local nodes in
+    /// first-mention order creates the same global nodes in the same order. Edges are then
+    /// pushed in recorded order, so every node's edge list is unchanged too.
+    pub(crate) fn replay(self, call_graph: &mut GraphBuilder<Node>, span_infos: &mut Vec<Span>) {
+        let base = span_infos.len();
+        span_infos.extend(self.span_infos);
+        let graph = &mut call_graph.graph;
+        let global: Vec<NodeIndex> = self
+            .nodes
+            .into_iter()
+            .zip(self.hashes)
+            .map(|(node, hash)| match node {
+                Node::SpanInfo { span_infos_index, text } => {
+                    let node = Node::SpanInfo { span_infos_index: base + span_infos_index, text };
+                    graph.intern_hashed(graph.hash_value(&node), node)
+                }
+                node => graph.intern_hashed(hash, node),
+            })
+            .collect();
+        for (src, dst) in self.edges {
+            graph.push_edge_idx(global[src as usize], global[dst as usize]);
+        }
+    }
+}
+
+/// Discovers `function`'s call-graph edges without mutating the shared graph.
+/// `replace_with` must be the node-merge map of the target `GraphBuilder`; it is only read
+/// (and applied to the recorded nodes).
 pub(crate) fn expand_call_graph(
     func_map: &HashMap<Fun, Function>,
     trait_map: &HashMap<Path, crate::ast::Trait>,
     trait_impl_map: &HashMap<(Fun, Path), Fun>,
     trait_impl_from_extension: &HashMap<Path, Path>,
     reveal_group_set: &HashSet<Fun>,
-    call_graph: &mut GraphBuilder<Node>,
-    span_infos: &mut Vec<Span>,
+    replace_with: &HashMap<Node, Node>,
     function: &Function,
-) -> Result<(), VirErr> {
+) -> Result<CallGraphRecord, VirErr> {
+    let mut recorder = CallGraphRecorder::new(replace_with);
+    let call_graph = &mut recorder;
     // See recursive_types::check_traits for more documentation
     let f_node = Node::Fun(function.x.name.clone());
 
     // Add f -> T nodes for any dyn T in f
     use crate::ast_visitor::{AstVisitor, WalkTypVisitorEnv};
-    let ft = &|call_graph: &mut GraphBuilder<Node>, t: &Typ| {
-        crate::recursive_types::add_trait_type_edges(call_graph, &f_node, t);
+    let ft = &|call_graph: &mut CallGraphRecorder, t: &Typ| {
+        if let Some(dst) = crate::recursive_types::trait_type_edge_target(t) {
+            call_graph.add_edge(f_node.clone(), dst);
+        }
         Ok(())
     };
     let mut visitor = WalkTypVisitorEnv { env: call_graph, ft };
@@ -539,7 +703,7 @@ pub(crate) fn expand_call_graph(
                 continue;
             }
             let t_node = Node::Trait(trait_path.clone());
-            if let Some(origin_trait) = call_graph.replace_with.get(&t_node) {
+            if let Some(origin_trait) = replace_with.get(&t_node) {
                 if let Node::Trait(origin_trait) = origin_trait {
                     if crate::recursive_types::suppress_bound_in_trait_decl(
                         origin_trait,
@@ -626,7 +790,7 @@ pub(crate) fn expand_call_graph(
                 for impl_path in impl_paths.iter() {
                     // f --> D: T
                     let expr_node = crate::recursive_types::new_span_info_node(
-                        span_infos,
+                        &mut call_graph.record.span_infos,
                         expr.span.clone(),
                         ": application of a function to some type arguments, which may depend on \
                             other trait implementations to satisfy trait bounds"
@@ -655,7 +819,7 @@ pub(crate) fn expand_call_graph(
             ExprX::UnaryOpr(UnaryOpr::ToDyn(_, impl_paths), _) => {
                 for impl_path in impl_paths.iter() {
                     let expr_node = crate::recursive_types::new_span_info_node(
-                        span_infos,
+                        &mut call_graph.record.span_infos,
                         expr.span.clone(),
                         ": coercion to a trait object, which depends on trait implementations \
                             to satisfy the object's trait bounds"
@@ -684,7 +848,7 @@ pub(crate) fn expand_call_graph(
                 };
                 for impl_path in impl_paths.iter() {
                     let expr_node = crate::recursive_types::new_span_info_node(
-                        span_infos,
+                        &mut call_graph.record.span_infos,
                         expr.span.clone(),
                         ": constructor of datatype with some type arguments, which may depend on \
                             other trait implementations to satisfy trait bounds"
@@ -708,5 +872,146 @@ pub(crate) fn expand_call_graph(
         call_graph.add_edge(f_node.clone(), Node::Fun(fun.clone()));
     }
 
-    Ok(())
+    Ok(recorder.record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CallGraphRecorder, Node};
+    use crate::ast::{CrateId, FunX, ImplPath, PathX};
+    use crate::context::GraphBuilder;
+    use crate::messages::{Span, SpanString};
+    use crate::scc::Graph;
+    use std::collections::HashMap;
+    use std::hash::BuildHasher;
+    use std::sync::Arc;
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % bound as u64) as usize
+        }
+    }
+
+    fn path(kind: &str, i: usize) -> crate::ast::Path {
+        let segments = vec![Arc::new("m".to_string()), Arc::new(format!("{kind}{i}"))];
+        Arc::new(PathX { krate: CrateId::Vstd, segments: Arc::new(segments) })
+    }
+
+    fn random_node(rng: &mut Rng, n: usize) -> Node {
+        let i = rng.next(n);
+        match rng.next(4) {
+            0 | 1 => Node::Fun(Arc::new(FunX { path: path("f", i) })),
+            2 => Node::Trait(path("t", i)),
+            _ => Node::TraitImpl(ImplPath::TraitImplPath(path("impl", i))),
+        }
+    }
+
+    fn span(i: usize) -> Span {
+        Span {
+            raw_span: Arc::new(()),
+            id: i as u64,
+            data: vec![i as u64],
+            as_string: SpanString::lazy(),
+        }
+    }
+
+    fn builder(replace_with: &HashMap<Node, Node>) -> GraphBuilder<Node> {
+        GraphBuilder { graph: Graph::new(), replace_with: replace_with.clone() }
+    }
+
+    // Interned record replay is identical to the previous replay, which called
+    // GraphBuilder::add_edge on every recorded (rebased) edge
+    #[test]
+    fn interned_replay_matches_add_edge_replay() {
+        let mut rng = Rng(0x9e3779b97f4a7c15);
+        for round in 0..200 {
+            let n = 1 + rng.next(if round < 100 { 6 } else { 40 });
+            let mut replace_with: HashMap<Node, Node> = HashMap::new();
+            for _ in 0..rng.next(n + 1) {
+                let i = rng.next(n);
+                let j = rng.next(n);
+                if rng.next(2) == 0 {
+                    replace_with.insert(Node::Trait(path("t", i)), Node::Trait(path("t", j)));
+                } else {
+                    let ip = |k| Node::TraitImpl(ImplPath::TraitImplPath(path("impl", k)));
+                    replace_with.insert(ip(i), ip(j));
+                }
+            }
+            let mut old_graph = builder(&replace_with);
+            let mut new_graph = builder(&replace_with);
+            let mut old_spans: Vec<Span> = vec![span(0)];
+            let mut new_spans: Vec<Span> = vec![span(0)];
+            let mut next_span = 1;
+            for _ in 0..rng.next(10) {
+                if rng.next(2) == 0 {
+                    let node = random_node(&mut rng, n);
+                    old_graph.add_node(node.clone());
+                    new_graph.add_node(node);
+                }
+                let mut record = CallGraphRecorder::new(&replace_with);
+                let mut raw: Vec<(Node, Node)> = Vec::new();
+                let src = random_node(&mut rng, n);
+                for _ in 0..rng.next(3 * n + 1) {
+                    let src = if rng.next(4) == 0 { random_node(&mut rng, n) } else { src.clone() };
+                    let dst = random_node(&mut rng, n);
+                    if rng.next(4) == 0 {
+                        let text = format!("text{}", rng.next(3));
+                        let info = crate::recursive_types::new_span_info_node(
+                            &mut record.record.span_infos,
+                            span(next_span),
+                            text,
+                        );
+                        next_span += 1;
+                        raw.push((src.clone(), info.clone()));
+                        record.add_edge(src.clone(), info.clone());
+                        raw.push((info.clone(), dst.clone()));
+                        record.add_edge(info, dst);
+                    } else {
+                        raw.push((src.clone(), dst.clone()));
+                        record.add_edge(src, dst);
+                    }
+                }
+                // previous replay
+                let base = old_spans.len();
+                let rebase = |n: Node| match n {
+                    Node::SpanInfo { span_infos_index, text } => {
+                        Node::SpanInfo { span_infos_index: base + span_infos_index, text }
+                    }
+                    n => n,
+                };
+                let record = record.record;
+                old_spans.extend(record.span_infos.iter().cloned());
+                for (src, dst) in raw {
+                    old_graph.add_edge(rebase(src), rebase(dst));
+                }
+                record.replay(&mut new_graph, &mut new_spans);
+            }
+            let (mut old_graph, mut new_graph) = (old_graph.graph, new_graph.graph);
+            assert_eq!(format!("{:?}", old_graph), format!("{:?}", new_graph));
+            old_graph.compute_sccs();
+            new_graph.compute_sccs();
+            assert_eq!(format!("{:?}", old_graph), format!("{:?}", new_graph));
+            let data = |spans: &Vec<Span>| spans.iter().map(|s| s.data.clone()).collect::<Vec<_>>();
+            assert_eq!(data(&old_spans), data(&new_spans));
+        }
+    }
+
+    #[test]
+    fn span_info_hash_ignores_text_but_eq_does_not() {
+        let b = crate::scc::FxBuildHasher::default();
+        let a = Node::SpanInfo { span_infos_index: 3, text: "a".to_string() };
+        let a2 = Node::SpanInfo { span_infos_index: 3, text: "b".to_string() };
+        let c = Node::SpanInfo { span_infos_index: 4, text: "a".to_string() };
+        assert_eq!(b.hash_one(&a), b.hash_one(&a2));
+        assert_ne!(a, a2);
+        assert_ne!(b.hash_one(&a), b.hash_one(&c));
+        let mut m = crate::scc::FxHashMap::default();
+        m.insert(a.clone(), 0);
+        m.insert(a2.clone(), 1);
+        assert_eq!((m[&a], m[&a2], m.get(&c)), (0, 1, None));
+    }
 }

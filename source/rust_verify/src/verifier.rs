@@ -1958,6 +1958,7 @@ impl Verifier {
         &mut self,
         reporter: &impl Diagnostics,
         krate: &Krate,
+        prune_index: &Arc<vir::prune::PruneIndex>,
         bucket_id: &BucketId,
         mut global_ctx: vir::context::GlobalCtx,
     ) -> Result<vir::context::GlobalCtx, VirErr> {
@@ -1973,11 +1974,11 @@ impl Verifier {
             reporter
                 .report_now(&note_bare(format!("verifying {bucket_name}{functions_msg}")).to_any());
         }
-        let (pruned_krate, prune_info) = vir::prune::prune_krate_for_module_or_krate(
+        let (pruned_krate, prune_info) = vir::prune::prune_krate_for_module_with_index(
             &krate,
+            prune_index,
             self.crate_id.as_ref().expect("crate_id"),
-            None,
-            Some(bucket_id.module().clone()),
+            bucket_id.module().clone(),
             bucket_id.function(),
             true,
             true,
@@ -2084,23 +2085,105 @@ impl Verifier {
             None
         };
 
-        let mut global_ctx = vir::context::GlobalCtx::new(
-            &krate,
-            self.crate_id.clone().expect("crate_id"),
-            air_no_span.clone(),
-            self.args.rlimit,
-            Arc::new(std::sync::Mutex::new(None)),
-            Arc::new(std::sync::Mutex::new(call_graph_log)),
-            self.warning_ctx.clone().expect("warning_ctx"),
-            self.args.solver,
-            false,
-            self.args.check_api_safety,
-            self.args.axiom_usage_info,
-            self.args.no_bv_simplify,
-            self.args.report_long_running,
-        )?;
-        vir::recursive_types::check_traits(&krate, &global_ctx)?;
-        let krate = vir::ast_simplify::simplify_krate(&mut global_ctx, &krate)?;
+        // Call-graph logging writes from GlobalCtx::new, so it keeps the sequential order.
+        let overlap_simplify = call_graph_log.is_none() && self.args.num_threads > 1;
+        let new_global_ctx = || {
+            vir::context::GlobalCtx::new(
+                &krate,
+                self.crate_id.clone().expect("crate_id"),
+                air_no_span.clone(),
+                self.args.rlimit,
+                Arc::new(std::sync::Mutex::new(None)),
+                Arc::new(std::sync::Mutex::new(call_graph_log)),
+                self.warning_ctx.clone().expect("warning_ctx"),
+                self.args.solver,
+                false,
+                self.args.check_api_safety,
+                self.args.axiom_usage_info,
+                self.args.no_bv_simplify,
+                self.args.report_long_running,
+            )
+        };
+        let (mut global_ctx, krate, modules_and_buckets_result) = if overlap_simplify {
+            // simplify_krate_body reads no pre-simplify GlobalCtx state, so it runs alongside
+            // GlobalCtx::new and check_traits. Errors and panics keep the sequential precedence
+            // GlobalCtx::new, check_traits, simplification, after-simplify GlobalCtx::new.
+            // A GlobalCtx::new or check_traits failure discards the simplification result, so
+            // it cancels simplification's remaining parallel work. A simplification failure
+            // cancels nothing: an earlier-ordered failure still takes precedence over it.
+            let cancel_simplify = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let simplify_work = std::sync::Mutex::new(Some(|| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    vir::util::with_par_cancel(&cancel_simplify, || {
+                        vir::ast_simplify::simplify_krate_body(&air_no_span, &krate)
+                    })
+                }))
+            }));
+            let run_simplify = || {
+                let work = simplify_work.lock().unwrap_or_else(|e| e.into_inner()).take();
+                work.expect("VIR simplification runs once")()
+            };
+            let (global_ctx, simplified) = std::thread::scope(|scope| {
+                // If the thread cannot be spawned, simplification runs inline after
+                // GlobalCtx::new and check_traits, which keeps the same precedence.
+                let simplify = std::thread::Builder::new()
+                    .name("verus-vir-simplify".to_string())
+                    .stack_size(vir_thread_stack_size())
+                    .spawn_scoped(scope, run_simplify)
+                    .ok();
+                let global_ctx = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    new_global_ctx().and_then(|global_ctx| {
+                        vir::recursive_types::check_traits(&krate, &global_ctx)?;
+                        Ok(global_ctx)
+                    })
+                }));
+                if !matches!(global_ctx, Ok(Ok(_))) {
+                    cancel_simplify.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                let simplified = match simplify {
+                    Some(simplify) => simplify.join().expect("simplification panics are caught"),
+                    None => run_simplify(),
+                };
+                (global_ctx, simplified)
+            });
+            let global_ctx = match global_ctx {
+                Ok(global_ctx) => global_ctx?,
+                Err(panic) => std::panic::resume_unwind(panic),
+            };
+            let simplified = match simplified {
+                Ok(simplified) => simplified?,
+                Err(panic) => std::panic::resume_unwind(panic),
+            };
+            // Bucket selection reads only the simplified crate and the user filter, so it runs
+            // alongside the after-simplify GlobalCtx::new; its result surfaces in sequential order.
+            let user_filter = self.user_filter.as_ref();
+            let current_crate_modules = self.current_crate_modules.as_ref();
+            let (new_ctx, buckets) = std::thread::scope(|scope| {
+                let buckets = scope.spawn(|| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        modules_and_buckets(user_filter, current_crate_modules, &simplified)
+                    }))
+                });
+                let new_ctx =
+                    vir::ast_simplify::after_simplify_global_ctx(&global_ctx, &simplified);
+                (new_ctx, buckets.join().expect("bucket selection panics are caught"))
+            });
+            let new_ctx = new_ctx?;
+            // Freeing the pre-simplify GlobalCtx has no observable effect. On the VeriFlat light
+            // run, dropping it here costs ~17 ms; handing it to a thread costs ~0.06 ms.
+            if self.args.frontend_no_drop {
+                std::mem::forget(global_ctx);
+            } else {
+                // A failed spawn drops the closure, and with it `global_ctx`, inline.
+                let _ = std::thread::Builder::new().spawn(move || drop(global_ctx));
+            }
+            (new_ctx, simplified, Some(buckets))
+        } else {
+            let mut global_ctx = new_global_ctx()?;
+            vir::recursive_types::check_traits(&krate, &global_ctx)?;
+            let krate = vir::ast_simplify::simplify_krate(&mut global_ctx, &krate)?;
+            (global_ctx, krate, None)
+        };
 
         if self.args.log_all || self.args.log_args.log_vir_simple {
             let mut file = self.create_log_file(None, crate::config::VIR_SIMPLE_FILE_SUFFIX)?;
@@ -2134,18 +2217,19 @@ impl Verifier {
         // If the user wants to reduce the context used for d, then they can use
         // the spinoff_prover attribute.
 
-        let user_filter = self.user_filter.as_ref().unwrap();
-        let modules_to_verify: Vec<vir::ast::Module> = {
-            let current_crate_module_ids = self
-                .current_crate_modules
-                .as_ref()
-                .expect("current_crate_module_ids should be initialized");
-            user_filter.filter_modules(current_crate_module_ids)?
+        let (modules_to_verify, buckets) = match modules_and_buckets_result {
+            Some(Ok(result)) => result?,
+            Some(Err(panic)) => std::panic::resume_unwind(panic),
+            None => modules_and_buckets(
+                self.user_filter.as_ref(),
+                self.current_crate_modules.as_ref(),
+                &krate,
+            )?,
         };
-        let buckets = crate::buckets::get_buckets(&krate, &modules_to_verify);
-        let buckets = user_filter.filter_buckets(buckets);
         let bucket_ids: Vec<BucketId> = buckets.iter().map(|p| p.0.clone()).collect();
         self.buckets = buckets.into_iter().collect();
+        // One module-independent prune index shared by every bucket prune of this krate.
+        let prune_index = vir::prune::PruneIndex::new_for_buckets(&krate);
 
         let time_verify_sequential_end = Instant::now();
         self.time_verify_crate_sequential =
@@ -2218,39 +2302,30 @@ impl Verifier {
             for _tid in 0..self.num_threads {
                 // we create a clone of the verifier here to pass each thread its own local
                 // copy as we modify fields in the verifier struct. later, we merge the results
-                let mut thread_verifier = self.from_self();
+                let thread_verifier = self.from_self();
                 let thread_taskq = taskq.clone();
                 let thread_krate = krate.clone(); // is an Arc<T>
+                let thread_prune_index = prune_index.clone(); // is an Arc<T>
 
                 let worker_sender = sender.clone();
-                let worker = std::thread::spawn(move || {
-                    let r = std::panic::catch_unwind(|| {
-                        let mut completed_tasks: Vec<Result<GlobalCtx, ()>> = Vec::new();
-                        loop {
-                            let elm = {
-                                let mut tq = thread_taskq.lock().unwrap();
-                                let elm = tq.pop_front();
-                                drop(tq);
-                                elm
-                            };
-                            if let Some((_i, bucket_id, task, reporter)) = elm {
-                                let res = thread_verifier.verify_bucket_outer(
-                                    &reporter,
-                                    &thread_krate,
-                                    &bucket_id,
-                                    task,
-                                );
-                                if let Err(e) = &res {
-                                    reporter.report_now(&e.clone().to_any());
-                                }
-                                reporter.done(); // we've verified the bucket, send the done message
-                                completed_tasks.push(res.map_err(|_| ()));
-                            } else {
-                                break;
-                            }
-                        }
-                        (thread_verifier, completed_tasks)
-                    });
+                let work = Arc::new(std::sync::Mutex::new(Some((
+                    thread_verifier,
+                    thread_taskq,
+                    thread_krate,
+                    thread_prune_index,
+                ))));
+                let thread_work = work.clone();
+                let spawned = std::thread::Builder::new().spawn(move || {
+                    let (thread_verifier, thread_taskq, thread_krate, thread_prune_index) =
+                        thread_work.lock().unwrap().take().expect("worker state");
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        Self::run_bucket_worker(
+                            thread_verifier,
+                            &thread_taskq,
+                            &thread_krate,
+                            &thread_prune_index,
+                        )
+                    }));
 
                     match r {
                         Ok(x) => x,
@@ -2262,7 +2337,21 @@ impl Verifier {
                         }
                     }
                 });
-                workers.push(worker);
+                match spawned {
+                    Ok(worker) => workers.push(worker),
+                    Err(_) => {
+                        // Without a thread, this worker drains the queue inline; the message
+                        // loop below reports the queued messages.
+                        let (thread_verifier, thread_taskq, thread_krate, thread_prune_index) =
+                            work.lock().unwrap().take().expect("worker state");
+                        workers_finished.push(Self::run_bucket_worker(
+                            thread_verifier,
+                            &thread_taskq,
+                            &thread_krate,
+                            &thread_prune_index,
+                        ));
+                    }
+                }
             }
 
             let multi_progress = indicatif::MultiProgress::with_draw_target(
@@ -2588,7 +2677,13 @@ impl Verifier {
             )));
 
             for bucket_id in &bucket_ids {
-                global_ctx = self.verify_bucket_outer(&reporter, &krate, bucket_id, global_ctx)?;
+                global_ctx = self.verify_bucket_outer(
+                    &reporter,
+                    &krate,
+                    &prune_index,
+                    bucket_id,
+                    global_ctx,
+                )?;
             }
         }
 
@@ -2672,6 +2767,41 @@ impl Verifier {
         Ok(())
     }
 
+    /// Verifies queued buckets until the queue is empty.
+    fn run_bucket_worker(
+        mut thread_verifier: Verifier,
+        thread_taskq: &std::sync::Mutex<VecDeque<(usize, BucketId, GlobalCtx, QueuedReporter)>>,
+        thread_krate: &Krate,
+        thread_prune_index: &Arc<vir::prune::PruneIndex>,
+    ) -> (Verifier, Vec<Result<GlobalCtx, ()>>) {
+        let mut completed_tasks: Vec<Result<GlobalCtx, ()>> = Vec::new();
+        loop {
+            let elm = {
+                let mut tq = thread_taskq.lock().unwrap();
+                let elm = tq.pop_front();
+                drop(tq);
+                elm
+            };
+            if let Some((_i, bucket_id, task, reporter)) = elm {
+                let res = thread_verifier.verify_bucket_outer(
+                    &reporter,
+                    thread_krate,
+                    thread_prune_index,
+                    &bucket_id,
+                    task,
+                );
+                if let Err(e) = &res {
+                    reporter.report_now(&e.clone().to_any());
+                }
+                reporter.done(); // we've verified the bucket, send the done message
+                completed_tasks.push(res.map_err(|_| ()));
+            } else {
+                break;
+            }
+        }
+        (thread_verifier, completed_tasks)
+    }
+
     pub(crate) fn verify_crate<'tcx>(
         &mut self,
         compiler: &Compiler,
@@ -2699,6 +2829,7 @@ impl Verifier {
         spans: &SpanContext,
         other_vir_crates: Vec<Krate>,
         diagnostics: &impl air::messages::Diagnostics,
+        early_trait_conflicts: &mut Option<crate::trait_check::EarlyTraitConflictCheck>,
     ) -> Result<bool, (Vec<VirErr>, Vec<vir::ast::VirErrAs>, Option<QueryError>)> {
         vir::util::set_par_num_threads(self.args.num_threads);
         if self.args.no_lifetime {
@@ -2825,6 +2956,18 @@ impl Verifier {
             UserFilter::from_args(&self.args, &local_crate).map_err(map_err_diagnostics)?;
         self.user_filter = Some(user_filter);
 
+        // The trait-conflict inputs are final from here on, so the check overlaps the
+        // remaining front end; its result is consumed (or discarded) in `after_expansion`.
+        if !self.args.no_trait_conflicts
+            && !(self.args.log_all || self.args.log_args.log_trait_conflicts)
+        {
+            *early_trait_conflicts = crate::trait_check::EarlyTraitConflictCheck::start(
+                spans,
+                &merged_crate,
+                vir_thread_stack_size(),
+            );
+        }
+
         if self.args.check_api_safety {
             vir::safe_api::check_safe_api(&merged_crate).map_err(map_err_diagnostics)?;
         }
@@ -2849,14 +2992,34 @@ impl Verifier {
 
         // These can invoke mir_borrowck when opaque types are involved.
         // Thus, we can only run these after calling `setup_verus_ctxt_for_thir_erasure`
-        tcx.hir_for_each_module(|module| {
-            tcx.ensure_ok().check_private_in_public(module);
-            tcx.ensure_ok().check_mod_privacy(module);
-        });
+        if self.args.parallel_privacy && rustc_data_structures::sync::is_dyn_thread_safe() {
+            // As in rustc's `analysis` pass: compute the effective visibilities once, then
+            // check the modules in parallel.  Errors are emitted through the lock-protected
+            // `DiagCtxt`, so only their order can differ from the sequential loop.
+            tcx.ensure_ok().effective_visibilities(());
+            tcx.par_hir_for_each_module(|module| {
+                tcx.ensure_ok().check_private_in_public(module);
+                tcx.ensure_ok().check_mod_privacy(module);
+            });
+        } else {
+            tcx.hir_for_each_module(|module| {
+                tcx.ensure_ok().check_private_in_public(module);
+                tcx.ensure_ok().check_mod_privacy(module);
+            });
+        }
 
         let time5 = Instant::now();
         self.time_vir = time5 - time0;
         self.time_vir_rust_to_vir = time2 - time1;
+
+        if self.args.frontend_no_drop {
+            // These are only memory (VIR trees, Arcs, maps, and the rustc-to-VIR context's
+            // caches); none has a Drop with an observable effect. Leaking them on success
+            // avoids a long serial teardown before verification starts.
+            std::mem::forget(query);
+            std::mem::forget(ctxt);
+            std::mem::forget(local_crate);
+        }
 
         Ok(true)
     }
@@ -2955,6 +3118,28 @@ fn delete_dir_if_exists_and_is_dir(dir: &std::path::PathBuf) -> Result<(), VirEr
     })
 }
 
+/// The modules selected by the user filter, and the filtered buckets of those modules.
+fn modules_and_buckets(
+    user_filter: Option<&UserFilter>,
+    current_crate_modules: Option<&Vec<vir::ast::Module>>,
+    krate: &vir::ast::Krate,
+) -> Result<(Vec<vir::ast::Module>, Vec<(BucketId, Bucket)>), VirErr> {
+    let user_filter = user_filter.unwrap();
+    let current_crate_module_ids =
+        current_crate_modules.expect("current_crate_module_ids should be initialized");
+    let modules_to_verify = user_filter.filter_modules(current_crate_module_ids)?;
+    let buckets = crate::buckets::get_buckets(krate, &modules_to_verify);
+    Ok((modules_to_verify, user_filter.filter_buckets(buckets)))
+}
+
+/// Stack size for a VIR pass thread: VIR visitors recurse deeply, so use at least the rustc
+/// stack size and at least the size used by the parallel VIR workers.
+fn vir_thread_stack_size() -> usize {
+    const VIR_THREAD_STACK_SIZE: usize = 64 * 1024 * 1024;
+    let min_stack = std::env::var("RUST_MIN_STACK").ok().and_then(|s| s.parse::<usize>().ok());
+    min_stack.unwrap_or(0).max(VIR_THREAD_STACK_SIZE)
+}
+
 /// Currently performing an rustc_hir_analysis::check_crate() with trait methods with opaque return types
 /// will cause the thir_body to run before VerusErasureCtxt is initialized.
 /// We disallow opaque types in trait for now.
@@ -3008,6 +3193,9 @@ pub(crate) struct VerifierCallbacksEraseMacro {
     pub(crate) pipelined_erasure: Option<(Vec<String>, Vstd)>,
     /// Running ghost-erased compilation.
     pub(crate) pipelined_erasure_process: Option<crate::driver::PipelinedErasure>,
+    /// Background decoding of the direct imports, started in `config` and joined in
+    /// `after_expansion` (unless `-V import-decode-sequential`).
+    pub(crate) import_decoding: Option<crate::import_export::ImportDecoding>,
 }
 
 pub(crate) static BODY_HIR_ID_TO_REVEAL_PATH_RES: std::sync::RwLock<
@@ -3025,6 +3213,36 @@ fn lower_to_hir<'tcx>(
 ) -> rustc_hir::MaybeOwner<'tcx> {
     let owner = (rustc_interface::DEFAULT_QUERY_PROVIDERS.queries.lower_to_hir)(tcx, def_id);
     crate::hir_hide_reveal_rewrite::hir_hide_reveal_rewrite(owner, tcx)
+}
+
+/// Run the `lower_to_hir` queries for every AST owner in parallel, ahead of the first HIR
+/// access (`all_diagnostic_items` -> `hir_crate_items`), which would otherwise run them
+/// serially.  Only the order of the same per-owner queries changes: each owner is lowered
+/// from its own stolen AST with its own resolver data and per-parent disambiguator state,
+/// so HIR, `DefPath`s, and the hide/reveal map (keyed by owner) are unchanged.  Defs and
+/// expansions created during lowering may receive different `LocalDefId`/`ExpnId` indices,
+/// which shows up as different syntax-context ids (`#N`) in span strings in `--log vir`;
+/// diagnostics emitted during lowering may also be reordered.  Hence off by default.
+/// Non-owner and nested use-tree entries are left to their ancestor, as without pre-lowering.
+fn parallel_lower_to_hir<'tcx>(tcx: TyCtxt<'tcx>) {
+    if !rustc_data_structures::sync::is_dyn_thread_safe() {
+        return;
+    }
+    let ast_index = tcx.index_ast(());
+    let owners: Vec<rustc_span::def_id::LocalDefId> = ast_index
+        .iter_enumerated()
+        .filter(|(_, entry)| {
+            !entry.is_stolen()
+                && !matches!(
+                    entry.borrow().1,
+                    rustc_ast::AstOwner::NonOwner | rustc_ast::AstOwner::NestedUseTree(_)
+                )
+        })
+        .map(|(def_id, _)| def_id)
+        .collect();
+    rustc_data_structures::sync::par_for_each_in(owners, |&def_id| {
+        let _ = tcx.lower_to_hir(def_id);
+    });
 }
 
 impl rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
@@ -3055,6 +3273,13 @@ impl rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
             self.unresolved_import_deps = import_deps_if_present;
             dep_tracker.config_install(config);
         }
+
+        // Overlap decoding of the direct imports with parsing and macro expansion.  Any
+        // error is reported at the join in after_expansion, as without early decoding.
+        self.import_decoding = crate::import_export::start_direct_import_decoding(
+            &self.verifier.args,
+            self.verifier.import_virs_via_cargo.as_deref().unwrap_or_default(),
+        );
 
         if self.verifier.args.no_lifetime {
             config.override_queries = Some(|_session, providers| {
@@ -3125,15 +3350,15 @@ impl rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
             }
         }
 
-        let mut import_virs_via_cargo =
-            self.verifier.import_virs_via_cargo.clone().unwrap_or_default();
+        let import_virs_via_cargo = self.verifier.import_virs_via_cargo.clone().unwrap_or_default();
+        let mut transitive_import_virs_via_cargo = Vec::new();
         if !self.unresolved_import_deps.is_empty() {
             // Resolve transitive .vir imports before `write_dep_info` so each
             // resolved .vir gets registered in `psess.file_depinfo` and ends
             // up in the consumer's `.d` file, mirroring `dep_tracker.mark_file`
             // for direct externs.
             match crate::cargo_verus::handle_transitive_imports(tcx, &self.unresolved_import_deps) {
-                Ok(extra) => import_virs_via_cargo.extend(extra),
+                Ok(extra) => transitive_import_virs_via_cargo.extend(extra),
                 Err(err) => {
                     eprintln!("Error: {}", err);
                     std::process::exit(1);
@@ -3144,18 +3369,27 @@ impl rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
         rustc_interface::passes::write_dep_info(tcx);
         self.verifier.crate_id = Some(mk_crate_id(tcx, LOCAL_CRATE));
 
+        // Before the import join, so background decoding overlaps with lowering.
+        if self.verifier.args.parallel_hir_lowering {
+            parallel_lower_to_hir(tcx);
+        }
+
         let time_import0 = Instant::now();
-        let imported =
-            match crate::import_export::import_crates(&self.verifier.args, import_virs_via_cargo) {
-                Ok(imported) => imported,
-                Err(err) => {
-                    assert!(err.spans.len() == 0);
-                    assert!(err.level == MessageLevel::Error);
-                    compiler.sess.dcx().err(err.note.clone());
-                    self.verifier.encountered_vir_error = true;
-                    return rustc_driver::Compilation::Stop;
-                }
-            };
+        let imported = match crate::import_export::import_crates(
+            &self.verifier.args,
+            import_virs_via_cargo,
+            transitive_import_virs_via_cargo,
+            self.import_decoding.take(),
+        ) {
+            Ok(imported) => imported,
+            Err(err) => {
+                assert!(err.spans.len() == 0);
+                assert!(err.level == MessageLevel::Error);
+                compiler.sess.dcx().err(err.note.clone());
+                self.verifier.encountered_vir_error = true;
+                return rustc_driver::Compilation::Stop;
+            }
+        };
         let time_import1 = Instant::now();
         self.verifier.time_import = time_import1 - time_import0;
         let verus_items = Arc::new(crate::verus_items::from_diagnostic_items(tcx));
@@ -3169,6 +3403,8 @@ impl rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
         );
 
         {
+            // Joined or dropped (which waits for it) before returning from `after_expansion`.
+            let mut early_trait_conflicts = None;
             let reporter = Reporter::new(&spans, compiler);
             if self.verifier.args.trace {
                 reporter.report_now(&note_bare("preparing crate for verification").to_any());
@@ -3179,6 +3415,7 @@ impl rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
                 &spans,
                 imported.vir_crates,
                 &reporter,
+                &mut early_trait_conflicts,
             ) {
                 assert!(errs.len() > 0 || query_err.is_some());
                 for err in errs.into_iter() {
@@ -3236,6 +3473,7 @@ impl rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
                     &spans,
                     self.verifier.vir_crate.as_ref().expect("vir_crate should be initialized"),
                     tc_log_file,
+                    early_trait_conflicts.take(),
                 )
             };
             self.tc_end_time = Some(Instant::now());

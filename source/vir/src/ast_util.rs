@@ -1176,25 +1176,6 @@ impl FunctionKind {
     }
 }
 
-// Return a non-TraitMethodImpl for f
-// (if f points to a TraitMethodImpl, return the corresponding method instead)
-pub(crate) fn get_non_trait_impl(func_map: &HashMap<Fun, Function>, f: &Fun) -> Option<Function> {
-    if let Some(function) = func_map.get(f) {
-        if let FunctionKind::TraitMethodImpl { method, .. } = &function.x.kind {
-            if let Some(function) = func_map.get(method) {
-                assert!(!matches!(&function.x.kind, FunctionKind::TraitMethodImpl { .. }));
-                Some(function.clone())
-            } else {
-                None
-            }
-        } else {
-            Some(function.clone())
-        }
-    } else {
-        None
-    }
-}
-
 impl ArchWordBits {
     pub fn min_bits(&self) -> u32 {
         match self {

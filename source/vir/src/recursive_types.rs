@@ -760,12 +760,17 @@ pub(crate) fn suppress_bound_in_trait_decl(
     }
 }
 
-pub(crate) fn add_trait_type_edges(call_graph: &mut GraphBuilder<Node>, src: &Node, typ: &Typ) {
+/// Target of the src --> T edge required by a `dyn T` type, if `typ` is one.
+pub(crate) fn trait_type_edge_target(typ: &Typ) -> Option<Node> {
     match &**typ {
-        TypX::Dyn(dyn_t_path, _, _) => {
-            call_graph.add_edge(src.clone(), Node::Trait(dyn_t_path.clone()));
-        }
-        _ => {}
+        TypX::Dyn(dyn_t_path, _, _) => Some(Node::Trait(dyn_t_path.clone())),
+        _ => None,
+    }
+}
+
+pub(crate) fn add_trait_type_edges(call_graph: &mut GraphBuilder<Node>, src: &Node, typ: &Typ) {
+    if let Some(dst) = trait_type_edge_target(typ) {
+        call_graph.add_edge(src.clone(), dst);
     }
 }
 

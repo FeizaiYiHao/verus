@@ -255,11 +255,17 @@ pub fn trait_check_rustc_driver(rustc_args: &[String], rust_code: String) {
     rustc_driver::run_compiler(rustc_args, &mut callbacks)
 }
 
-pub(crate) fn check_trait_conflicts<'tcx>(
+/// Generated trait-conflict code and the output of the rustc subprocess that checked it.
+pub(crate) struct TraitConflictRun {
+    emit_state: EmitState,
+    gen_state: State,
+    run: std::process::Output,
+}
+
+fn generate_trait_conflict_code(
     spans: &SpanContext,
     vir_crate: &vir::ast::Krate,
-    tc_log_file: Option<File>,
-) -> Result<Vec<Message>, VirErr> {
+) -> (EmitState, State, String) {
     let mut emit_state = EmitState::new();
     let gen_state = emit_check_trait_conflicts(spans, &mut emit_state, vir_crate);
     let mut rust_code: String = String::new();
@@ -267,18 +273,33 @@ pub(crate) fn check_trait_conflicts<'tcx>(
         rust_code.push_str(&line.text);
         rust_code.push('\n');
     }
+    (emit_state, gen_state, rust_code)
+}
+
+const TC_RUSTC_ARGS: [&str; 3] = [TC_DRIVER_ARG, TCFileLoader::FILENAME, "--error-format=json"];
+
+fn trait_conflict_command(exe: std::path::PathBuf) -> std::process::Command {
+    let mut command = std::process::Command::new(exe);
+    // avoid warning about jobserver fd
+    command
+        .env_remove("CARGO_MAKEFLAGS")
+        .args(&TC_RUSTC_ARGS[..])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    command
+}
+
+fn run_trait_conflict_rustc(
+    spans: &SpanContext,
+    vir_crate: &vir::ast::Krate,
+    tc_log_file: Option<File>,
+) -> TraitConflictRun {
+    let (emit_state, gen_state, rust_code) = generate_trait_conflict_code(spans, vir_crate);
     if let Some(mut file) = tc_log_file {
         write!(file, "{}", rust_code).expect("error writing to trait-conflict log file");
     }
-    let rustc_args = [TC_DRIVER_ARG, TCFileLoader::FILENAME, "--error-format=json"];
-
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        // avoid warning about jobserver fd
-        .env_remove("CARGO_MAKEFLAGS")
-        .args(&rustc_args[..])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+    let mut child = trait_conflict_command(std::env::current_exe().unwrap())
         .spawn()
         .expect("could not execute trait-conflict rustc process");
     let mut child_stdin = child.stdin.take().expect("take stdin");
@@ -287,6 +308,136 @@ pub(crate) fn check_trait_conflicts<'tcx>(
         .expect("failed to send code to trait-conflict rustc");
     std::mem::drop(child_stdin);
     let run = child.wait_with_output().expect("trait-conflict rustc wait failed");
+    TraitConflictRun { emit_state, gen_state, run }
+}
+
+/// Like `run_trait_conflict_rustc` without a log file, but an I/O failure returns `None`
+/// instead of panicking, so the caller can rerun the check where its panics belong.
+fn try_run_trait_conflict_rustc(
+    spans: &SpanContext,
+    vir_crate: &vir::ast::Krate,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Option<TraitConflictRun> {
+    let (emit_state, gen_state, rust_code) = generate_trait_conflict_code(spans, vir_crate);
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    let mut child = trait_conflict_command(std::env::current_exe().ok()?).spawn().ok()?;
+    let mut child_stdin = child.stdin.take()?;
+    let written = child_stdin.write_all(rust_code.as_bytes());
+    std::mem::drop(child_stdin);
+    if written.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    }
+    let run = child.wait_with_output().ok()?;
+    Some(TraitConflictRun { emit_state, gen_state, run })
+}
+
+/// Trait-conflict checking started in the background as soon as its inputs are final.
+///
+/// The check reads only `datatypes`, `traits`, `trait_impls`, and `assoc_type_impls` of the
+/// crate (see `gen_check_trait_impl_conflicts`), which the remaining front-end passes
+/// (`well_formed`, `autospec`, `modes`) copy unchanged.  `join` confirms this by pointer
+/// identity against the crate the check would sequentially use; on any mismatch, spawn or
+/// I/O failure, or a non-thread-safe rustc, the caller runs the check inline as before.
+/// Diagnostics are produced only from the joined output, on the main thread, at the
+/// sequential point, so stdout/stderr ordering is unchanged; a result that is not joined
+/// (an earlier error stops compilation) is discarded without output.
+pub(crate) struct EarlyTraitConflictCheck {
+    vir_crate: vir::ast::Krate,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<std::thread::Result<Option<TraitConflictRun>>>>,
+}
+
+fn same_trait_conflict_inputs(k1: &vir::ast::Krate, k2: &vir::ast::Krate) -> bool {
+    fn same<T>(v1: &[Arc<T>], v2: &[Arc<T>]) -> bool {
+        v1.len() == v2.len() && v1.iter().zip(v2.iter()).all(|(a, b)| Arc::ptr_eq(a, b))
+    }
+    same(&k1.datatypes, &k2.datatypes)
+        && same(&k1.traits, &k2.traits)
+        && same(&k1.trait_impls, &k2.trait_impls)
+        && same(&k1.assoc_type_impls, &k2.assoc_type_impls)
+}
+
+impl EarlyTraitConflictCheck {
+    /// Must be called on a rustc thread with session globals; the returned value must be
+    /// dropped or joined before those globals go away.
+    pub(crate) fn start(
+        spans: &SpanContext,
+        vir_crate: &vir::ast::Krate,
+        stack_size: usize,
+    ) -> Option<Self> {
+        // Span interning on the background thread needs rustc's thread-safe locks.
+        if !rustc_data_structures::sync::is_dyn_thread_safe() {
+            return None;
+        }
+        let globals = rustc_span::with_session_globals(|globals| {
+            globals as *const rustc_span::SessionGlobals as usize
+        });
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (thread_spans, thread_krate, thread_cancel) =
+            (spans.clone(), vir_crate.clone(), cancel.clone());
+        // `from_raw_span` requires a thread named "rustc" because it needs rustc's thread-local
+        // session globals, which this thread installs.  The name also keeps the thread name in
+        // panic messages the same as for the sequential check.
+        let handle = std::thread::Builder::new()
+            .name("rustc".to_string())
+            .stack_size(stack_size)
+            .spawn(move || {
+                // SAFETY: the owner joins this thread (in `join` or `drop`) while the
+                // session globals are alive, as rustc's own worker threads do.
+                let globals = unsafe { &*(globals as *const rustc_span::SessionGlobals) };
+                rustc_span::set_session_globals_then(globals, || {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        try_run_trait_conflict_rustc(&thread_spans, &thread_krate, &thread_cancel)
+                    }))
+                })
+            })
+            .ok()?;
+        Some(EarlyTraitConflictCheck { vir_crate: vir_crate.clone(), cancel, handle: Some(handle) })
+    }
+
+    /// The background run, if it applies to `vir_crate` and completed without I/O failure.
+    pub(crate) fn join(mut self, vir_crate: &vir::ast::Krate) -> Option<TraitConflictRun> {
+        let handle = self.handle.take().expect("trait-conflict thread");
+        let result = handle.join().expect("trait-conflict panics are caught");
+        let run = match result {
+            Ok(run) => run,
+            Err(panic) => std::panic::resume_unwind(panic),
+        };
+        if same_trait_conflict_inputs(&self.vir_crate, vir_crate) { run } else { None }
+    }
+}
+
+impl Drop for EarlyTraitConflictCheck {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = handle.join();
+        }
+    }
+}
+
+pub(crate) fn check_trait_conflicts<'tcx>(
+    spans: &SpanContext,
+    vir_crate: &vir::ast::Krate,
+    tc_log_file: Option<File>,
+    early: Option<EarlyTraitConflictCheck>,
+) -> Result<Vec<Message>, VirErr> {
+    let tc_run = match early.and_then(|early| early.join(vir_crate)) {
+        Some(tc_run) => tc_run,
+        None => run_trait_conflict_rustc(spans, vir_crate, tc_log_file),
+    };
+    parse_trait_conflict_output(spans, tc_run)
+}
+
+fn parse_trait_conflict_output(
+    spans: &SpanContext,
+    tc_run: TraitConflictRun,
+) -> Result<Vec<Message>, VirErr> {
+    let TraitConflictRun { emit_state, gen_state, run } = tc_run;
     let rust_output = std::str::from_utf8(&run.stderr[..]).unwrap().trim();
     let mut msgs: Vec<Message> = Vec::new();
     let debug = false;
