@@ -39,6 +39,7 @@ rust_verify_test_macros = { path = "../rust_verify_test_macros" }
 cargo-verus-toolchains = { workspace = true }
 
 [features]
+default = ["jemalloc"]
 jemalloc = ["dep:tikv-jemalloc-sys"]
 singular = ["vir/singular", "air/singular"]
 
